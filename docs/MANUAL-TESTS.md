@@ -19,7 +19,9 @@ Open it in Chrome (with the Claude in Chrome extension) or do the steps by hand.
 6. Copy some text from another app, click the terminal, press Ctrl+V. It pastes. Ctrl+Shift+V also pastes.
 7. Click another tab in the bar. The terminal switches; the URL changes to /s/<name>. Click back.
 8. Press + in the bar, try to create a session with the same name "t-desktop". An inline error appears. Escape closes the panel.
-9. Press ↗ (pop out). A small separate window opens with only the terminal; a ⋯ button in its top-right corner shows/hides the bar. Close it.
+9. On the home page, Open pops the session out into a separate small window with only the terminal (a ⋯ button in its top-right corner shows/hides the bar) and the home page stays. Clicking Open again for the same session refocuses that window instead of opening another. ☰ inside the pop-out closes it.
+9b. In the ⋯ menu of a session: "Open here" opens it in this tab; "Copy SSH command" copies an `ssh -t ... tmux attach` line that works in a terminal; "Open in SSH app" launches your SSH client if one is installed.
+9c. From an in-tab session, ↗ pops it out and this tab goes back to the list (you are not attached twice).
 10. Press ✕ in the bar, confirm. You are moved to another session (or the list if none).
 11. Resize the browser window. The terminal reflows (tmux status bar stays at the bottom).
 12. Reload the page while in a session. You reconnect into the same session with its history intact.

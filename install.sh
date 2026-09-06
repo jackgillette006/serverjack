@@ -82,6 +82,8 @@ TMUX_WEB_TOOLS="claude=Claude Code,codex=Codex"
 TMUX_WEB_TERM=/term/
 # Extra ttyd flags, e.g. "-b /term" if your reverse proxy does NOT strip the prefix
 TTYD_EXTRA_ARGS=
+# user@host used by "Copy SSH command" / "Open in SSH app" (auto: tailnet name); "off" hides them
+#TMUX_WEB_SSH=
 CFG
   chmod 600 "$ENV_FILE"
 fi

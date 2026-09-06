@@ -10,8 +10,12 @@ for reaching a home server over Tailscale from a laptop or an iPhone.
   A shell needs no name or directory and can start with a pasted command;
   a coding tool (Claude Code, Codex, ... configurable) takes a name and a
   directory.
-- **In a session**: a slim bar with session tabs, `+` new, `✕` kill, `↗` pop-out
-  into a chrome-less window.
+- **Desktop vs phone**: on a desktop, Open pops the session out into its own
+  chrome-less window and the list stays put (one window per session, never
+  attached twice); on a phone, Open stays in the same tab. Each session's
+  `⋯` menu also offers Open here, Copy SSH command, Open in SSH app, Kill.
+- **In a session**: a slim bar with session tabs, `+` new, `✕` kill, and on
+  desktop `↗` to pop the session out (this tab returns to the list).
 - **Built for phones**: a soft-key row (Esc, Tab, ⇧Tab, Ctrl, arrows, ^C,
   PgUp/PgDn, Paste, Copy) and a chat-style **compose bar**: type or dictate with
   your normal keyboard, Send pastes it into the terminal and presses Enter.
@@ -84,6 +88,7 @@ bash uninstall.sh
 | `TMUX_WEB_TOOLS` | `claude=Claude Code,codex=Codex` | coding tools offered besides a shell, `command=Label` |
 | `TMUX_WEB_TERM` | `/term/` | URL path your proxy mounts ttyd on |
 | `TTYD_EXTRA_ARGS` | | e.g. `-b /term` if your proxy does not strip the prefix |
+| `TMUX_WEB_SSH` | auto | `user@host` for the SSH menu items (tailnet DNS name if Tailscale is up, else hostname); `off` hides them |
 
 A coding-tool session runs the tool in front of a login shell, so if it isn't
 installed or isn't logged in you land on its error message and a prompt

@@ -31,6 +31,7 @@ import html
 import json
 import os
 import re
+import getpass
 import shlex
 import socket
 import subprocess
@@ -77,7 +78,33 @@ DIR_ROOTS = _dirs()
 TOOLS = _tools()
 CONFIG_DIR = os.environ.get("TMUX_WEB_CONFIG") or os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or f"{HOME}/.config", "tmux-web")
-SHORTCUTS_FILE = os.path.join(CONFIG_DIR, "shortcuts.json")               # kind -> (command, label); kind is also the form value
+SHORTCUTS_FILE = os.path.join(CONFIG_DIR, "shortcuts.json")
+
+
+def _ssh_target():
+    """user@host for 'connect over SSH instead' links. TMUX_WEB_SSH overrides;
+    otherwise the tailnet DNS name if tailscale is up, else the hostname."""
+    t = os.environ.get("TMUX_WEB_SSH", "").strip()
+    if t == "off":
+        return ""
+    if t:
+        return t
+    host = ""
+    try:
+        r = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            host = (json.loads(r.stdout).get("Self") or {}).get("DNSName", "").rstrip(".")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    host = host or socket.getfqdn() or socket.gethostname()
+    return f"{getpass.getuser()}@{host}"
+
+
+SSH_TARGET = _ssh_target()
+
+
+def ssh_cmd(name):
+    return f"ssh -t {SSH_TARGET} tmux attach -t {shlex.quote(name)}" if SSH_TARGET else ""               # kind -> (command, label); kind is also the form value
 PATH_ENV = os.environ.get("PATH") or f"{HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 
@@ -276,6 +303,17 @@ details.card summary{cursor:pointer;color:var(--mut);font-size:14px;list-style:n
 details.card summary::before{content:"+ ";color:var(--acc)}
 details.card[open] summary{margin-bottom:12px;color:var(--fg)}
 [hidden]{display:none!important}
+.menu{position:relative}
+.menu summary{list-style:none;font-size:20px;line-height:1;padding:8px 10px}
+.menu summary::-webkit-details-marker{display:none}
+.menu-list{position:absolute;right:0;top:100%;z-index:5;min-width:210px;background:var(--card);border:1px solid var(--line);
+  border-radius:10px;padding:6px;box-shadow:0 12px 40px rgba(0,0,0,.5);display:flex;flex-direction:column}
+.menu-list a,.menu-list button{display:block;width:100%;text-align:left;padding:10px 12px;border:0;border-radius:7px;
+  background:transparent;color:var(--fg);font:inherit;font-size:15px;text-decoration:none;cursor:pointer}
+.menu-list a:hover,.menu-list button:hover{background:#1f2430}
+.menu-list button.danger{color:var(--warn)}
+.menu-list form{margin:0;border-top:1px solid var(--line);margin-top:4px;padding-top:4px}
+body.touch .desktop-only{display:none}
 .foot{color:var(--mut);font-size:12px;margin-top:30px}
 """
 
@@ -327,6 +365,33 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
   function sync(){{ var k=(f.querySelector('input[name=kind]:checked')||{{}}).value||'shell', sh=(k==='shell');
     cmd.hidden=!sh; name.required=!sh; opt.hidden=!sh; name.placeholder = sh ? 'auto (shell, shell-2, …)' : 'e.g. fit-app'; }}
   f.addEventListener('change', sync); sync();
+
+  // Desktop: "Open" pops the session out in its own window and this page
+  // stays put. Phones: same tab (a pile of browser tabs is worse there).
+  var touch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+  if (touch) document.body.classList.add('touch');
+  function popout(href, name) {{
+    var w = window.open(href, 'tmux-web-' + name, 'popup=yes,width=1000,height=650');
+    if (w) {{ w.focus(); return true; }} return false;   // blocked => caller falls back to navigating
+  }}
+  document.addEventListener('click', function (e) {{
+    var a = e.target.closest('a.open, a[data-open=popout]'); var menu = e.target.closest('details.menu');
+    if (a) {{
+      var name = a.dataset.name || a.closest('.sess').querySelector('a.open').dataset.name;
+      var wantPop = a.dataset.open === 'popout' || (!touch && !a.dataset.open);
+      if (wantPop && popout('/s/' + encodeURIComponent(name) + '?popout=1', name)) e.preventDefault();
+      if (menu) menu.removeAttribute('open');
+      return;
+    }}
+    var c = e.target.closest('[data-copy]');
+    if (c) {{
+      var t = c.dataset.copy, done = function () {{ c.textContent = 'Copied'; setTimeout(function () {{ c.textContent = 'Copy SSH command'; }}, 1200); }};
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, function () {{ prompt('Copy this:', t); }});
+      else prompt('Copy this:', t);
+      return;
+    }}
+    if (!menu) document.querySelectorAll('details.menu[open]').forEach(function (d) {{ d.removeAttribute('open'); }});
+  }});
 }})();
 </script>
 </main></body></html>
@@ -350,11 +415,22 @@ SESSION_CARD = """<div class="card sess">
     <div class="name"><span class="dot{on}"></span>{name}</div>
     <div class="meta">{cmd} &middot; {path} &middot; {windows} &middot; {ago}{attached}</div>
   </div>
-  <form method="post" action="/kill" onsubmit="return confirm('Kill session “{name}”? Anything running in it is lost.')">
-    <input type="hidden" name="name" value="{name}"><button class="btn ghost" type="submit" title="Kill session">&#x2715;</button>
-  </form>
-  <a class="btn" href="{href}">Open</a>
+  <details class="menu">
+    <summary class="btn ghost" title="More">&#8943;</summary>
+    <div class="menu-list">
+      <a href="{href}" data-open="here">Open here</a>
+      <a href="{href}?popout=1" data-open="popout" class="desktop-only">Pop out</a>
+      {ssh_items}
+      <form method="post" action="/kill" onsubmit="return confirm('Kill session “{name}”? Anything running in it is lost.')">
+        <input type="hidden" name="name" value="{name}"><button type="submit" class="danger">Kill session</button>
+      </form>
+    </div>
+  </details>
+  <a class="btn open" href="{href}" data-name="{name}">Open</a>
 </div>"""
+
+SSH_ITEMS = """<button type="button" data-copy="{cmd}">Copy SSH command</button>
+      <a href="{url}" data-open="ssh">Open in SSH app</a>"""
 
 TERM_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>{name} &middot; {title}</title>
@@ -442,7 +518,7 @@ body.popout #bar,body.popout #pop{{display:none}}
 body.popout #handle{{display:block}}
 body.popout.showbar #bar{{display:flex}}
 body.popout.showbar #pop.open{{display:flex}}
-body.popout #popout{{display:none}}
+body.popout #popout,body.touch #popout{{display:none}}
 </style></head><body{body_class}>
 <button id="handle" title="Show menu">&#8943;</button>
 <div id="bar">
@@ -729,10 +805,17 @@ APP_JS = r"""
       .catch(function () { err.textContent = 'request failed'; err.classList.add('on'); });
   };
   document.getElementById('popout').onclick = function () {
-    // "popup" asks for a window without tabs/address bar (desktop browsers
-    // honour it; phones open a tab). Named so a second click refocuses it.
-    var w = window.open('/s/' + encodeURIComponent(cur) + '?popout=1', TITLE + '-' + cur, 'popup=yes,width=960,height=620');
-    if (w) w.focus();
+    // "popup" asks for a window without tabs/address bar. Named per session
+    // so a second pop-out refocuses instead of attaching twice; this tab then
+    // goes back to the list so it isn't attached too.
+    var w = window.open('/s/' + encodeURIComponent(cur) + '?popout=1', 'tmux-web-' + cur, 'popup=yes,width=1000,height=650');
+    if (w) { w.focus(); location.href = '/'; }
+  };
+  if (touch) body.classList.add('touch');
+  document.querySelector('#bar a.ib').onclick = function (e) {
+    if (!POP) return;                 // normal tab: just go to the list
+    e.preventDefault(); window.close();
+    setTimeout(function () { location.href = '/'; }, 150);   // couldn't close (not script-opened): navigate
   };
   document.getElementById('handle').onclick = function () {
     body.classList.toggle('showbar');
@@ -780,6 +863,7 @@ def render(error=None, name="", dir_custom="", cmd="", sc_label="", sc_cmd="", a
             ago=ago(s["created"]),
             attached=" &middot; attached" if s["attached"] else "",
             href=esc(term_href(s["name"])),
+            ssh_items=SSH_ITEMS.format(cmd=esc(ssh_cmd(s["name"])), url=esc("ssh://" + SSH_TARGET)) if SSH_TARGET else "",
         ) for s in sess)
     else:
         cards = '<div class="empty">No sessions running. Start one below.</div>'
