@@ -30,6 +30,7 @@ Origin), so a random web page can't drive it from a logged-in browser.
 import html
 import json
 import os
+import re
 import shlex
 import socket
 import subprocess
@@ -53,7 +54,9 @@ def _dirs():
         d = os.path.expanduser(d.strip())
         if d and os.path.isdir(d) and d not in out:
             out.append(d)
-    return out or [HOME]
+    if HOME not in out:
+        out.insert(0, HOME)
+    return out
 
 
 def _tools():
@@ -71,7 +74,10 @@ def _tools():
 
 
 DIR_ROOTS = _dirs()
-TOOLS = _tools()               # kind -> (command, label); kind is also the form value
+TOOLS = _tools()
+CONFIG_DIR = os.environ.get("TMUX_WEB_CONFIG") or os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or f"{HOME}/.config", "tmux-web")
+SHORTCUTS_FILE = os.path.join(CONFIG_DIR, "shortcuts.json")               # kind -> (command, label); kind is also the form value
 PATH_ENV = os.environ.get("PATH") or f"{HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 
@@ -104,14 +110,34 @@ def sessions():
     return out
 
 
+def screen_text(name, lines=300):
+    """Plain text of the session's active pane, last <lines> lines, wrapped
+    lines joined. Used by the phone 'Copy' view where native selection works."""
+    r = tmux("capture-pane", "-p", "-J", "-t", f"={name}:", "-S", f"-{int(lines)}")  # "=name:" = exact session, its current pane
+    return r.stdout if r.returncode == 0 else ""
+
+
 def session_exists(name):
     return tmux("has-session", "-t", f"={name}").returncode == 0
 
 
-def validate_name(name):
+def auto_name(base="shell"):
+    """First free name: base, base-2, base-3 ..."""
+    base = re.sub(r"[^A-Za-z0-9_-]+", "-", base).strip("-") or "shell"
+    if not session_exists(base):
+        return base
+    n = 2
+    while session_exists(f"{base}-{n}"):
+        n += 1
+    return f"{base}-{n}"
+
+
+def validate_name(name, required=True, base="shell"):
     name = name.strip()
     if not name:
-        return None, "Give the session a name."
+        if required:
+            return None, "Give the session a name."
+        return auto_name(base), None
     if any(c in name for c in ":.\t\n") or len(name) > 60:
         return None, "Session names can't contain ':' or '.' (tmux rule) or be longer than 60 chars."
     if session_exists(name):
@@ -130,7 +156,9 @@ def resolve_dir(dir_choice, dir_custom):
     return d, None
 
 
-def create_session(kind, name, cwd):
+def create_session(kind, name, cwd, command=None):
+    """kind: 'shell' or a tool key from TOOLS. command: for shells, a command
+    line to run first (the user typed it; it IS meant to be executed)."""
     cmd, label = TOOLS[kind]
     args = ["new-session", "-d", "-s", name, "-c", cwd, "-e", f"PATH={PATH_ENV}"]
     if cmd:
@@ -140,10 +168,41 @@ def create_session(kind, name, cwd):
         q = shlex.quote(cmd)
         args += ["-n", cmd,
                  f'{q}; rc=$?; echo; echo "[{cmd} exited with status $rc]"; exec bash -l']
+    elif command and command.strip():
+        # Passed via the environment, not interpolated: no quoting games.
+        args += ["-e", "TMUX_WEB_CMD=" + command.strip(),
+                 'printf "\\$ %s\\n" "$TMUX_WEB_CMD"; bash -lc "$TMUX_WEB_CMD"; rc=$?; echo; echo "[exited with status $rc]"; exec bash -l']
     r = tmux(*args)
     if r.returncode != 0:
         return (r.stderr or r.stdout).strip() or "tmux new-session failed"
     return None
+
+
+# ---------- shortcuts: user-defined one-click commands, stored as JSON
+
+def load_shortcuts():
+    try:
+        with open(SHORTCUTS_FILE) as f:
+            data = json.load(f)
+        return [x for x in data if isinstance(x, dict) and x.get("id") and x.get("cmd")]
+    except (OSError, ValueError):
+        return []
+
+
+def save_shortcuts(items):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    tmp = SHORTCUTS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(items, f, indent=2)
+    os.replace(tmp, SHORTCUTS_FILE)
+
+
+def add_shortcut(label, cmd, cwd):
+    label = label.strip() or cmd.strip().split()[0]
+    items = load_shortcuts()
+    sid = f"{int(time.time())}-{len(items)}"
+    items.append({"id": sid, "label": label[:60], "cmd": cmd.strip(), "dir": cwd})
+    save_shortcuts(items)
 
 
 def dir_choices():
@@ -209,6 +268,14 @@ input:focus,select:focus{outline:2px solid var(--acc);border-color:transparent}
 .kinds label:has(input:checked){border-color:var(--acc);background:#14203a}
 .err{background:#3a1a16;border:1px solid var(--warn);color:#ffb4a8;padding:10px 14px;border-radius:9px;margin-bottom:14px}
 .empty{color:var(--mut);padding:8px 2px}
+.opt{color:var(--mut);font-weight:normal}
+textarea{width:100%;padding:11px 12px;border-radius:9px;border:1px solid var(--line);background:#0c0e12;color:var(--fg);font:inherit;resize:vertical}
+textarea:focus{outline:2px solid var(--acc);border-color:transparent}
+.meta code{font:12px ui-monospace,Menlo,Consolas,monospace;color:#c9d1d9}
+details.card summary{cursor:pointer;color:var(--mut);font-size:14px;list-style:none}
+details.card summary::before{content:"+ ";color:var(--acc)}
+details.card[open] summary{margin-bottom:12px;color:var(--fg)}
+[hidden]{display:none!important}
 .foot{color:var(--mut);font-size:12px;margin-top:30px}
 """
 
@@ -222,24 +289,61 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <link rel="apple-touch-icon" href="/icon-180.png">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <style>{css}</style></head><body><main>
-<h1>{title} <small>tmux sessions</small></h1>
+<h1>{title} <small>agent sessions</small></h1>
 {error}
 <h2>Sessions</h2>
 {sessions}
+<h2>Shortcuts</h2>
+{shortcuts}
+<details class="card" id="addsc"{addsc_open}><summary>Add a shortcut</summary>
+<form class="row" method="post" action="/shortcuts/add">
+  <div><label for="sc_label">Name</label>
+  <input id="sc_label" name="label" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. Deploy" value="{sc_label}"></div>
+  <div><label for="sc_cmd">Command to run</label>
+  <textarea id="sc_cmd" name="cmd" rows="2" required autocapitalize="off" spellcheck="false" placeholder="e.g. ./deploy.sh && docker compose logs -f">{sc_cmd}</textarea></div>
+  <div><label for="sc_dir">Directory</label>
+  <select id="sc_dir" name="dir">{dirs}</select></div>
+  <div><label for="sc_dir_custom">…or type a path</label>
+  <input id="sc_dir_custom" name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="~/somewhere/else"></div>
+  <button class="btn wide" type="submit">Save shortcut</button>
+</form></details>
 <h2>New session</h2>
-<div class="card"><form class="row" method="post" action="/new">
+<div class="card"><form class="row" method="post" action="/new" id="newform">
   <div class="kinds">{kinds}</div>
-  <div><label for="name">Name</label>
-  <input id="name" name="name" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. fit-app" value="{name}"></div>
-  <div><label for="dir">Directory</label>
+  <div><label for="name">Name <span class="opt" id="name-opt">(optional)</span></label>
+  <input id="name" name="name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. fit-app" value="{name}"></div>
+  <div id="cmd-row"><label for="cmd">Command to run when it starts <span class="opt">(optional)</span></label>
+  <textarea id="cmd" name="cmd" rows="2" autocapitalize="off" spellcheck="false" placeholder="paste a command, or leave blank for a plain shell">{cmd}</textarea></div>
+  <div><label for="dir">Directory <span class="opt">(optional, defaults to your home)</span></label>
   <select id="dir" name="dir">{dirs}</select></div>
   <div><label for="dir_custom">…or type a path</label>
   <input id="dir_custom" name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="~/somewhere/else" value="{dir_custom}"></div>
   <button class="btn wide" type="submit">Start &amp; open</button>
 </form></div>
 <p class="foot">Opening a session puts you in a terminal attached to that tmux session. Use the browser's back button to return here (the session keeps running).</p>
+<script>
+(function(){{
+  var f=document.getElementById('newform'), name=document.getElementById('name'), cmd=document.getElementById('cmd-row'), opt=document.getElementById('name-opt');
+  function sync(){{ var k=(f.querySelector('input[name=kind]:checked')||{{}}).value||'shell', sh=(k==='shell');
+    cmd.hidden=!sh; name.required=!sh; opt.hidden=!sh; name.placeholder = sh ? 'auto (shell, shell-2, …)' : 'e.g. fit-app'; }}
+  f.addEventListener('change', sync); sync();
+}})();
+</script>
 </main></body></html>
 """
+
+SHORTCUT_CARD = """<div class="card sess">
+  <div class="info">
+    <div class="name">{label}</div>
+    <div class="meta"><code>{cmd}</code> &middot; {dir}</div>
+  </div>
+  <form method="post" action="/shortcuts/del" onsubmit="return confirm('Remove shortcut “{label}”?')">
+    <input type="hidden" name="id" value="{id}"><button class="btn ghost" type="submit" title="Remove shortcut">&#x2715;</button>
+  </form>
+  <form method="post" action="/shortcuts/run">
+    <input type="hidden" name="id" value="{id}"><button class="btn" type="submit">Run</button>
+  </form>
+</div>"""
 
 SESSION_CARD = """<div class="card sess">
   <div class="info">
@@ -292,6 +396,27 @@ body.keys #keys{{display:flex}}
   color:var(--fg);font:inherit;font-size:13px;cursor:pointer;touch-action:manipulation;user-select:none;
   -webkit-user-select:none;-webkit-tap-highlight-color:transparent}}
 .k:active,.k.armed{{background:#14203a;border-color:var(--acc);color:var(--acc)}}
+.k.act{{color:var(--acc);border-color:#2a3a5a}}
+/* chat-style compose bar: real textarea => autocorrect, dictation, native paste */
+#compose{{flex:none;display:none;gap:6px;align-items:flex-end;background:var(--bar);border-top:1px solid var(--line);
+  padding:6px 6px calc(6px + env(safe-area-inset-bottom))}}
+body.keys #compose{{display:flex}}
+body.keys #keys{{padding-bottom:4px}}
+#msg{{flex:1 1 auto;min-height:38px;max-height:120px;resize:none;padding:9px 11px;border-radius:10px;border:1px solid var(--line);
+  background:#0c0e12;color:var(--fg);font:inherit;font-size:16px;line-height:1.25}}
+#msg:focus{{outline:2px solid var(--acc);border-color:transparent}}
+.send{{flex:none;width:44px;height:38px;border:0;border-radius:10px;background:var(--acc);color:#fff;font-size:18px;cursor:pointer}}
+/* screen-text view */
+#screen{{position:absolute;inset:0;z-index:30;background:var(--bg);display:flex;flex-direction:column}}
+#screen[hidden]{{display:none}}
+.sbar{{flex:none;height:40px;display:flex;align-items:stretch;gap:2px;background:var(--bar);border-bottom:1px solid var(--line);
+  padding-top:env(safe-area-inset-top)}}
+.sbar span{{flex:1 1 auto;display:flex;align-items:center;padding:0 12px;color:var(--mut);font-size:13px}}
+#screen-text .ln{{padding:1px 4px;border-radius:4px;cursor:pointer;min-height:1.35em}}
+#screen-text .ln:active{{background:#14203a}}
+#screen-text .ln.copied{{background:#123a1e;color:#3fb950}}
+#screen-text{{flex:1 1 auto;margin:0;padding:10px 12px;overflow:auto;font:13px/1.35 ui-monospace,Menlo,Consolas,monospace;
+  white-space:pre-wrap;word-break:break-all;user-select:text;-webkit-user-select:text;color:var(--fg)}}
 #pop{{position:absolute;top:44px;right:8px;z-index:9;width:min(360px,calc(100vw - 16px));
   background:var(--bar);border:1px solid var(--line);border-radius:12px;padding:14px;
   box-shadow:0 12px 40px rgba(0,0,0,.5);display:none;flex-direction:column;gap:10px}}
@@ -330,7 +455,7 @@ body.popout #popout{{display:none}}
 </div>
 <form id="pop" autocomplete="off">
   <div class="kinds">{kinds}</div>
-  <div><label>Name</label><input name="name" required autocapitalize="off" spellcheck="false" placeholder="e.g. fit-app"></div>
+  <div><label>Name</label><input name="name" autocapitalize="off" spellcheck="false" placeholder="e.g. fit-app"></div>
   <div><label>Directory</label><select name="dir">{dirs}</select></div>
   <div><label>…or type a path</label><input name="dir_custom" autocapitalize="off" spellcheck="false" placeholder="~/somewhere/else"></div>
   <div class="err" id="err"></div>
@@ -349,6 +474,19 @@ body.popout #popout{{display:none}}
   <button class="k" data-k="c" data-ctrl="1">^C</button>
   <button class="k" data-k="PageUp">PgUp</button>
   <button class="k" data-k="PageDown">PgDn</button>
+  <button class="k act" id="paste" title="Paste clipboard into the terminal">Paste</button>
+  <button class="k act" id="copy" title="Show the screen as selectable text">Copy</button>
+</div>
+<form id="compose" autocomplete="off">
+  <textarea id="msg" rows="1" placeholder="Message the agent… (Send = paste + Enter)" enterkeyhint="send" autocapitalize="sentences"></textarea>
+  <button type="submit" class="send" title="Send">&#10148;</button>
+</form>
+<div id="screen" hidden>
+  <div class="sbar"><span>Screen text &middot; tap a line to copy it, or select</span>
+    <button class="ib" id="screen-copy">Copy all</button>
+    <button class="ib" id="screen-refresh">&#8635;</button>
+    <button class="ib" id="screen-close">&#x2715;</button></div>
+  <pre id="screen-text"></pre>
 </div>
 <script>window.SJ = {{term: {term_path_json}, name: {name_json}, title: {title_json}}};</script>
 <script src="/app.js"></script>
@@ -424,7 +562,31 @@ APP_JS = r"""
       }
     }, true);
   }
-  frame.addEventListener('load', function () { hook(); focusTerm(); });
+  // Feed text to the terminal exactly as a paste (xterm applies bracketed
+  // paste when the app asked for it, so multi-line text is safe).
+  function sendText(text) {
+    var ta = textarea(), w = frame.contentWindow; if (!ta || !text) return false;
+    try {
+      var dt = new w.DataTransfer(); dt.setData('text/plain', text);
+      var ev = new w.ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+      if (!ev.clipboardData) throw new Error('no clipboardData');
+      ta.dispatchEvent(ev); return true;
+    } catch (e) {
+      // Older WebKit: InputEvent path (no bracketed paste, but text arrives)
+      try { ta.dispatchEvent(new w.InputEvent('input', { data: text, inputType: 'insertText', bubbles: true })); return true; }
+      catch (e2) { return false; }
+    }
+  }
+  // Touch devices: stretch xterm's invisible textarea over the whole terminal
+  // so touch-and-hold brings up the native Paste callout, and taps focus it.
+  function touchCss() {
+    var d = tdoc(); if (!d || !touch || d.getElementById('sj-touch')) return;
+    var st = d.createElement('style'); st.id = 'sj-touch';
+    // fixed + viewport units: the textarea's parent (.xterm-helpers) has no size, so % would collapse to 0
+    st.textContent = '.xterm-helper-textarea{position:fixed!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;opacity:0!important;z-index:20!important;-webkit-user-select:text!important;user-select:text!important;caret-color:transparent}';
+    (d.head || d.documentElement).appendChild(st);
+  }
+  frame.addEventListener('load', function () { hook(); touchCss(); focusTerm(); });
 
   // ---- soft key row
   var ctrlBtn = document.getElementById('ctrl');
@@ -434,7 +596,7 @@ APP_JS = r"""
   var saved = null; try { saved = localStorage.getItem('sj-keys'); } catch (_) {}
   setKeys(saved === null ? touch : saved === '1');
   document.getElementById('keysbtn').onclick = function () { setKeys(!body.classList.contains('keys')); focusTerm(); };
-  Array.prototype.forEach.call(document.querySelectorAll('#keys .k'), function (b) {
+  Array.prototype.forEach.call(document.querySelectorAll('#keys .k[data-k], #ctrl'), function (b) {
     b.addEventListener('pointerdown', function (e) {
       e.preventDefault();                       // keep focus (and the soft keyboard) on the terminal
       if (b.id === 'ctrl') { ctrlArmed = !ctrlArmed; ctrlBtn.classList.toggle('armed', ctrlArmed); return; }
@@ -443,6 +605,60 @@ APP_JS = r"""
       sendKey(b.dataset.k, mods);
     });
   });
+
+  // ---- Paste / Copy buttons and the compose bar
+  var msg = document.getElementById('msg'), compose = document.getElementById('compose');
+  function flash(btn, text) { var old = btn.textContent; btn.textContent = text; setTimeout(function () { btn.textContent = old; }, 1200); }
+  document.getElementById('paste').addEventListener('pointerdown', function (e) { e.preventDefault(); });
+  document.getElementById('paste').addEventListener('click', function () {
+    var btn = this;
+    if (!navigator.clipboard || !navigator.clipboard.readText) { msg.focus(); flash(btn, 'use box ↓'); return; }
+    navigator.clipboard.readText().then(function (t) {
+      if (!t) { flash(btn, 'empty'); return; }
+      sendText(t); focusTerm();
+    }).catch(function () { msg.focus(); flash(btn, 'use box ↓'); });   // denied: paste into the compose box instead
+  });
+  var screen = document.getElementById('screen'), screenText = document.getElementById('screen-text');
+  function loadScreen() {
+    return fetch('/api/screen?name=' + encodeURIComponent(cur) + '&lines=400', { cache: 'no-store' })
+      .then(function (r) { return r.text(); })
+      .then(function (t) {
+        screenText.innerHTML = '';
+        t.split('\n').forEach(function (line) {
+          var d = document.createElement('div'); d.className = 'ln'; d.textContent = line || ' ';
+          d.title = 'tap to copy this line';
+          d.onclick = function () {
+            var txt = line.trim(); if (!txt) return;
+            var done = function () { d.classList.add('copied'); setTimeout(function () { d.classList.remove('copied'); }, 900); };
+            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done, function () {});
+            else { var r = document.createRange(); r.selectNodeContents(d); var sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); try { document.execCommand('copy'); done(); } catch (e) {} }
+          };
+          screenText.appendChild(d);
+        });
+        screenText.scrollTop = screenText.scrollHeight;
+      });
+  }
+  document.getElementById('copy').addEventListener('pointerdown', function (e) { e.preventDefault(); });
+  document.getElementById('copy').addEventListener('click', function () { screen.hidden = false; loadScreen(); });
+  document.getElementById('screen-refresh').onclick = loadScreen;
+  document.getElementById('screen-close').onclick = function () { screen.hidden = true; focusTerm(); };
+  document.getElementById('screen-copy').onclick = function () {
+    var btn = this;
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(screenText.textContent).then(function () { flash(btn, 'Copied'); }, function () { flash(btn, 'select text'); });
+    else flash(btn, 'select text');
+  };
+  compose.onsubmit = function (e) {
+    e.preventDefault();
+    var t = msg.value;
+    if (t) sendText(t);
+    setTimeout(function () { sendKey('Enter'); }, t ? 60 : 0);   // let the paste land first
+    msg.value = ''; msg.style.height = '';
+    msg.focus();                                                 // keep chatting
+  };
+  msg.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); compose.requestSubmit ? compose.requestSubmit() : compose.onsubmit(e); }
+  });
+  msg.addEventListener('input', function () { msg.style.height = ''; msg.style.height = Math.min(msg.scrollHeight, 120) + 'px'; });
 
   // ---- iOS: the soft keyboard doesn't shrink the layout viewport, so track
   // the visual viewport and size the page to it (keeps the key row visible).
@@ -484,6 +700,12 @@ APP_JS = r"""
   function refresh() {
     return fetch('/api/sessions', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(render).catch(function () {});
   }
+  function syncKind() {
+    var k = (pop.querySelector('input[name=kind]:checked') || {}).value || 'shell';
+    pop.elements.name.required = (k !== 'shell');
+    pop.elements.name.placeholder = (k === 'shell') ? 'auto (shell, shell-2, …)' : 'e.g. fit-app';
+  }
+  pop.addEventListener('change', syncKind); syncKind();
   document.getElementById('add').onclick = function () {
     pop.classList.toggle('open'); err.classList.remove('on');
     if (pop.classList.contains('open')) pop.elements.name.focus();
@@ -519,7 +741,7 @@ APP_JS = r"""
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') pop.classList.remove('open'); });
   document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
   setInterval(refresh, 15000);
-  refresh(); hook(); focusTerm();
+  refresh(); hook(); touchCss(); focusTerm();
 })();
 """
 
@@ -548,7 +770,7 @@ def dir_options():
         for d in dir_choices())
 
 
-def render(error=None, name="", dir_custom=""):
+def render(error=None, name="", dir_custom="", cmd="", sc_label="", sc_cmd="", addsc_open=False):
     sess = sessions()
     if sess:
         cards = "\n".join(SESSION_CARD.format(
@@ -560,11 +782,19 @@ def render(error=None, name="", dir_custom=""):
             href=esc(term_href(s["name"])),
         ) for s in sess)
     else:
-        cards = '<div class="empty">No tmux sessions running. Start one below.</div>'
-    dirs = dir_options()
+        cards = '<div class="empty">No sessions running. Start one below.</div>'
+    scs = load_shortcuts()
+    if scs:
+        shortcuts = "\n".join(SHORTCUT_CARD.format(
+            id=esc(x["id"]), label=esc(x.get("label") or x["cmd"]), cmd=esc(x["cmd"]),
+            dir=esc((x.get("dir") or HOME).replace(HOME, "~", 1))) for x in scs)
+    else:
+        shortcuts = '<div class="empty">None yet. A shortcut starts a new session and runs a command in one tap.</div>'
     err = f'<div class="err">{esc(error)}</div>' if error else ""
-    return PAGE.format(css=CSS, error=err, sessions=cards, dirs=dirs, kinds=kind_options(),
-                       title=esc(TITLE), name=esc(name), dir_custom=esc(dir_custom))
+    return PAGE.format(css=CSS, error=err, sessions=cards, shortcuts=shortcuts, dirs=dir_options(),
+                       kinds=kind_options(), title=esc(TITLE), name=esc(name), dir_custom=esc(dir_custom),
+                       cmd=esc(cmd), sc_label=esc(sc_label), sc_cmd=esc(sc_cmd),
+                       addsc_open=" open" if addsc_open else "")
 
 
 def render_term(name, popout=False):
@@ -686,6 +916,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(ICON_PNG, "image/png")
         if path == "/api/sessions":
             return self.send_json(sessions())
+        if path == "/api/screen":
+            q = parse_qs(urlparse(self.path).query)
+            name = (q.get("name") or [""])[0]
+            if not session_exists(name):
+                return self.send_bytes(b"", "text/plain; charset=utf-8", 404, cache=False)
+            text = screen_text(name, min(int((q.get("lines") or ["300"])[0]), 5000))
+            return self.send_bytes(text.rstrip("\n").encode(), "text/plain; charset=utf-8", cache=False)
         if path == "/healthz":
             return self.send_html("ok")
         self.send_html("<h1>404</h1>", 404)
@@ -712,13 +949,13 @@ class Handler(BaseHTTPRequestHandler):
         kind = f.get("kind", "shell")
         if kind not in TOOLS:
             return None, "Unknown session type."
-        name, err = validate_name(f.get("name", ""))
+        name, err = validate_name(f.get("name", ""), required=(kind != "shell"), base="shell")
         if err:
             return None, err
         cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
         if err:
             return name, err
-        err = create_session(kind, name, cwd)
+        err = create_session(kind, name, cwd, command=f.get("cmd") if kind == "shell" else None)
         return name, err
 
     def do_POST(self):
@@ -732,7 +969,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/new":                       # landing-page form
             name, err = self.new_from_form(f)
             if err:
-                return self.send_html(render(err, f.get("name", ""), f.get("dir_custom", "")), 400)
+                return self.send_html(render(err, f.get("name", ""), f.get("dir_custom", ""), f.get("cmd", "")), 400)
             return self.redirect(term_href(name))
 
         if path == "/api/new":                   # menu bar
@@ -748,6 +985,35 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/kill":
                 return self.send_json({"ok": True})
             return self.redirect("/")
+
+        if path == "/shortcuts/add":
+            cmd = f.get("cmd", "").strip()
+            if not cmd:
+                return self.send_html(render("A shortcut needs a command.", sc_label=f.get("label", ""), addsc_open=True), 400)
+            cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
+            if err:
+                return self.send_html(render(err, sc_label=f.get("label", ""), sc_cmd=cmd, addsc_open=True), 400)
+            add_shortcut(f.get("label", ""), cmd, cwd)
+            return self.redirect("/")
+
+        if path == "/shortcuts/del":
+            sid = f.get("id", "")
+            save_shortcuts([x for x in load_shortcuts() if x["id"] != sid])
+            return self.redirect("/")
+
+        if path == "/shortcuts/run":
+            sid = f.get("id", "")
+            sc = next((x for x in load_shortcuts() if x["id"] == sid), None)
+            if not sc:
+                return self.send_html(render("That shortcut no longer exists."), 404)
+            cwd = sc.get("dir") or HOME
+            if not os.path.isdir(cwd):
+                return self.send_html(render(f"Shortcut directory is gone: {cwd}"), 400)
+            name = auto_name(sc.get("label") or "shortcut")
+            err = create_session("shell", name, cwd, command=sc["cmd"])
+            if err:
+                return self.send_html(render(err), 500)
+            return self.redirect(term_href(name))
 
         self.send_html("<h1>404</h1>", 404)
 

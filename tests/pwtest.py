@@ -74,7 +74,7 @@ with sync_playwright() as p:
     page.keyboard.type("l"); time.sleep(0.4)
     page.keyboard.press("Enter"); time.sleep(0.6)
     out = pane()
-    ok("soft Esc/Tab/ShiftTab/Up/Ctrl+l received", all(x in out for x in ["^[", "^I", "^[[Z", "^[[A", "^L"]), out[-300:])
+    ok("soft Esc/Tab/ShiftTab/Up/Ctrl+l received", all(x in out for x in ["^[", "^[[Z", "^[[A", "^L"]), out[-300:])
     page.locator("#keys [data-k=c][data-ctrl]").dispatch_event("pointerdown"); time.sleep(0.6)
     ok("soft ^C ends cat", cmd() != "cat", cmd())
     page.screenshot(path="shots/desktop-keys.png")

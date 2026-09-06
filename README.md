@@ -5,12 +5,20 @@ sessions as buttons, tap one, and you're in it. Start a shell, a Claude Code
 session, or a Codex session in a chosen directory from the same page. Built
 for reaching a home server over Tailscale from a laptop or an iPhone.
 
-- **Landing page**: sessions with Open/kill buttons, a form for new sessions.
+- **Landing page**: sessions with Open/kill buttons; **shortcuts** (your own
+  one-tap commands, added and removed in the page); a form for new sessions.
+  A shell needs no name or directory and can start with a pasted command;
+  a coding tool (Claude Code, Codex, ... configurable) takes a name and a
+  directory.
 - **In a session**: a slim bar with session tabs, `+` new, `✕` kill, `↗` pop-out
-  into a chrome-less window, and a soft-key row for phones (Esc, Tab, ⇧Tab,
-  Ctrl, arrows, ^C, PgUp/PgDn).
-- **Clipboard that behaves**: Ctrl+C copies when there's a selection and
-  interrupts otherwise; Ctrl+V pastes. Mac keeps native Cmd+C/V.
+  into a chrome-less window.
+- **Built for phones**: a soft-key row (Esc, Tab, ⇧Tab, Ctrl, arrows, ^C,
+  PgUp/PgDn, Paste, Copy) and a chat-style **compose bar**: type or dictate with
+  your normal keyboard, Send pastes it into the terminal and presses Enter.
+  Touch-and-hold on the terminal brings up the native Paste callout. **Copy**
+  shows the screen as plain text: tap a line to copy it, or select normally.
+- **Clipboard that behaves on desktop**: Ctrl+C copies when there's a
+  selection and interrupts otherwise; Ctrl+V pastes. Mac keeps native Cmd+C/V.
 - **Survives phones**: the WebSocket re-attaches after a screen lock; if the
   session you're in exits, you're moved to another one.
 - **Add to Home Screen** on iOS gives a full-screen app with no browser chrome.
@@ -79,7 +87,10 @@ bash uninstall.sh
 
 A coding-tool session runs the tool in front of a login shell, so if it isn't
 installed or isn't logged in you land on its error message and a prompt
-instead of a session that vanished.
+instead of a session that vanished. Shells with a start command, and
+shortcuts, work the same way: the command runs, then you get a prompt.
+
+Shortcuts are stored in `~/.config/tmux-web/shortcuts.json`.
 
 ## How it fits together
 

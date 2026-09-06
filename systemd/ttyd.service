@@ -10,7 +10,7 @@ EnvironmentFile=%h/.config/tmux-web/env
 # -a           : pass ?arg=<session> from the URL to tmux-attach.sh
 # -O           : refuse WebSockets from other origins (cross-site hijack guard)
 # reconnect stays ON: phones drop the socket on screen lock; ttyd re-attaches.
-ExecStart=/usr/bin/env ttyd -i 127.0.0.1 -p ${TTYD_PORT} -W -a -O -t titleFixed=${TMUX_WEB_TITLE} $TTYD_EXTRA_ARGS @REPO@/bin/tmux-attach.sh
+ExecStart=/usr/bin/env ttyd -i 127.0.0.1 -p ${TTYD_PORT} -W -a -O -t titleFixed=${TMUX_WEB_TITLE} -t disableLeaveAlert=true $TTYD_EXTRA_ARGS @REPO@/bin/tmux-attach.sh
 WorkingDirectory=%h
 Restart=on-failure
 RestartSec=3
