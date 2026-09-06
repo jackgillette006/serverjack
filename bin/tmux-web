@@ -1,0 +1,761 @@
+"""tmux-web: a phone-friendly web front end for your tmux sessions.
+
+    https://<host>/        -> this app (default 127.0.0.1:7680)
+    https://<host>/term/   -> ttyd      (default 127.0.0.1:7681)
+
+The landing page lists tmux sessions with an Open button each, and a form to
+start a plain shell or a coding tool (Claude Code, Codex, ... configurable)
+in a chosen directory. Opening a session goes to /s/<name>: a slim menu bar
+(session tabs, + new, x close, pop-out, soft keys for phones) over ttyd in a
+frame at /term/?arg=<name>; ttyd runs bin/tmux-attach.sh with that argument,
+which attaches. The terminal only ever appears once you are inside a session.
+
+Stdlib only, no dependencies. Runs as your user and talks to your normal tmux
+server, so it sees the same sessions as any other login.
+
+Configuration is by environment variables (see install.sh / README):
+    TMUX_WEB_PORT   listen port (127.0.0.1 only)          default 7680
+    TMUX_WEB_TITLE  page title                             default hostname
+    TMUX_WEB_DIRS   colon-separated dirs offered for new sessions
+    TMUX_WEB_TOOLS  "cmd=Label,cmd=Label" coding tools     default claude,codex
+    TMUX_WEB_TERM   URL path where ttyd is mounted         default /term/
+
+Security: NO authentication of its own. Anyone who can reach it gets a shell
+as the user it runs as. Only expose it through something that authenticates
+(tailscale serve, an SSO reverse proxy, a VPN). State-changing POSTs are
+refused when the browser says they came from another site (Sec-Fetch-Site /
+Origin), so a random web page can't drive it from a logged-in browser.
+"""
+
+import html
+import json
+import os
+import shlex
+import socket
+import subprocess
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, quote, unquote, urlparse
+
+HOME = os.path.expanduser("~")
+BIND = ("127.0.0.1", int(os.environ.get("TMUX_WEB_PORT", "7680")))
+TITLE = os.environ.get("TMUX_WEB_TITLE") or socket.gethostname().split(".")[0]
+TERM_PATH = os.environ.get("TMUX_WEB_TERM", "/term/")
+if not TERM_PATH.endswith("/"):
+    TERM_PATH += "/"          # ttyd builds its ws URL relative to the page path
+
+
+def _dirs():
+    raw = os.environ.get("TMUX_WEB_DIRS") or "~/projects:~/src:~/workspace:~"
+    out = []
+    for d in raw.split(":"):
+        d = os.path.expanduser(d.strip())
+        if d and os.path.isdir(d) and d not in out:
+            out.append(d)
+    return out or [HOME]
+
+
+def _tools():
+    raw = os.environ.get("TMUX_WEB_TOOLS", "claude=Claude Code,codex=Codex")
+    tools = {"shell": (None, "Shell")}
+    for item in raw.split(","):
+        if "=" in item:
+            cmd, label = item.split("=", 1)
+        else:
+            cmd, label = item, item
+        cmd = cmd.strip()
+        if cmd and cmd != "shell":
+            tools[cmd] = (cmd, label.strip() or cmd)
+    return tools
+
+
+DIR_ROOTS = _dirs()
+TOOLS = _tools()               # kind -> (command, label); kind is also the form value
+PATH_ENV = os.environ.get("PATH") or f"{HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+
+# ----------------------------------------------------------------- tmux ----
+
+def tmux(*args, check=False):
+    return subprocess.run(
+        ["tmux", *args], capture_output=True, text=True, check=check,
+        env={**os.environ, "PATH": PATH_ENV},
+    )
+
+
+def sessions():
+    fmt = "\t".join([
+        "#{session_name}", "#{session_windows}", "#{session_attached}",
+        "#{session_created}", "#{pane_current_command}", "#{pane_current_path}",
+    ])
+    r = tmux("list-sessions", "-F", fmt)
+    out = []
+    if r.returncode != 0:
+        return out                       # no server running: no sessions
+    for line in r.stdout.splitlines():
+        name, windows, attached, created, cmd, path = (line.split("\t") + [""] * 6)[:6]
+        out.append({
+            "name": name, "windows": int(windows or 0),
+            "attached": attached not in ("", "0"),
+            "created": int(created or 0), "cmd": cmd,
+            "path": path.replace(HOME, "~", 1),
+        })
+    return out
+
+
+def session_exists(name):
+    return tmux("has-session", "-t", f"={name}").returncode == 0
+
+
+def validate_name(name):
+    name = name.strip()
+    if not name:
+        return None, "Give the session a name."
+    if any(c in name for c in ":.\t\n") or len(name) > 60:
+        return None, "Session names can't contain ':' or '.' (tmux rule) or be longer than 60 chars."
+    if session_exists(name):
+        return None, f"A session called “{name}” already exists. Open it instead."
+    return name, None
+
+
+def resolve_dir(dir_choice, dir_custom):
+    d = (dir_custom or "").strip() or (dir_choice or "").strip() or HOME
+    d = os.path.expanduser(d)
+    if not os.path.isabs(d):
+        d = os.path.join(HOME, d)
+    d = os.path.realpath(d)
+    if not os.path.isdir(d):
+        return None, f"No such directory: {d}"
+    return d, None
+
+
+def create_session(kind, name, cwd):
+    cmd, label = TOOLS[kind]
+    args = ["new-session", "-d", "-s", name, "-c", cwd, "-e", f"PATH={PATH_ENV}"]
+    if cmd:
+        # Tool first, then a login shell in the same dir, so a missing or
+        # logged-out tool leaves its error on screen instead of the session
+        # vanishing before you can read it.
+        q = shlex.quote(cmd)
+        args += ["-n", cmd,
+                 f'{q}; rc=$?; echo; echo "[{cmd} exited with status $rc]"; exec bash -l']
+    r = tmux(*args)
+    if r.returncode != 0:
+        return (r.stderr or r.stdout).strip() or "tmux new-session failed"
+    return None
+
+
+def dir_choices():
+    seen = []
+    for root in DIR_ROOTS:
+        if os.path.isdir(root) and root not in seen:
+            seen.append(root)
+        try:
+            for e in sorted(os.scandir(root), key=lambda e: e.name.lower()):
+                if e.is_dir() and not e.name.startswith(".") and e.path not in seen:
+                    seen.append(e.path)
+        except OSError:
+            pass
+    return seen
+
+
+def ago(ts):
+    if not ts:
+        return ""
+    s = int(time.time()) - ts
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if s >= n:
+            return f"{s // n}{unit} ago"
+    return "just now"
+
+
+# ----------------------------------------------------------------- html ----
+
+CSS = """
+:root{--bg:#0f1115;--card:#171a21;--line:#262b36;--fg:#e6e6e6;--mut:#8b93a3;
+      --acc:#3d8bfd;--acc2:#2f6fd0;--warn:#e5533d;--ok:#3fb950}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+     font:16px/1.4 -apple-system,system-ui,Segoe UI,Roboto,sans-serif}
+main{max-width:720px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:22px;margin:8px 0 18px;display:flex;align-items:center;gap:10px}
+h1 small{color:var(--mut);font-weight:normal;font-size:14px}
+h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:28px 0 10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:10px}
+.sess{display:flex;align-items:center;gap:12px}
+.sess .info{flex:1;min-width:0}
+.sess .name{font-weight:600;font-size:17px;display:flex;align-items:center;gap:8px}
+.sess .meta{color:var(--mut);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mut);flex:none}
+.dot.on{background:var(--ok)}
+.btn{display:inline-block;border:0;border-radius:9px;padding:10px 16px;font:inherit;font-weight:600;
+     cursor:pointer;text-decoration:none;color:#fff;background:var(--acc);white-space:nowrap}
+.btn:hover{background:var(--acc2)}
+.btn.ghost{background:transparent;color:var(--mut);padding:10px 8px;font-weight:normal}
+.btn.ghost:hover{color:var(--warn)}
+.btn.wide{width:100%;padding:13px;font-size:16px}
+form.row{display:flex;flex-direction:column;gap:10px}
+label{font-size:13px;color:var(--mut)}
+input,select{width:100%;padding:11px 12px;border-radius:9px;border:1px solid var(--line);
+             background:#0c0e12;color:var(--fg);font:inherit;appearance:none;-webkit-appearance:none}
+select{background:#0c0e12 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%238b93a3' stroke-width='2'/%3E%3C/svg%3E") no-repeat right 12px center;padding-right:32px}
+input:focus,select:focus{outline:2px solid var(--acc);border-color:transparent}
+.kinds{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px}
+.kinds label{display:block;text-align:center;padding:10px 6px;border:1px solid var(--line);
+             border-radius:9px;color:var(--fg);cursor:pointer;font-size:15px}
+.kinds input{display:none}
+.kinds input:checked+span{color:var(--acc);font-weight:600}
+.kinds label:has(input:checked){border-color:var(--acc);background:#14203a}
+.err{background:#3a1a16;border:1px solid var(--warn);color:#ffb4a8;padding:10px 14px;border-radius:9px;margin-bottom:14px}
+.empty{color:var(--mut);padding:8px 2px}
+.foot{color:var(--mut);font-size:12px;margin-top:30px}
+"""
+
+PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>{title}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<style>{css}</style></head><body><main>
+<h1>{title} <small>tmux sessions</small></h1>
+{error}
+<h2>Sessions</h2>
+{sessions}
+<h2>New session</h2>
+<div class="card"><form class="row" method="post" action="/new">
+  <div class="kinds">{kinds}</div>
+  <div><label for="name">Name</label>
+  <input id="name" name="name" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. fit-app" value="{name}"></div>
+  <div><label for="dir">Directory</label>
+  <select id="dir" name="dir">{dirs}</select></div>
+  <div><label for="dir_custom">…or type a path</label>
+  <input id="dir_custom" name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="~/somewhere/else" value="{dir_custom}"></div>
+  <button class="btn wide" type="submit">Start &amp; open</button>
+</form></div>
+<p class="foot">Opening a session puts you in a terminal attached to that tmux session. Use the browser's back button to return here (the session keeps running).</p>
+</main></body></html>
+"""
+
+SESSION_CARD = """<div class="card sess">
+  <div class="info">
+    <div class="name"><span class="dot{on}"></span>{name}</div>
+    <div class="meta">{cmd} &middot; {path} &middot; {windows} &middot; {ago}{attached}</div>
+  </div>
+  <form method="post" action="/kill" onsubmit="return confirm('Kill session “{name}”? Anything running in it is lost.')">
+    <input type="hidden" name="name" value="{name}"><button class="btn ghost" type="submit" title="Kill session">&#x2715;</button>
+  </form>
+  <a class="btn" href="{href}">Open</a>
+</div>"""
+
+TERM_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>{name} &middot; {title}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<meta name="theme-color" content="#0f1115">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<style>
+:root{{--bg:#0f1115;--bar:#171a21;--line:#262b36;--fg:#e6e6e6;--mut:#8b93a3;--acc:#3d8bfd;--warn:#e5533d}}
+*{{box-sizing:border-box}}
+html,body{{margin:0;height:100%;background:#000;color:var(--fg);
+  font:14px/1.3 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;overflow:hidden;overscroll-behavior:none}}
+body{{display:flex;flex-direction:column;height:100vh;height:100dvh;position:relative}}
+#bar{{flex:none;height:40px;display:flex;align-items:stretch;background:var(--bar);
+  border-bottom:1px solid var(--line);padding-top:env(safe-area-inset-top)}}
+#bar>*{{flex:none}}
+.ib{{border:0;background:transparent;color:var(--mut);font:inherit;padding:0 12px;cursor:pointer;
+  text-decoration:none;display:flex;align-items:center;gap:6px;white-space:nowrap;-webkit-tap-highlight-color:transparent}}
+.ib:hover{{color:var(--fg);background:#1f2430}}
+.ib.x:hover{{color:var(--warn)}}
+.ib.on{{color:var(--acc)}}
+#tabs{{flex:1 1 auto;display:flex;overflow-x:auto;scrollbar-width:none;min-width:0}}
+#tabs::-webkit-scrollbar{{display:none}}
+.tab{{border:0;border-bottom:2px solid transparent;background:transparent;color:var(--mut);font:inherit;
+  padding:0 12px;cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent}}
+.tab.on{{color:var(--fg);border-bottom-color:var(--acc)}}
+.tab:hover{{color:var(--fg)}}
+#frame-wrap{{flex:1 1 auto;position:relative;min-height:0}}
+#frame{{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000}}
+/* touch key row (phones/tablets): Esc, Tab, arrows, Ctrl... that the soft keyboard lacks */
+#keys{{flex:none;display:none;background:var(--bar);border-top:1px solid var(--line);
+  padding:4px 4px calc(4px + env(safe-area-inset-bottom));gap:4px;overflow-x:auto;scrollbar-width:none}}
+#keys::-webkit-scrollbar{{display:none}}
+body.keys #keys{{display:flex}}
+.k{{flex:1 0 auto;min-width:40px;height:36px;border:1px solid var(--line);border-radius:7px;background:#0c0e12;
+  color:var(--fg);font:inherit;font-size:13px;cursor:pointer;touch-action:manipulation;user-select:none;
+  -webkit-user-select:none;-webkit-tap-highlight-color:transparent}}
+.k:active,.k.armed{{background:#14203a;border-color:var(--acc);color:var(--acc)}}
+#pop{{position:absolute;top:44px;right:8px;z-index:9;width:min(360px,calc(100vw - 16px));
+  background:var(--bar);border:1px solid var(--line);border-radius:12px;padding:14px;
+  box-shadow:0 12px 40px rgba(0,0,0,.5);display:none;flex-direction:column;gap:10px}}
+#pop.open{{display:flex}}
+label{{font-size:12px;color:var(--mut)}}
+input,select{{width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line);
+  background:#0c0e12;color:var(--fg);font:inherit;appearance:none;-webkit-appearance:none}}
+select{{background:#0c0e12 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%238b93a3' stroke-width='2'/%3E%3C/svg%3E") no-repeat right 12px center;padding-right:32px}}
+input:focus,select:focus{{outline:2px solid var(--acc);border-color:transparent}}
+.kinds{{display:grid;grid-template-columns:repeat(auto-fit,minmax(80px,1fr));gap:6px}}
+.kinds label{{display:block;text-align:center;padding:8px 4px;border:1px solid var(--line);border-radius:8px;
+  color:var(--fg);cursor:pointer;font-size:13px}}
+.kinds input{{display:none}}
+.kinds label:has(input:checked){{border-color:var(--acc);background:#14203a;color:var(--acc);font-weight:600}}
+.btn{{border:0;border-radius:8px;padding:10px;font:inherit;font-weight:600;color:#fff;background:var(--acc);cursor:pointer}}
+.err{{color:#ffb4a8;font-size:13px;display:none}}
+.err.on{{display:block}}
+/* pop-out mode: bar hidden behind a corner handle */
+#handle{{display:none;position:absolute;top:6px;right:6px;z-index:10;width:28px;height:22px;border:0;
+  border-radius:6px;background:rgba(23,26,33,.75);color:var(--mut);font:inherit;cursor:pointer}}
+#handle:hover{{color:var(--fg)}}
+body.popout #bar,body.popout #pop{{display:none}}
+body.popout #handle{{display:block}}
+body.popout.showbar #bar{{display:flex}}
+body.popout.showbar #pop.open{{display:flex}}
+body.popout #popout{{display:none}}
+</style></head><body{body_class}>
+<button id="handle" title="Show menu">&#8943;</button>
+<div id="bar">
+  <a class="ib" href="/" title="All sessions">&#9776;</a>
+  <div id="tabs"></div>
+  <button class="ib" id="add" title="New session">&#43;</button>
+  <button class="ib" id="keysbtn" title="Show/hide extra keys">&#9000;</button>
+  <button class="ib" id="popout" title="Pop out into a small window">&#x2197;</button>
+  <button class="ib x" id="kill" title="Kill this session">&#x2715;</button>
+</div>
+<form id="pop" autocomplete="off">
+  <div class="kinds">{kinds}</div>
+  <div><label>Name</label><input name="name" required autocapitalize="off" spellcheck="false" placeholder="e.g. fit-app"></div>
+  <div><label>Directory</label><select name="dir">{dirs}</select></div>
+  <div><label>…or type a path</label><input name="dir_custom" autocapitalize="off" spellcheck="false" placeholder="~/somewhere/else"></div>
+  <div class="err" id="err"></div>
+  <button class="btn" type="submit">Start &amp; open</button>
+</form>
+<div id="frame-wrap"><iframe id="frame" src="{src}" allow="clipboard-read; clipboard-write"></iframe></div>
+<div id="keys">
+  <button class="k" data-k="Escape">Esc</button>
+  <button class="k" data-k="Tab">Tab</button>
+  <button class="k" data-k="Tab" data-shift="1">&#8679;Tab</button>
+  <button class="k" id="ctrl">Ctrl</button>
+  <button class="k" data-k="ArrowUp">&#8593;</button>
+  <button class="k" data-k="ArrowDown">&#8595;</button>
+  <button class="k" data-k="ArrowLeft">&#8592;</button>
+  <button class="k" data-k="ArrowRight">&#8594;</button>
+  <button class="k" data-k="c" data-ctrl="1">^C</button>
+  <button class="k" data-k="PageUp">PgUp</button>
+  <button class="k" data-k="PageDown">PgDn</button>
+</div>
+<script>window.SJ = {{term: {term_path_json}, name: {name_json}, title: {title_json}}};</script>
+<script src="/app.js"></script>
+</body></html>
+"""
+
+APP_JS = r"""
+(function () {
+  'use strict';
+  var TERM = window.SJ.term, cur = window.SJ.name, TITLE = window.SJ.title;
+  var body = document.body, POP = body.classList.contains('popout');
+  var frame = document.getElementById('frame'), tabs = document.getElementById('tabs');
+  var pop = document.getElementById('pop'), err = document.getElementById('err');
+  var isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '') || /Mac OS X/.test(navigator.userAgent);
+  var touch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+
+  // ---- terminal helpers (same-origin frame, so we can reach into ttyd's page)
+  function tdoc() { try { return frame.contentDocument; } catch (e) { return null; } }
+  function textarea() { var d = tdoc(); return d && d.querySelector('.xterm-helper-textarea'); }
+  function focusTerm() {
+    var tries = 0;
+    (function f() { var ta = textarea(); if (ta) { ta.focus(); } else if (tries++ < 40) setTimeout(f, 100); })();
+  }
+  var KEYS = { Escape: 27, Tab: 9, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
+               PageUp: 33, PageDown: 34, Enter: 13, Backspace: 8, Delete: 46, Home: 36, End: 35 };
+  function sendKey(key, mods) {
+    var ta = textarea(); if (!ta) return;
+    mods = mods || {};
+    var code = KEYS[key] || key.toUpperCase().charCodeAt(0);
+    var init = { key: key, keyCode: code, which: code, bubbles: true, cancelable: true,
+                 ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift, altKey: !!mods.alt };
+    var ev = new frame.contentWindow.KeyboardEvent('keydown', init);
+    if (ev.keyCode !== code) {           // Safari ignores keyCode in the init dict
+      Object.defineProperty(ev, 'keyCode', { get: function () { return code; } });
+      Object.defineProperty(ev, 'which', { get: function () { return code; } });
+    }
+    ta.dispatchEvent(ev);
+  }
+
+  // ---- inside the frame: clipboard shortcuts + Ctrl-armed soft keys
+  var ctrlArmed = false, swallowInput = false;
+  function hook() {
+    var d = tdoc(); if (!d || d.__sj) return; d.__sj = true;
+    d.addEventListener('keydown', function (e) {
+      if (!e.isTrusted) return;
+      // Ctrl armed from the soft key row: next character goes as Ctrl+<char>
+      if (ctrlArmed && e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault(); e.stopPropagation(); swallowInput = true;
+        disarm(); sendKey(e.key.toLowerCase(), { ctrl: true }); return;
+      }
+      if (isMac || !e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+      // Windows/Linux: xterm.js only offers Ctrl+Shift+C/V. Make Ctrl+V paste
+      // (stop xterm seeing it, so the browser's native paste fires xterm's
+      // paste handler) and Ctrl+C copy when there is a selection, else SIGINT.
+      if (e.key === 'v' || e.key === 'V') { e.stopPropagation(); return; }
+      if (e.key === 'c' || e.key === 'C') {
+        var copied = false;
+        function seen(ev) { copied = ev.defaultPrevented; }   // xterm preventDefaults only when it copied a selection
+        d.addEventListener('copy', seen);
+        try { d.execCommand('copy'); } catch (_) {}
+        d.removeEventListener('copy', seen);
+        if (copied) { e.preventDefault(); e.stopPropagation(); }
+      }
+    }, true);
+    // WebKit also fires keypress for Ctrl+V; xterm would turn it into ^V.
+    d.addEventListener('keypress', function (e) {
+      if (!isMac && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && (e.key === 'v' || e.key === 'V')) e.stopPropagation();
+    }, true);
+    d.addEventListener('beforeinput', function (e) {
+      if (swallowInput) { e.preventDefault(); swallowInput = false; return; }
+      if (ctrlArmed && e.inputType === 'insertText' && e.data && e.data.length === 1) {
+        e.preventDefault(); disarm(); sendKey(e.data.toLowerCase(), { ctrl: true });
+      }
+    }, true);
+  }
+  frame.addEventListener('load', function () { hook(); focusTerm(); });
+
+  // ---- soft key row
+  var ctrlBtn = document.getElementById('ctrl');
+  function disarm() { ctrlArmed = false; ctrlBtn.classList.remove('armed'); }
+  function setKeys(on) { body.classList.toggle('keys', on); document.getElementById('keysbtn').classList.toggle('on', on);
+    try { localStorage.setItem('sj-keys', on ? '1' : '0'); } catch (_) {} }
+  var saved = null; try { saved = localStorage.getItem('sj-keys'); } catch (_) {}
+  setKeys(saved === null ? touch : saved === '1');
+  document.getElementById('keysbtn').onclick = function () { setKeys(!body.classList.contains('keys')); focusTerm(); };
+  Array.prototype.forEach.call(document.querySelectorAll('#keys .k'), function (b) {
+    b.addEventListener('pointerdown', function (e) {
+      e.preventDefault();                       // keep focus (and the soft keyboard) on the terminal
+      if (b.id === 'ctrl') { ctrlArmed = !ctrlArmed; ctrlBtn.classList.toggle('armed', ctrlArmed); return; }
+      var mods = { ctrl: !!b.dataset.ctrl || ctrlArmed, shift: !!b.dataset.shift };
+      if (ctrlArmed) disarm();
+      sendKey(b.dataset.k, mods);
+    });
+  });
+
+  // ---- iOS: the soft keyboard doesn't shrink the layout viewport, so track
+  // the visual viewport and size the page to it (keeps the key row visible).
+  if (window.visualViewport) {
+    var vv = window.visualViewport;
+    function fit() {
+      if (Math.abs(window.innerHeight - vv.height) < 2 && vv.offsetTop === 0) { body.style.height = ''; body.style.top = ''; return; }
+      body.style.height = vv.height + 'px'; body.style.top = vv.offsetTop + 'px';
+    }
+    vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit);
+  }
+
+  // ---- session tabs
+  function pageUrl(name) { return '/s/' + encodeURIComponent(name) + (POP ? '?popout=1' : ''); }
+  function setUrl(name) { history.replaceState(null, '', pageUrl(name)); document.title = name + ' · ' + TITLE; }
+  function switchTo(name) {
+    if (name === cur) { focusTerm(); return; }
+    cur = name;
+    frame.src = TERM + '?arg=' + encodeURIComponent(name);
+    setUrl(name); refresh();
+  }
+  function render(list) {
+    tabs.innerHTML = '';
+    var present = false;
+    list.forEach(function (s) {
+      if (s.name === cur) present = true;
+      var b = document.createElement('button');
+      b.className = 'tab' + (s.name === cur ? ' on' : '');
+      b.textContent = s.name;
+      b.title = s.cmd + ' · ' + s.path;
+      b.onclick = function () { switchTo(s.name); };
+      tabs.appendChild(b);
+    });
+    var on = tabs.querySelector('.on'); if (on) on.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+    // current session gone (exited / killed elsewhere): move on instead of
+    // sitting on a dead terminal
+    if (!present && cur !== null) { if (list.length) { cur = null; switchTo(list[0].name); } else location.href = '/'; }
+  }
+  function refresh() {
+    return fetch('/api/sessions', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(render).catch(function () {});
+  }
+  document.getElementById('add').onclick = function () {
+    pop.classList.toggle('open'); err.classList.remove('on');
+    if (pop.classList.contains('open')) pop.elements.name.focus();
+  };
+  document.getElementById('kill').onclick = function () {
+    if (!confirm('Kill session “' + cur + '”? Anything running in it is lost.')) return;
+    var dead = cur; cur = null;
+    fetch('/api/kill', { method: 'POST', body: new URLSearchParams({ name: dead }) })
+      .then(function () { return fetch('/api/sessions', { cache: 'no-store' }); })
+      .then(function (r) { return r.json(); })
+      .then(function (list) { if (!list.length) { location.href = '/'; return; } switchTo(list[0].name); });
+  };
+  pop.onsubmit = function (e) {
+    e.preventDefault(); err.classList.remove('on');
+    fetch('/api/new', { method: 'POST', body: new URLSearchParams(new FormData(pop)) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.error) { err.textContent = j.error; err.classList.add('on'); return; }
+        pop.classList.remove('open'); pop.reset(); switchTo(j.name);
+      })
+      .catch(function () { err.textContent = 'request failed'; err.classList.add('on'); });
+  };
+  document.getElementById('popout').onclick = function () {
+    // "popup" asks for a window without tabs/address bar (desktop browsers
+    // honour it; phones open a tab). Named so a second click refocuses it.
+    var w = window.open('/s/' + encodeURIComponent(cur) + '?popout=1', TITLE + '-' + cur, 'popup=yes,width=960,height=620');
+    if (w) w.focus();
+  };
+  document.getElementById('handle').onclick = function () {
+    body.classList.toggle('showbar');
+    if (!body.classList.contains('showbar')) { pop.classList.remove('open'); focusTerm(); }
+  };
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') pop.classList.remove('open'); });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
+  setInterval(refresh, 15000);
+  refresh(); hook(); focusTerm();
+})();
+"""
+
+
+def esc(s):
+    return html.escape(str(s), quote=True)
+
+
+def term_href(name):                 # the wrapper page with the menu bar
+    return f"/s/{quote(name, safe='')}"
+
+
+def ttyd_src(name):                  # what the wrapper's frame loads
+    return f"{TERM_PATH}?arg={quote(name, safe='')}"
+
+
+def kind_options():
+    return "\n".join(
+        f'<label><input type="radio" name="kind" value="{esc(k)}"{" checked" if i == 0 else ""}><span>{esc(label)}</span></label>'
+        for i, (k, (_, label)) in enumerate(TOOLS.items()))
+
+
+def dir_options():
+    return "\n".join(
+        f'<option value="{esc(d)}">{esc(d.replace(HOME, "~", 1))}</option>'
+        for d in dir_choices())
+
+
+def render(error=None, name="", dir_custom=""):
+    sess = sessions()
+    if sess:
+        cards = "\n".join(SESSION_CARD.format(
+            on=" on" if s["attached"] else "", name=esc(s["name"]), cmd=esc(s["cmd"]),
+            path=esc(s["path"]),
+            windows=f"{s['windows']} window{'s' if s['windows'] != 1 else ''}",
+            ago=ago(s["created"]),
+            attached=" &middot; attached" if s["attached"] else "",
+            href=esc(term_href(s["name"])),
+        ) for s in sess)
+    else:
+        cards = '<div class="empty">No tmux sessions running. Start one below.</div>'
+    dirs = dir_options()
+    err = f'<div class="err">{esc(error)}</div>' if error else ""
+    return PAGE.format(css=CSS, error=err, sessions=cards, dirs=dirs, kinds=kind_options(),
+                       title=esc(TITLE), name=esc(name), dir_custom=esc(dir_custom))
+
+
+def render_term(name, popout=False):
+    return TERM_PAGE.format(
+        name=esc(name), src=esc(ttyd_src(name)), dirs=dir_options(), kinds=kind_options(),
+        title=esc(TITLE),
+        term_path_json=json.dumps(TERM_PATH), name_json=json.dumps(name), title_json=json.dumps(TITLE),
+        body_class=' class="popout"' if popout else "")
+
+
+# --- PWA bits: manifest + icons (so "Add to Home Screen" on iOS / "Install"
+# on desktop opens it standalone, with no browser chrome at all).
+
+MANIFEST = {
+    "name": f"{TITLE} terminal", "short_name": TITLE,
+    "start_url": "/", "scope": "/", "display": "standalone",
+    "background_color": "#0f1115", "theme_color": "#0f1115",
+    "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"},
+              {"src": "/icon-180.png", "sizes": "180x180", "type": "image/png"}],
+}
+
+ICON_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+            '<rect width="64" height="64" rx="12" fill="#0f1115"/>'
+            '<path d="M16 20l14 12-14 12" fill="none" stroke="#3fb950" stroke-width="6" '
+            'stroke-linecap="round" stroke-linejoin="round"/>'
+            '<rect x="34" y="40" width="16" height="6" rx="3" fill="#e6e6e6"/></svg>')
+
+
+def icon_png(size=180):
+    """Same glyph as ICON_SVG, rasterised with stdlib only (iOS wants PNG)."""
+    import struct, zlib
+    bg, green, white = (15, 17, 21), (63, 185, 80), (230, 230, 230)
+    px = [[bg] * size for _ in range(size)]
+    u = size / 64.0
+    # chevron: two thick strokes from (16,20)->(30,32)->(16,44), width ~6
+    def seg(x0, y0, x1, y1, w, col):
+        w *= u
+        for y in range(size):
+            for x in range(size):
+                X, Y = x / u, y / u
+                dx, dy = x1 - x0, y1 - y0
+                t = max(0.0, min(1.0, ((X - x0) * dx + (Y - y0) * dy) / (dx * dx + dy * dy)))
+                d = ((X - (x0 + t * dx)) ** 2 + (Y - (y0 + t * dy)) ** 2) ** 0.5
+                if d * u <= w / 2:
+                    px[y][x] = col
+    seg(16, 20, 30, 32, 6, green)
+    seg(30, 32, 16, 44, 6, green)
+    for y in range(int(40 * u), int(46 * u)):
+        for x in range(int(34 * u), int(50 * u)):
+            px[y][x] = white
+    raw = b"".join(b"\x00" + bytes(c for p in row for c in p) for row in px)
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+ICON_PNG = icon_png()
+
+
+# --------------------------------------------------------------- server ----
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "tmux-web/1"
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+
+    def send_html(self, body, status=200):
+        data = body.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "DENY")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def redirect(self, location):
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def send_bytes(self, data, ctype, status=200, cache=True):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400" if cache else "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_json(self, obj, status=200):
+        data = json.dumps(obj).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path == "/":
+            return self.send_html(render())
+        if path.startswith("/s/"):
+            name = unquote(path[3:])
+            if not session_exists(name):
+                return self.send_html(render(f"No session called “{name}” (it may have exited)."), 404)
+            popout = "popout" in parse_qs(urlparse(self.path).query)
+            return self.send_html(render_term(name, popout))
+        if path == "/app.js":
+            return self.send_bytes(APP_JS.encode(), "application/javascript; charset=utf-8", cache=False)
+        if path == "/manifest.webmanifest":
+            return self.send_bytes(json.dumps(MANIFEST).encode(), "application/manifest+json")
+        if path == "/icon.svg":
+            return self.send_bytes(ICON_SVG.encode(), "image/svg+xml")
+        if path == "/icon-180.png":
+            return self.send_bytes(ICON_PNG, "image/png")
+        if path == "/api/sessions":
+            return self.send_json(sessions())
+        if path == "/healthz":
+            return self.send_html("ok")
+        self.send_html("<h1>404</h1>", 404)
+
+    def same_site(self):
+        # Cross-site form posts (from a page you happened to open elsewhere)
+        # must not be able to create or kill sessions.
+        sfs = self.headers.get("Sec-Fetch-Site")
+        if sfs:                                   # every current browser sends it
+            return sfs in ("same-origin", "none")
+        origin = self.headers.get("Origin")       # older browsers: compare hosts
+        if origin:
+            host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host", "")
+            return urlparse(origin).netloc.lower() == host.lower()
+        return True
+
+    def form(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(min(n, 65536)).decode(errors="replace")
+        return {k: v[0] for k, v in parse_qs(raw).items()}
+
+    def new_from_form(self, f):
+        """Validate + create. Returns (name, error)."""
+        kind = f.get("kind", "shell")
+        if kind not in TOOLS:
+            return None, "Unknown session type."
+        name, err = validate_name(f.get("name", ""))
+        if err:
+            return None, err
+        cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
+        if err:
+            return name, err
+        err = create_session(kind, name, cwd)
+        return name, err
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if not self.same_site():
+            if path.startswith("/api/"):
+                return self.send_json({"error": "cross-site request refused"}, 403)
+            return self.send_html("<h1>403</h1>cross-site request refused", 403)
+        f = self.form()
+
+        if path == "/new":                       # landing-page form
+            name, err = self.new_from_form(f)
+            if err:
+                return self.send_html(render(err, f.get("name", ""), f.get("dir_custom", "")), 400)
+            return self.redirect(term_href(name))
+
+        if path == "/api/new":                   # menu bar
+            name, err = self.new_from_form(f)
+            if err:
+                return self.send_json({"error": err}, 400)
+            return self.send_json({"ok": True, "name": name})
+
+        if path in ("/kill", "/api/kill"):
+            name = f.get("name", "")
+            if name and session_exists(name):
+                tmux("kill-session", "-t", f"={name}")
+            if path == "/api/kill":
+                return self.send_json({"ok": True})
+            return self.redirect("/")
+
+        self.send_html("<h1>404</h1>", 404)
+
+
+if __name__ == "__main__":
+    srv = ThreadingHTTPServer(BIND, Handler)
+    sys.stderr.write(f"tmux-web listening on http://{BIND[0]}:{BIND[1]}  title={TITLE!r} dirs={DIR_ROOTS} tools={list(TOOLS)}\n")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass

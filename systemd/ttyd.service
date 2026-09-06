@@ -1,0 +1,20 @@
+[Unit]
+Description=ttyd for tmux-web (localhost only, attaches to the tmux session named in the URL)
+Documentation=https://github.com/YOURNAME/tmux-web
+After=network.target
+
+[Service]
+EnvironmentFile=%h/.config/tmux-web/env
+# -i 127.0.0.1 : never bind a real interface
+# -W           : writable (ttyd >= 1.7 is read-only by default)
+# -a           : pass ?arg=<session> from the URL to tmux-attach.sh
+# -O           : refuse WebSockets from other origins (cross-site hijack guard)
+# reconnect stays ON: phones drop the socket on screen lock; ttyd re-attaches.
+ExecStart=/usr/bin/env ttyd -i 127.0.0.1 -p ${TTYD_PORT} -W -a -O -t titleFixed=${TMUX_WEB_TITLE} $TTYD_EXTRA_ARGS @REPO@/bin/tmux-attach.sh
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=3
+KillMode=process
+
+[Install]
+WantedBy=default.target

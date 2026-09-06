@@ -1,0 +1,19 @@
+[Unit]
+Description=tmux-web landing page (localhost only; publish via tailscale serve or an authenticating proxy)
+Documentation=https://github.com/YOURNAME/tmux-web
+After=network.target
+
+[Service]
+EnvironmentFile=%h/.config/tmux-web/env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/env python3 @REPO@/bin/tmux-web
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=3
+# If the browser is the first thing to create a tmux session after boot, the
+# tmux server is spawned inside this unit's cgroup. Only ever kill our own
+# process on stop/restart, never the tmux server and every session in it.
+KillMode=process
+
+[Install]
+WantedBy=default.target
