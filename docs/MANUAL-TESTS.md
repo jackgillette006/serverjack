@@ -1,4 +1,4 @@
-# Browser terminal — manual test prompts for other machines
+# serverjack — manual test prompts for other machines
 
 URL: https://<your-host>/  (device must be on the tailnet)
 
@@ -11,7 +11,7 @@ one-line note; screenshots of anything odd help.
 
 You are testing a browser-based tmux terminal at https://<your-host>/ .
 Open it in Chrome (with the Claude in Chrome extension) or do the steps by hand.
-1. Landing page: sessions listed with Open buttons; the "New session" form has Shell / Claude Code / Codex, a Name box and a Directory dropdown.
+1. Landing page, top to bottom: a "Run a command" box, Shortcuts, Sessions (listed with Open buttons plus a "New shell" form with a Name box and a Directory dropdown), Agents (one collapsed row per coding tool).
 2. Create a Shell session named "t-desktop" in ~/workspace. You should land in a terminal with a tab bar on top and "t-desktop" highlighted.
 3. Type `echo hello` Enter. Output appears.
 4. Type `sleep 30` Enter, then press Ctrl+C with NOTHING selected. The sleep is interrupted (prompt comes back).
@@ -35,7 +35,7 @@ Also check: 13. In Safari, ↗ pop-out gives a window without the address bar.
 ## iPhone (Safari)
 
 You are testing a browser-based tmux terminal at https://<your-host>/ on iPhone Safari. Do each step and report PASS/FAIL with a note.
-1. Landing page is readable, buttons are tappable, the Directory dropdown is dark (not a white box).
+1. Landing page is readable, buttons are tappable, the Directory dropdown is dark (not a white box). The Run box, Shortcuts, Sessions and Agents sections are all reachable by scrolling.
 2. Create a Shell session "t-phone". The terminal opens with a tab bar at the top and a row of keys (Esc, Tab, ⇧Tab, Ctrl, arrows, ^C, PgUp, PgDn) at the bottom.
 3. Tap the terminal. The keyboard opens. Is the key row still visible above the keyboard, and is the terminal not hidden under the keyboard? (This is the most likely failure — describe exactly what you see.)
 4. Type `echo hi` and Return. Output appears.
@@ -52,8 +52,47 @@ You are testing a browser-based tmux terminal at https://<your-host>/ on iPhone 
 15. ☰ goes back to the list; ✕ kills the current session after a confirm.
 Report PASS/FAIL per step and the iOS version.
 
-## Codex / Claude Code sessions (any device)
+## Run a command (any device; step 4 needs a real iPhone)
 
-1. New session → Claude Code, name "t-claude", directory ~/workspace/projects/fit-app. Claude Code starts inside the session in that directory.
-2. New session → Codex, name "t-codex". If Codex isn't installed you should see "codex: command not found" followed by a shell prompt in the chosen directory — not a blank or vanished session.
+1. Paste `echo RUNBOX; pwd` into the Run box and tap Run. A new tmux session opens in the terminal, the output appears, and you are left at a **shell prompt** in that session (it does not disappear).
+2. Go back to the list. The session created in step 1 is in the Sessions list. Kill it.
+3. Run `ls /nonexistent-path`. You see the error and still land at a prompt.
+4. **iPhone**: run `sudo -k true`. The `[sudo] password for <user>:` prompt appears in the terminal, tapping the terminal opens the keyboard, and typing the password (characters not echoed) then Return succeeds. Then run `sudo -k apt-get -s install cowsay` and confirm the password prompt behaves the same for a longer-running command. This is the main use case — describe exactly what happens if anything is awkward.
+5. Run something long (`sleep 60`), lock the phone, unlock: you are still attached and the command is still running.
+
+## Save as a shortcut
+
+1. In the Run box, enter `df -h /` , tick "save as a shortcut", give it a name, Run.
+2. Go back to the list: the shortcut appears in the Shortcuts section. Tap it: it runs in a new session and leaves you at a prompt.
+3. `cat ~/.config/serverjack/shortcuts.json` in a terminal shows it.
+4. Delete the shortcut from the page. It disappears from the list and from the JSON file.
+
+## Agents accordion (any device)
+
+0. **The accordion itself**: every tool is one collapsed row, and the whole Agents section is about as tall as one card. Each row reads without opening it: tool name, state ("Not installed" / "Installed · not logged in" / "Ready" with a green dot), and a pill for any server or daemon ("running" / "exited" / "stopped"). Tap anywhere on a row — the whole row is the target, comfortably tappable on a phone — and it opens while the previously open row closes. The chevron on the right flips. On a phone nothing overflows sideways at any point.
+
+Then test each of the three states. The easiest way to see all three is on a machine where at least one tool is missing and one is installed.
+
+1. **Not installed**: a tool with no binary on the box shows an Install button and the exact install command as text. Tap Install: the command shown is the command that runs, it runs in a visible terminal, and when it finishes you are at a prompt. Reload the landing page: the row has moved on to the next state.
+2. **Installed, not logged in**: the row shows a Log in button, and "Open anyway" underneath it. Tap Log in: the login flow runs in the terminal and prints a URL or device code that is readable and tappable/selectable on the phone. Complete it, reload: the row is now Ready.
+3. **Ready**: the body is the directory picker, then one option row per way of starting the tool. Each option row has its label, a one-line note saying how it differs from the others, and its button(s) on the right (underneath, on a phone). Check the order: Open, then any extra actions, then the server, then the daemon, then a quiet "Log in / switch account". Pick a directory and tap the Open row's button: the tool starts in that directory.
+4. Every option that needs a directory (Open, an action marked `dir`, starting a server) uses the one picker at the top — change it and check the next thing you start lands in the new directory.
+5. If Node.js is not installed, the Gemini CLI row says so instead of offering an Install button that would fail.
+6. `SERVERJACK_TOOLS=claude,codex` in the env file (restart the units) shows only those two rows, in that order. Unset it again afterwards.
+7. `~/.config/serverjack/tools.json` containing `[{"id":"gemini","hidden":true}]` hides the Gemini row and leaves the others alone.
+8. A tool installed into a private bin dir that only `.bashrc` adds to `PATH` (e.g. OpenCode in `~/.opencode/bin`) still reads as installed — that is the `paths` field doing its job.
+9. If an action fails (e.g. start a server in a directory that doesn't exist), the page comes back with the error at the top **and that tool's row open**, not collapsed.
+
+## Remote control (needs the tools installed and logged in)
+
+1. **Claude Code**: open the Claude Code row and tap Start on the "Remote Control server" option row. A tmux session named `claude-remote` opens and `claude remote-control` prints a **QR code** in the terminal. On a desktop the QR is scannable from the screen with the Claude app; on a phone check that it renders as a QR and not as broken block characters. Go back to the list: `claude-remote` is in the Sessions list, the Claude Code row's summary shows the server pill as "running", and its option row now offers Stop and Open.
+2. **Codex daemon**: on the Codex row, tap Start on the daemon option row. Reload the landing page: the summary pill shows the daemon as running, and `~/.codex/app-server-daemon/app-server.pid` exists with a live pid. Tap Stop, reload: it shows stopped and the pidfile is gone or stale. Start it again and tap "Pair with phone": `codex remote-control pair` runs in a terminal and prints pairing output; pair the ChatGPT app and open a session in a directory from the app.
+3. **OpenCode**: tap Start on its server option row. Session `opencode-serve` appears and `opencode serve` stays up; the OpenCode mobile app can reach it over the tailnet.
+4. **Copilot CLI**: the "Open with remote control" option row runs `copilot --remote` in a session; the plain Open row above it runs `copilot` without it. Claude Code has the same pair.
+5. Kill any test sessions with ✕ when done.
+
+## Coding-tool sessions (any device)
+
+1. From the Claude Code row, pick a directory and tap Open. Claude Code starts inside the session in that directory.
+2. Same for Codex. If Codex isn't installed you should see "codex: command not found" followed by a shell prompt in the chosen directory — not a blank or vanished session.
 3. Kill both test sessions with ✕ when done.

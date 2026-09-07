@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ttyd's command. The landing page (bin/tmux-web) sends the browser to
+# ttyd's command. The landing page (bin/serverjack) sends the browser to
 # /term/?arg=<session> and ttyd (-a) turns that into "$1" here.
 #
 #   with an argument : attach to exactly that tmux session

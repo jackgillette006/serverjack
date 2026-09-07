@@ -1,13 +1,29 @@
 #!/usr/bin/env bash
-# Remove tmux-web's user units and tailscale serve entries. Leaves ~/.local/bin
-# binaries and ~/.config/tmux-web/env in place (delete them yourself if wanted).
+# Remove serverjack's user units and tailscale serve entries. Leaves ~/.local/bin
+# binaries, ~/.config/serverjack (env, shortcuts.json, tools.json) and your tmux
+# sessions alone -- delete those yourself if you want them gone.
 set -uo pipefail
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
-systemctl --user disable --now tmux-web ttyd 2>/dev/null
-rm -f ~/.config/systemd/user/{tmux-web,ttyd}.service
+UNIT_DIR=$HOME/.config/systemd/user
+
+systemctl --user disable --now serverjack serverjack-ttyd 2>/dev/null
+rm -f "$UNIT_DIR"/serverjack.service "$UNIT_DIR"/serverjack-ttyd.service
+
+# Units from the pre-rename tmux-web install, if this machine still has them.
+old=()
+for u in tmux-web ttyd; do
+  [[ -f "$UNIT_DIR/$u.service" ]] && old+=("$u")
+done
+if (( ${#old[@]} )); then
+  systemctl --user disable --now "${old[@]}" 2>/dev/null
+  for u in "${old[@]}"; do rm -f "$UNIT_DIR/$u.service"; done
+  echo "also removed old tmux-web user units: ${old[*]}"
+fi
+
 systemctl --user daemon-reload
+
 if command -v tailscale >/dev/null 2>&1; then
-  mount=$(grep -E '^TMUX_WEB_TERM=' ~/.config/tmux-web/env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'); mount=${mount:-/term/}
+  mount=$(grep -E '^SERVERJACK_TERM=' ~/.config/serverjack/env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'); mount=${mount:-/term/}
   tailscale serve --https=443 off 2>/dev/null
   tailscale serve --https=443 --set-path="${mount%/}" off 2>/dev/null
 fi

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# tmux-web installer. NO sudo. Idempotent -- re-run after pulling changes.
+# serverjack installer. NO sudo. Idempotent -- re-run after pulling changes.
 #
 #   bash install.sh              install/refresh and (re)start
 #   bash install.sh --no-serve   skip the tailscale serve step
 #
 # What it does, all inside your own account:
+#   0. migrates an older tmux-web install (env file, shortcuts, old user units)
 #   1. puts ttyd and fzf static binaries in ~/.local/bin (checksum-verified)
-#   2. writes ~/.config/tmux-web/env with defaults if it doesn't exist
+#   2. writes ~/.config/serverjack/env with defaults if it doesn't exist
 #   3. installs two *user* systemd units and starts them
 #   4. publishes them with `tailscale serve` (tailnet only, never funnel)
 #
@@ -15,13 +16,13 @@
 #   - `loginctl enable-linger $USER`   so the user units start at boot
 #   - `tailscale set --operator=$USER` so serve doesn't need sudo
 #
-# After that the daily loop is:  systemctl --user restart tmux-web
+# After that the daily loop is:  systemctl --user restart serverjack serverjack-ttyd
 
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 REPO=$PWD
 BIN=$HOME/.local/bin
-CFG_DIR=$HOME/.config/tmux-web
+CFG_DIR=$HOME/.config/serverjack
 ENV_FILE=$CFG_DIR/env
 UNIT_DIR=$HOME/.config/systemd/user
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
@@ -64,49 +65,92 @@ if ! "$BIN/fzf" --version 2>/dev/null | grep -q "^$FZF_VER"; then
   install -m 755 "$tmp/fzf" "$BIN/fzf"
 fi
 
+# ---------------------------------------------------------------- migrate from tmux-web
+# The project used to be called tmux-web. Move an existing install over once:
+# convert the env file, drop the old user units (which hold ports 7680/7681).
+OLD_CFG_DIR=$HOME/.config/tmux-web
+OLD_ENV=$OLD_CFG_DIR/env
+migrated=()
+if [[ ! -f "$ENV_FILE" && -f "$OLD_ENV" ]]; then
+  sed -e '/^[[:space:]]*#.*Coding tools offered besides a plain shell/d' \
+      -e '/^[[:space:]]*TMUX_WEB_TOOLS=/c\
+# Coding tools now live in a registry: built-ins plus ~/.config/serverjack/tools.json,\
+# whose entries are merged over the built-ins by "id" (see the README).\
+# SERVERJACK_TOOLS is optional and only restricts/orders which ids are shown:\
+#SERVERJACK_TOOLS=claude,codex' \
+      -e 's/TMUX_WEB_/SERVERJACK_/g' \
+      -e 's/^# tmux-web configuration/# serverjack configuration/' \
+      -e 's/systemctl --user restart tmux-web ttyd/systemctl --user restart serverjack serverjack-ttyd/' \
+      "$OLD_ENV" > "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  migrated+=("$OLD_ENV -> $ENV_FILE (TMUX_WEB_* renamed to SERVERJACK_*; old file left in place)")
+fi
+if [[ -f "$OLD_CFG_DIR/shortcuts.json" && ! -f "$CFG_DIR/shortcuts.json" ]]; then
+  cp -p "$OLD_CFG_DIR/shortcuts.json" "$CFG_DIR/shortcuts.json"
+  migrated+=("$OLD_CFG_DIR/shortcuts.json -> $CFG_DIR/shortcuts.json")
+fi
+old_units=()
+for u in tmux-web ttyd; do
+  [[ -f "$UNIT_DIR/$u.service" ]] && old_units+=("$u")
+done
+if (( ${#old_units[@]} )); then
+  systemctl --user disable --now "${old_units[@]}" >/dev/null 2>&1 || true
+  for u in "${old_units[@]}"; do rm -f "$UNIT_DIR/$u.service"; done
+  systemctl --user daemon-reload
+  migrated+=("stopped and removed old user units: ${old_units[*]} (they are now serverjack, serverjack-ttyd)")
+fi
+if (( ${#migrated[@]} )); then
+  say "Migrated from the old tmux-web install:"
+  printf '  %s\n' "${migrated[@]}"
+fi
+
 # ---------------------------------------------------------------- config
 if [[ ! -f "$ENV_FILE" ]]; then
-  say "Writing $ENV_FILE (edit it, then: systemctl --user restart tmux-web ttyd)"
+  say "Writing $ENV_FILE (edit it, then: systemctl --user restart serverjack serverjack-ttyd)"
   cat > "$ENV_FILE" <<CFG
-# tmux-web configuration. Restart after editing:
-#   systemctl --user restart tmux-web ttyd
+# serverjack configuration. Restart after editing:
+#   systemctl --user restart serverjack serverjack-ttyd
 PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
-TMUX_WEB_PORT=7680
+SERVERJACK_PORT=7680
 TTYD_PORT=7681
-TMUX_WEB_TITLE=$(hostname -s)
+SERVERJACK_TITLE=$(hostname -s)
 # Directories offered when starting a session (colon-separated, ~ ok)
-TMUX_WEB_DIRS=~/projects:~/src:~/workspace:~
-# Coding tools offered besides a plain shell: command=Label,command=Label
-TMUX_WEB_TOOLS="claude=Claude Code,codex=Codex"
+SERVERJACK_DIRS=~/projects:~/src:~/workspace:~
+# Coding tools come from a registry: the built-ins (Claude Code, Codex, OpenCode,
+# Copilot CLI, Gemini CLI) plus $CFG_DIR/tools.json, whose entries are merged
+# over the built-ins by "id" -- that is where you add or override a tool.
+# SERVERJACK_TOOLS is optional: a comma-separated list of ids that restricts and
+# orders which cards are shown. Leave it unset to show them all.
+#SERVERJACK_TOOLS=claude,codex
 # URL path your proxy mounts ttyd on (tailscale serve: /term, prefix stripped)
-TMUX_WEB_TERM=/term/
+SERVERJACK_TERM=/term/
 # Extra ttyd flags, e.g. "-b /term" if your reverse proxy does NOT strip the prefix
 TTYD_EXTRA_ARGS=
 # user@host used by "Copy SSH command" / "Open in SSH app" (auto: tailnet name); "off" hides them
-#TMUX_WEB_SSH=
+#SERVERJACK_SSH=
 CFG
   chmod 600 "$ENV_FILE"
 fi
 # Read the few values we need the way systemd does (KEY=value, optional
 # quotes) -- NOT with `source`, which chokes on unquoted spaces like "Claude Code".
 cfg() { local v; v=$(grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2-); v=${v#\"}; v=${v%\"}; printf '%s' "${v:-$2}"; }
-TMUX_WEB_PORT=$(cfg TMUX_WEB_PORT 7680)
+SERVERJACK_PORT=$(cfg SERVERJACK_PORT 7680)
 TTYD_PORT=$(cfg TTYD_PORT 7681)
-TMUX_WEB_TERM=$(cfg TMUX_WEB_TERM /term/)
+SERVERJACK_TERM=$(cfg SERVERJACK_TERM /term/)
 
 # ---------------------------------------------------------------- units
-for u in tmux-web ttyd; do
+for u in serverjack serverjack-ttyd; do
   sed "s|@REPO@|$REPO|g" "systemd/$u.service" > "$UNIT_DIR/$u.service"
 done
 systemctl --user daemon-reload
 
 # refuse to fight another process for the ports (e.g. an older system-level install)
-for port in "$TMUX_WEB_PORT" "$TTYD_PORT"; do
-  if ss -ltnp 2>/dev/null | grep -q ":$port " && ! systemctl --user is-active --quiet tmux-web ttyd 2>/dev/null; then
+for port in "$SERVERJACK_PORT" "$TTYD_PORT"; do
+  if ss -ltnp 2>/dev/null | grep -q ":$port " && ! systemctl --user is-active --quiet serverjack serverjack-ttyd 2>/dev/null; then
     holder=$(ss -ltnp 2>/dev/null | grep ":$port " | grep -o 'users:.*' | head -1)
     echo "port $port is already in use by something that isn't our user unit: $holder" >&2
     if [[ -f /etc/systemd/system/tmux-web.service || -f /etc/systemd/system/ttyd.service ]]; then
-      echo "That looks like the old system-level install. Remove it once (needs root):" >&2
+      echo "That looks like the old system-level tmux-web install. Remove it once (needs root):" >&2
       echo "  sudo systemctl disable --now tmux-web ttyd; sudo rm -f /etc/systemd/system/{tmux-web,ttyd}.service; sudo systemctl daemon-reload" >&2
     fi
     echo "then re-run: bash $REPO/install.sh" >&2
@@ -115,11 +159,11 @@ for port in "$TMUX_WEB_PORT" "$TTYD_PORT"; do
 done
 
 say "Starting user units"
-systemctl --user enable tmux-web ttyd >/dev/null 2>&1
-systemctl --user restart tmux-web ttyd
+systemctl --user enable serverjack serverjack-ttyd >/dev/null 2>&1
+systemctl --user restart serverjack serverjack-ttyd
 sleep 1
-systemctl --user --no-pager is-active tmux-web ttyd | paste -sd' ' | sed 's/^/  tmux-web ttyd: /'
-curl -s -o /dev/null -w "  landing  http://127.0.0.1:$TMUX_WEB_PORT/  -> HTTP %{http_code}\n" "http://127.0.0.1:$TMUX_WEB_PORT/healthz"
+systemctl --user --no-pager is-active serverjack serverjack-ttyd | paste -sd' ' | sed 's/^/  serverjack serverjack-ttyd: /'
+curl -s -o /dev/null -w "  landing  http://127.0.0.1:$SERVERJACK_PORT/  -> HTTP %{http_code}\n" "http://127.0.0.1:$SERVERJACK_PORT/healthz"
 curl -s -o /dev/null -w "  ttyd     http://127.0.0.1:$TTYD_PORT/   -> HTTP %{http_code}\n" "http://127.0.0.1:$TTYD_PORT/"
 
 # ---------------------------------------------------------------- boot persistence
@@ -130,8 +174,8 @@ fi
 # ---------------------------------------------------------------- tailscale serve
 if (( ! NO_SERVE )) && command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
   say "Publishing on the tailnet (tailscale serve, HTTPS 443, tailnet only)"
-  mount=${TMUX_WEB_TERM%/}
-  if out=$(tailscale serve --bg --https=443 "http://127.0.0.1:$TMUX_WEB_PORT" 2>&1) \
+  mount=${SERVERJACK_TERM%/}
+  if out=$(tailscale serve --bg --https=443 "http://127.0.0.1:$SERVERJACK_PORT" 2>&1) \
      && out2=$(tailscale serve --bg --https=443 --set-path="$mount" "http://127.0.0.1:$TTYD_PORT" 2>&1); then
     tailscale serve status | sed 's/^/  /'
     host=$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)
@@ -154,8 +198,10 @@ if (( ${#todo[@]} )); then
 fi
 say "Daily commands (no sudo):"
 cat <<TXT
-  systemctl --user restart tmux-web ttyd     # after editing bin/ or $ENV_FILE
-  journalctl --user -u tmux-web -f            # logs (same for ttyd)
-  systemctl --user status tmux-web ttyd
+  systemctl --user restart serverjack serverjack-ttyd   # after editing bin/ or $ENV_FILE
+  journalctl --user -u serverjack -f                    # page + API logs
+  journalctl --user -u serverjack-ttyd -f               # terminal logs
+  systemctl --user status serverjack serverjack-ttyd
+  bash $REPO/install.sh                                 # re-run after a git pull (idempotent)
   bash $REPO/uninstall.sh
 TXT

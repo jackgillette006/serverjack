@@ -13,7 +13,7 @@
 #   error message and a prompt instead of the session silently vanishing.
 #
 # Fallback UI: used when ttyd is opened without a session argument (i.e. not
-# via the tmux-web page). Needs fzf. Talks to your normal tmux server, so the
+# via the serverjack page). Needs fzf. Talks to your normal tmux server, so the
 # sessions here are the same ones "tmux ls" shows anywhere else.
 #
 # Try it locally without ttyd:  bash bin/tmux-picker.sh
@@ -31,7 +31,7 @@ EXIT=$'x\tx  Exit'
 
 # Directories offered by the picker for new coding sessions (typing any other
 # path works too).
-IFS=: read -r -a DIR_ROOTS <<<"${TMUX_WEB_DIRS:-$HOME/projects:$HOME/src:$HOME/workspace:$HOME}"
+IFS=: read -r -a DIR_ROOTS <<<"${SERVERJACK_DIRS:-$HOME/projects:$HOME/src:$HOME/workspace:$HOME}"
 DIR_ROOTS=("${DIR_ROOTS[@]/#\~/$HOME}")
 
 list_sessions() {

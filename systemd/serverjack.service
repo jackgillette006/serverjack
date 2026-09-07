@@ -1,12 +1,12 @@
 [Unit]
-Description=tmux-web landing page (localhost only; publish via tailscale serve or an authenticating proxy)
-Documentation=https://github.com/YOURNAME/tmux-web
+Description=serverjack landing page: tmux sessions, shortcuts and coding agents (localhost only; publish via tailscale serve or an authenticating proxy)
+Documentation=https://github.com/jackgillette006/serverjack
 After=network.target
 
 [Service]
-EnvironmentFile=%h/.config/tmux-web/env
+EnvironmentFile=%h/.config/serverjack/env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/env python3 @REPO@/bin/tmux-web
+ExecStart=/usr/bin/env python3 @REPO@/bin/serverjack
 WorkingDirectory=%h
 Restart=on-failure
 RestartSec=3
