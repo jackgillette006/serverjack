@@ -28,7 +28,42 @@ in the order you actually need them from a phone:
 Opening a session goes to /s/<name>: a slim menu bar (session tabs, + new,
 x close, pop-out, soft keys for phones) over ttyd in a frame at
 /term/?arg=<name>; ttyd runs bin/tmux-attach.sh with that argument, which
-attaches. The terminal only ever appears once you are inside a session.
+attaches. The terminal only ever appears once you are inside a session. When a
+session has more than one tmux window the active tab carries a "2/3" badge and
+tapping it opens a window list.
+
+Routes
+    GET  /                     the landing page
+    GET  /s/<name>             the terminal wrapper for one session
+    GET  /app.js               the wrapper's script
+    GET  /manifest.webmanifest, /icon.svg, /icon-180.png     PWA bits
+    GET  /healthz              "ok"
+    GET  /api/sessions         [{name, token, windows, attached, ...}]
+    GET  /api/windows?name=    [{index, name, active, cmd}]
+    GET  /api/tools            one state object per agent
+    GET  /api/screen?name=     the session's pane as plain text
+    GET  /api/status           counts + agent + machine summary, for a dashboard
+    POST /new, /api/new        create a session
+    POST /kill, /api/kill      kill one
+    POST /rename, /api/rename  rename one
+    POST /api/window           select a tmux window
+    POST /run                  the paste-and-run box
+    POST /shortcuts/add, /shortcuts/del, /shortcuts/run
+    POST /tools (dispatches to /tools/install, /tools/login, /tools/open,
+         /tools/action, /tools/server, /tools/daemon, /tools/autostart)
+
+Renaming a session changes its terminal token (the token is HMAC'd over the
+name), so a browser sitting on /s/<old> loses its terminal. That is deliberate
+and harmless: the page polls /api/sessions every 15s, sees the old name is
+gone, and moves itself to another session -- the same path a killed session
+takes.
+
+Config files, all in $SERVERJACK_CONFIG (default ~/.config/serverjack):
+    env             read by systemd, not by this file
+    tools.json      agent registry overrides (see below)
+    shortcuts.json  saved one-click commands
+    autostart.json  [{"tool": id, "kind": "server"|"daemon", "dir": path}] --
+                    servers/daemons to bring up shortly after serverjack starts
 
 Stdlib only, no dependencies. Runs as your user and talks to your normal tmux
 server, so it sees the same sessions as any other login.
@@ -67,6 +102,9 @@ Configuration is by environment variables (see install.sh / README):
     SERVERJACK_SSH    user@host for the "open in an SSH app" menu item,
                       or "off" to hide it   (default: the tailnet name)
     SERVERJACK_CONFIG config dir  (default ~/.config/serverjack)
+    SERVERJACK_AUTOSTART_DELAY
+                      seconds to wait after startup before running
+                      autostart.json                            default 15
 
 Runtime dir: $XDG_RUNTIME_DIR/serverjack (fallback /tmp/serverjack-$UID/
 serverjack), created 0700 by whichever of serverjack / serverjack-ttyd starts
@@ -121,6 +159,15 @@ SERVERJACK_ALLOW names the tailnet logins allowed in, and the terminal is
 token-gated so it cannot be reached around the page. State-changing POSTs are
 refused when the browser says they came from another site (Sec-Fetch-Site /
 Origin), so a random web page can't drive it from a logged-in browser.
+
+Two GET routes are exempt from SERVERJACK_ALLOW: /healthz and /api/status.
+Both are for machines, not people, and a dashboard tile fetching them carries
+no tailnet identity of its own -- the request arrives from tailscaled (or your
+proxy) with no Tailscale-User-Login header, so an ALLOW check could only ever
+403 it. They are still behind the peer-uid check, so only root, you, and any
+uid in SERVERJACK_TRUST_UIDS can ask; and /api/status deliberately reports
+counts, never session names or directories, so it says nothing a health check
+doesn't already leak.
 """
 
 import concurrent.futures
@@ -137,11 +184,16 @@ import socket
 import socketserver
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+VERSION = "1.1"
 HOME = os.path.expanduser("~")
+# The checkout this file lives in: <repo>/bin/serverjack. Used for the built-in
+# "Update serverjack" shortcut, which only appears when <repo>/.git exists.
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 LISTEN = (os.environ.get("SERVERJACK_LISTEN") or "tcp").strip().lower()
 BIND = ("127.0.0.1", int(os.environ.get("SERVERJACK_PORT", "7680")))
 
@@ -301,6 +353,11 @@ CONFIG_DIR = os.environ.get("SERVERJACK_CONFIG") or os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or f"{HOME}/.config", "serverjack")
 SHORTCUTS_FILE = os.path.join(CONFIG_DIR, "shortcuts.json")
 TOOLS_FILE = os.path.join(CONFIG_DIR, "tools.json")
+AUTOSTART_FILE = os.path.join(CONFIG_DIR, "autostart.json")
+try:
+    AUTOSTART_DELAY = float(os.environ.get("SERVERJACK_AUTOSTART_DELAY") or 15)
+except ValueError:
+    AUTOSTART_DELAY = 15.0
 
 
 def _ssh_target():
@@ -630,6 +687,25 @@ def sessions():
     return out
 
 
+def windows(name):
+    """The session's tmux windows, in index order. tmux windows are a property
+    of the session, not of a client: selecting one moves every attached client,
+    which is exactly what a phone and a desktop looking at the same session
+    should do."""
+    fmt = "\t".join(["#{window_index}", "#{window_name}", "#{window_active}",
+                     "#{pane_current_command}"])
+    r = tmux("list-windows", "-t", f"={name}", "-F", fmt)
+    out = []
+    if r.returncode != 0:
+        return out
+    for line in r.stdout.splitlines():
+        idx, wname, active, cmd = (line.split("\t") + [""] * 4)[:4]
+        if not idx.isdigit():
+            continue
+        out.append({"index": int(idx), "name": wname, "active": active == "1", "cmd": cmd})
+    return out
+
+
 def screen_text(name, lines=300):
     """Plain text of the session's active pane, last <lines> lines, wrapped
     lines joined. Used by the phone 'Copy' view where native selection works."""
@@ -683,6 +759,26 @@ def validate_name(name, required=True, base="shell"):
     if session_exists(name):
         return None, f"A session called “{name}” already exists. Open it instead."
     return name, None
+
+
+def rename_session(old, new):
+    """Rename a session. Returns (new name, error). The same name rules as a
+    new session apply, duplicates included -- tmux would happily make two
+    sessions ambiguous by prefix otherwise. A rename changes the session's
+    terminal token, so any browser attached to the old name is moved on by the
+    page's own "that session is gone" handling within ~15s."""
+    old = (old or "").strip()
+    if not old or not session_exists(old):
+        return None, f"No session called “{old}” (it may have exited)."
+    if (new or "").strip() == old:
+        return old, None            # no-op, and validate_name would call it a duplicate
+    new, err = validate_name(new or "", required=True)
+    if err:
+        return None, err
+    r = tmux("rename-session", "-t", f"={old}", new)
+    if r.returncode != 0:
+        return None, (r.stderr or r.stdout).strip() or "tmux rename-session failed"
+    return new, None
 
 
 def resolve_dir(dir_choice, dir_custom):
@@ -775,6 +871,135 @@ def add_shortcut(label, cmd, cwd):
     save_shortcuts(items)
 
 
+# ---------- the one built-in shortcut: update serverjack itself
+#
+# install.sh restarts the serverjack unit at the end. The unit is KillMode=
+# process, so the tmux server (and this session) outlive the restart: the
+# command finishes in front of its login shell like any other, and the browser
+# reconnects to the same session as soon as the new process is listening.
+
+UPDATE_ID = "builtin-update"
+UPDATE_CMD = f"cd {shlex.quote(REPO)} && git pull --ff-only && bash install.sh"
+
+
+def update_available():
+    return os.path.isdir(os.path.join(REPO, ".git"))
+
+
+# ---------- autostart: servers and daemons to bring up when serverjack starts
+#
+# One entry per thing to start: {"tool": id, "kind": "server"|"daemon",
+# "dir": path}. "dir" only means anything for a server (it decides the session
+# name for per_dir servers, and the directory it runs in). The entry means
+# "make sure this is running when serverjack starts" -- so stopping something
+# from the page removes its entry, and a deliberate stop does not come back
+# after a restart.
+
+def _auto_dir(d):
+    return os.path.realpath(os.path.expanduser(d or HOME))
+
+
+def load_autostart():
+    try:
+        with open(AUTOSTART_FILE) as f:
+            data = json.load(f)
+        return [x for x in data if isinstance(x, dict) and x.get("tool")
+                and x.get("kind") in ("server", "daemon")]
+    except (OSError, ValueError):
+        return []
+
+
+def save_autostart(items):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    tmp = AUTOSTART_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(items, f, indent=2)
+    os.replace(tmp, AUTOSTART_FILE)
+
+
+def _auto_match(e, tid, kind, cwd):
+    if e.get("tool") != tid or e.get("kind") != kind:
+        return False
+    if kind != "server":
+        return True
+    return _auto_dir(e.get("dir")) == _auto_dir(cwd)
+
+
+def autostart_on(tid, kind, cwd=None):
+    return any(_auto_match(e, tid, kind, cwd) for e in load_autostart())
+
+
+def set_autostart(tid, kind, cwd, on):
+    items = [e for e in load_autostart() if not _auto_match(e, tid, kind, cwd)]
+    if on:
+        e = {"tool": tid, "kind": kind}
+        if kind == "server":
+            e["dir"] = _auto_dir(cwd)
+        items.append(e)
+    save_autostart(items)
+
+
+def drop_autostart(pred):
+    """Remove every entry pred() says yes to (a Stop from the page)."""
+    items = load_autostart()
+    keep = [e for e in items if not pred(e)]
+    if len(keep) != len(items):
+        save_autostart(keep)
+
+
+def autostart_start_one(e):
+    """Start one autostart entry if it isn't already up. Returns a log line."""
+    t = find_tool(e.get("tool") or "")
+    if not t:
+        return f"autostart: no such tool {e.get('tool')!r}, skipped"
+    tid = t["id"]
+    if e["kind"] == "daemon":
+        daemon = t.get("daemon") or {}
+        if not daemon.get("start"):
+            return f"autostart: {tid} has no daemon, skipped"
+        if daemon_pid(daemon) is not None:
+            return f"autostart: {tid} daemon already running"
+        r = subprocess.run(daemon["start"], shell=True, capture_output=True, text=True,
+                           timeout=120, cwd=HOME, env={**os.environ, "PATH": TOOL_PATH})
+        if r.returncode != 0:
+            tail = ((r.stderr or "") + (r.stdout or "")).strip().splitlines()[-1:] or [""]
+            return f"autostart: {tid} daemon start failed ({r.returncode}) {tail[0]}"
+        return f"autostart: started {tid} daemon"
+
+    server = t.get("server") or {}
+    if not server.get("cmd") or not server.get("session"):
+        return f"autostart: {tid} has no server, skipped"
+    cwd = _auto_dir(e.get("dir"))
+    if not os.path.isdir(cwd):
+        return f"autostart: {tid} server directory is gone: {cwd}"
+    name = server_session_name(server, cwd)
+    if session_exists(name):
+        if not session_idle(name):
+            return f"autostart: {tid} server “{name}” already running"
+        tmux("kill-session", "-t", f"={name}")      # exited into its shell: replace it
+    err = create_command_session(name, cwd, server["cmd"])
+    if err:
+        return f"autostart: {tid} server “{name}” failed: {err}"
+    return f"autostart: started {tid} server “{name}” in {cwd}"
+
+
+def autostart_boot():
+    """Run the autostart list once, a little after startup. The delay is for
+    boot: network-online.target is not the same thing as DNS answering, and
+    every one of these commands wants the network."""
+    items = load_autostart()
+    if not items:
+        return
+    time.sleep(AUTOSTART_DELAY)
+    for e in items:
+        try:
+            line = autostart_start_one(e)
+        except (OSError, subprocess.SubprocessError) as exc:
+            line = f"autostart: {e.get('tool')} {e.get('kind')} failed: {exc}"
+        sys.stderr.write(line + "\n")
+    clear_tool_cache()
+
+
 def dir_choices():
     seen = []
     for root in DIR_ROOTS:
@@ -787,6 +1012,97 @@ def dir_choices():
         except OSError:
             pass
     return seen
+
+
+def system_stats():
+    """Load, memory, free disk and uptime, straight from the kernel. Every
+    value is optional: anything this platform doesn't answer is left out, and
+    both callers (the muted line under the tagline and /api/status) just skip
+    what isn't there. Cheap enough to do per request -- no caching."""
+    out = {}
+    try:
+        out["load"] = [round(x, 2) for x in os.getloadavg()]
+    except (OSError, AttributeError):
+        pass
+    try:
+        info = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                info[k] = int(v.split()[0])          # kB
+        total, avail = info.get("MemTotal", 0), info.get("MemAvailable")
+        if total and avail is not None:
+            out["mem_used_pct"] = round(100.0 * (total - avail) / total)
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        out["disk_free_gb"] = round(shutil.disk_usage(HOME).free / 1e9, 1)
+    except OSError:
+        pass
+    try:
+        with open("/proc/uptime") as f:
+            out["uptime_s"] = int(float(f.read().split()[0]))
+    except (OSError, ValueError, IndexError):
+        pass
+    return out
+
+
+def human_uptime(s):
+    d, rem = divmod(int(s), 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d:
+        return f"{d}d {h}h"
+    if h:
+        return f"{h}h {m}m"
+    return f"{m}m"
+
+
+def human_free(gb):
+    return f"{gb / 1000:.1f} TB" if gb >= 1000 else f"{gb:.0f} GB"
+
+
+def system_line():
+    """load 0.42 · mem 61% · 1.2 TB free · up 12d 4h -- whatever we could get."""
+    s = system_stats()
+    bits = []
+    if s.get("load"):
+        bits.append(f"load {s['load'][0]:.2f}")
+    if s.get("mem_used_pct") is not None:
+        bits.append(f"mem {s['mem_used_pct']}%")
+    if s.get("disk_free_gb") is not None:
+        bits.append(f"{human_free(s['disk_free_gb'])} free")
+    if s.get("uptime_s") is not None:
+        bits.append("up " + human_uptime(s["uptime_s"]))
+    return " &middot; ".join(bits)
+
+
+def status():
+    """The dashboard summary behind /api/status. Session NAMES are deliberately
+    left out: a tile on a wall-mounted dashboard should say how busy the box is,
+    not what you called things."""
+    names = sessions()
+    tools = load_tools()[0]
+    agents = []
+    for st in tool_states(tools):
+        agents.append({
+            "id": st["id"], "label": st["label"], "installed": st["installed"],
+            "daemon_running": st["daemon_running"],
+            "servers": [{"dir": i["dir"], "state": i["state"]} for i in st["servers"]],
+        })
+    servers_on = sum(1 for a in agents for s in a["servers"] if s["state"] == "on")
+    daemons_on = sum(1 for a in agents if a["daemon_running"])
+    parts = [f"{servers_on} server" + ("s" if servers_on != 1 else ""),
+             f"{daemons_on} daemon" + ("s" if daemons_on != 1 else "")]
+    out = {
+        "sessions": len(names),
+        "attached": sum(1 for s in names if s["attached"]),
+        "agents": agents,
+        "agents_summary": " · ".join(parts),
+        "version": VERSION,
+    }
+    out.update(system_stats())
+    return out
 
 
 def ago(ts):
@@ -842,6 +1158,7 @@ I_LINK = _svg('<path d="M10.5 13.5a4 4 0 0 0 5.7 0l2.8-2.8a4 4 0 0 0-5.7-5.7l-1.
 I_TRASH = _svg('<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/>'
                '<path d="M6.5 7l.9 12.1A1 1 0 0 0 8.4 20h7.2a1 1 0 0 0 1-.9L17.5 7"/>'
                '<path d="M9.5 7V4.5h5V7"/>')
+I_EDIT = _svg('<path d="M4 20h4l10-10a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l4 4"/>')
 I_LIST = _svg('<path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/>', 18)
 I_PLUS = _svg('<path d="M12 5.5v13"/><path d="M5.5 12h13"/>', 18)
 I_KEYBOARD = _svg('<rect x="2.5" y="6" width="19" height="12" rx="2"/>'
@@ -865,7 +1182,10 @@ h1{margin:0;font:600 20px/28px var(--font-mono);letter-spacing:-.01em;
   display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
 h1 .glyph{color:var(--accent);flex:none}
 h1 small{color:var(--text-secondary);font:400 13px/20px var(--font-mono);letter-spacing:0}
-.tagline{margin:var(--space-1) 0 var(--space-4) 30px;color:var(--text-muted);font-size:12px}
+.tagline{margin:var(--space-1) 0 2px 30px;color:var(--text-muted);font-size:12px}
+/* one quiet line of machine state, under the tagline */
+.sysline{margin:0 0 var(--space-4) 30px;color:var(--text-muted);
+  font:400 11px/16px var(--font-mono);letter-spacing:.01em}
 h2{margin:var(--space-5) 0 var(--space-2);color:var(--text-muted);
   font:600 11px/16px var(--font-mono);letter-spacing:.14em;text-transform:uppercase}
 h2:first-of-type{margin-top:var(--space-4)}
@@ -888,6 +1208,8 @@ h2 + .sess:has(+ :not(.sess)){border-radius:var(--radius-md)}
 .sess .meta{color:var(--text-muted);font:400 12px/18px var(--font-mono);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .meta code{font:inherit;color:var(--text-secondary)}
+.meta.wrap{white-space:normal;overflow:visible;text-overflow:clip}
+.sess .name .pill{font:500 10px/14px var(--font-mono);text-transform:uppercase;letter-spacing:.06em}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--text-muted);flex:none}
 .dot.on{background:var(--accent);box-shadow:0 0 0 3px rgb(57 255 136 / .15)}
 .empty{color:var(--text-muted);padding:var(--space-3);border:1px dashed var(--border);
@@ -968,6 +1290,22 @@ details.card[open] summary::before,details.inline[open] summary::before{content:
 .menu-list button.danger:hover{background:var(--danger-wash);color:var(--danger)}
 .menu-list button.danger:hover .i{color:var(--danger)}
 .menu-list form{margin:0;border-top:1px solid var(--glass-border);margin-top:4px;padding-top:4px}
+/* Rename: a menu item that unfolds into a small inline form, in place */
+.menu-list details.ren > summary{display:flex;align-items:center;justify-content:flex-start;
+  gap:10px;padding:10px 12px;min-height:40px;border-radius:var(--radius-sm);cursor:pointer;
+  color:var(--text-primary);font:500 13px/18px var(--font-mono)}
+.menu-list details.ren > summary:hover{background:rgb(57 255 136 / .10);color:var(--accent)}
+.menu-list details.ren > summary:hover .i{color:var(--accent)}
+.menu-list details.ren form{display:flex;gap:6px;align-items:center;border-top:0;margin:0;
+  padding:0 6px 6px}
+.menu-list details.ren input[type=text]{flex:1 1 auto;min-width:0;width:auto;padding:8px 10px;
+  font:13px/1.3 var(--font-mono)}
+/* the menu's own button rule would flatten Save into a menu item */
+.menu-list details.ren form button{flex:none;width:auto;justify-content:center;padding:8px 14px;
+  min-height:36px;background:var(--accent);color:var(--on-accent)}
+.menu-list details.ren form button:hover{background:#5cffa0;color:var(--on-accent)}
+.menu-list:has(details.ren[open]){min-width:290px}
+@media (pointer:coarse){.menu-list details.ren > summary{min-height:44px}}
 @keyframes sj-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 body.touch .desktop-only{display:none}
 
@@ -1018,6 +1356,14 @@ details.tool[open] .chev{transform:rotate(180deg)}
 .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .pill.on{color:var(--accent);border-color:rgb(57 255 136 / .35);background:var(--accent-wash)}
 .pill.warn{color:var(--warning);border-color:rgb(255 200 87 / .35);background:rgb(255 200 87 / .08)}
+/* "start at boot" -- a checkbox in the option row that posts on change */
+.ab{display:inline-flex;align-items:center;gap:6px;color:var(--text-muted);
+  font:500 11px/16px var(--font-mono);white-space:nowrap;cursor:pointer;user-select:none}
+.ab:hover{color:var(--text-secondary)}
+.ab input{width:16px;height:16px;flex:none;margin:0;appearance:auto;-webkit-appearance:auto;
+  accent-color:var(--accent)}
+.ab:has(input:checked){color:var(--accent)}
+@media (pointer:coarse){.ab input{width:20px;height:20px}}
 .tool .dirline{margin:var(--space-2) 0 0}
 .tool .tbody .note:first-child{margin-top:var(--space-2)}
 .tool .docs{display:inline-block;margin-top:var(--space-2)}
@@ -1049,6 +1395,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <style>{css}</style></head><body><main>
 <h1>{glyph}serverjack <small>{title}</small></h1>
 <p class="tagline">Jack into your server.</p>
+<p class="sysline">{sysline}</p>
 {error}
 {body}
 <p class="foot">Opening a session puts you in a terminal attached to that tmux session. Use the browser's back button to return here (the session keeps running).</p>
@@ -1080,6 +1427,21 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
       return;
     }}
     if (!menu) document.querySelectorAll('details.menu[open]').forEach(function (d) {{ d.removeAttribute('open'); }});
+  }});
+  // "start at boot": the checkbox lives in an option row but belongs (form=)
+  // to a hidden form of its own, because the row is already inside the card's
+  // big form and forms don't nest. Ticking it posts immediately; the Start
+  // row's checkbox first copies whatever the directory picker says.
+  document.addEventListener('change', function (e) {{
+    var cb = e.target.closest && e.target.closest('input.autostart');
+    if (!cb || !cb.form) return;
+    if (cb.dataset.picker && cb.form.elements.dir) {{
+      var card = cb.closest('details.tool');
+      var sel = card && card.querySelector('.dirline select');
+      var typed = card && card.querySelector('.dirline input[name=dir_custom]');
+      cb.form.elements.dir.value = (typed && typed.value.trim()) || (sel && sel.value) || '';
+    }}
+    cb.form.submit();
   }});
 }})();
 </script>
@@ -1139,6 +1501,17 @@ SHORTCUT_CARD = """<div class="card sess">
   </form>
 </div>"""
 
+UPDATE_CARD = """<div class="card sess" id="sc-update">
+  <div class="info">
+    <div class="name">Update serverjack <i class="pill">built-in</i></div>
+    <div class="meta"><code>{cmd}</code></div>
+    <div class="meta wrap">pulls the latest and re-runs the installer; the terminal reconnects when it restarts.</div>
+  </div>
+  <form method="post" action="/shortcuts/run">
+    <input type="hidden" name="id" value="{id}"><button class="btn" type="submit">Run</button>
+  </form>
+</div>"""
+
 SESSION_CARD = """<div class="card sess">
   <div class="info">
     <div class="name"><span class="dot{on}"></span>{name}</div>
@@ -1150,6 +1523,14 @@ SESSION_CARD = """<div class="card sess">
       <a href="{href}" data-open="here">{i_here}<span>Open here</span></a>
       <a href="{href}?popout=1" data-open="popout" class="desktop-only">{i_popout}<span>Pop out</span></a>
       {ssh_items}
+      <details class="ren"><summary>{i_edit}<span>Rename</span></summary>
+        <form method="post" action="/rename">
+          <input type="hidden" name="name" value="{name}">
+          <input type="text" name="new" value="{name}" required maxlength="60" autocomplete="off"
+            autocapitalize="off" spellcheck="false" aria-label="New name for {name}">
+          <button class="btn sm" type="submit">Save</button>
+        </form>
+      </details>
       <form method="post" action="/kill" onsubmit="return confirm('Kill session “{name}”? Anything running in it is lost.')">
         <input type="hidden" name="name" value="{name}"><button type="submit" class="danger">{i_trash}<span>Kill session</span></button>
       </form>
@@ -1195,6 +1576,26 @@ body{{display:flex;flex-direction:column;height:100vh;height:100dvh;position:rel
 .tab:hover{{color:var(--text-primary)}}
 .tab:focus-visible{{outline:2px solid var(--accent);outline-offset:-2px}}
 .tab.on{{color:var(--accent);border-bottom-color:var(--accent);background:var(--accent-wash)}}
+.tab .wb{{margin-left:6px;color:var(--text-muted);font-size:11px}}
+.tab.on .wb{{color:var(--accent);opacity:.85}}
+/* ---- tmux windows of the current session (glass, under the active tab) */
+#winmenu{{position:absolute;z-index:12;min-width:210px;max-width:min(340px,calc(100vw - 16px));
+  max-height:60vh;overflow:auto;background:var(--glass-bg);
+  -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));
+  border:1px solid var(--glass-border);border-radius:var(--radius-md);padding:6px;
+  box-shadow:0 16px 40px rgb(0 0 0 / .45);display:flex;flex-direction:column;
+  animation:sj-in 140ms ease}}
+#winmenu[hidden]{{display:none}}
+#winmenu button{{display:flex;align-items:baseline;gap:8px;width:100%;text-align:left;
+  padding:9px 10px;min-height:40px;border:0;border-radius:var(--radius-sm);background:transparent;
+  color:var(--text-primary);font:500 13px/18px var(--font-mono);cursor:pointer}}
+#winmenu button:hover{{background:rgb(57 255 136 / .10);color:var(--accent)}}
+#winmenu button.on{{color:var(--accent)}}
+#winmenu .wi{{color:var(--text-muted);flex:none;min-width:1.4em}}
+#winmenu button.on .wi{{color:var(--accent)}}
+#winmenu .wn{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+#winmenu .wc{{margin-left:auto;padding-left:8px;color:var(--text-muted);font-size:11px;flex:none}}
+@media (pointer:coarse){{#winmenu button{{min-height:44px}}}}
 #frame-wrap{{flex:1 1 auto;position:relative;min-height:0}}
 #frame{{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000}}
 /* ---- touch key row (phones/tablets): Esc, Tab, arrows, Ctrl... */
@@ -1309,6 +1710,7 @@ body.popout #popout,body.touch #popout{{display:none}}
   <div class="err" id="err"></div>
   <button class="btn" type="submit">Start &amp; open</button>
 </form>
+<div id="winmenu" hidden></div>
 <div id="frame-wrap"><iframe id="frame" src="{src}" allow="clipboard-read; clipboard-write"></iframe></div>
 <div id="keys">
   <button class="k" data-k="Escape">Esc</button>
@@ -1533,9 +1935,65 @@ APP_JS = r"""
   function setUrl(name) { history.replaceState(null, '', pageUrl(name)); document.title = name + ' · ' + TITLE; }
   function switchTo(name) {
     if (name === cur) { focusTerm(); return; }
-    cur = name;
+    cur = name; WINS = []; closeWins();
     frame.src = termSrc(name);
     setUrl(name); refresh();
+  }
+
+  // ---- tmux windows of the current session. They belong to the session, not
+  // to this client: selecting one moves every attached client, which is what
+  // you want when the phone and the desktop are on the same session.
+  var WINS = [], winmenu = document.getElementById('winmenu');
+  function closeWins() { winmenu.hidden = true; }
+  function paintBadge() {
+    var t = tabs.querySelector('.tab.on'); if (!t) return;
+    var old = t.querySelector('.wb'); if (old) old.parentNode.removeChild(old);
+    if (WINS.length < 2) return;
+    var pos = 0; WINS.forEach(function (w, i) { if (w.active) pos = i + 1; });
+    var b = document.createElement('span'); b.className = 'wb';
+    b.textContent = '\u00b7 ' + pos + '/' + WINS.length;
+    t.appendChild(b);
+    t.title = WINS.length + ' windows \u2014 tap to switch';
+  }
+  function fillWins() {
+    winmenu.innerHTML = '';
+    WINS.forEach(function (w) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = w.active ? 'on' : '';
+      if (w.active) b.setAttribute('aria-current', 'true');
+      var i = document.createElement('span'); i.className = 'wi';
+      i.textContent = (w.active ? '\u25b8' : '') + w.index;
+      var n = document.createElement('span'); n.className = 'wn'; n.textContent = w.name;
+      var c = document.createElement('span'); c.className = 'wc'; c.textContent = w.cmd || '';
+      b.appendChild(i); b.appendChild(n); b.appendChild(c);
+      b.onclick = function () { selectWin(w.index); };
+      winmenu.appendChild(b);
+    });
+  }
+  function openWins(anchor) {
+    if (WINS.length < 2) { focusTerm(); return; }      // one window: nothing to pick
+    if (!winmenu.hidden) { closeWins(); focusTerm(); return; }
+    fillWins(); winmenu.hidden = false; winmenu.style.left = '0px';
+    var r = anchor.getBoundingClientRect();
+    winmenu.style.top = (r.bottom + 4) + 'px';
+    winmenu.style.left = Math.max(4, Math.min(r.left, innerWidth - winmenu.offsetWidth - 8)) + 'px';
+    var first = winmenu.querySelector('button.on') || winmenu.querySelector('button');
+    if (first) first.focus();
+  }
+  function selectWin(index) {
+    fetch('/api/window', { method: 'POST',
+                           body: new URLSearchParams({ name: cur, index: index }) })
+      .then(function () { closeWins(); focusTerm(); return loadWins(); })
+      .catch(function () { closeWins(); });
+  }
+  function loadWins() {
+    return fetch('/api/windows?name=' + encodeURIComponent(cur), { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(function (list) {
+        WINS = Array.isArray(list) ? list : [];
+        paintBadge();
+        if (!winmenu.hidden) fillWins();
+      }).catch(function () {});
   }
   function render(list) {
     learn(list);
@@ -1547,16 +2005,20 @@ APP_JS = r"""
       b.className = 'tab' + (s.name === cur ? ' on' : '');
       b.textContent = s.name;
       b.title = s.cmd + ' · ' + s.path;
-      b.onclick = function () { switchTo(s.name); };
+      b.onclick = function () {
+        if (s.name === cur) openWins(b); else switchTo(s.name);
+      };
       tabs.appendChild(b);
     });
+    paintBadge();
     var on = tabs.querySelector('.on'); if (on) on.scrollIntoView({ inline: 'nearest', block: 'nearest' });
     // current session gone (exited / killed elsewhere): move on instead of
     // sitting on a dead terminal
     if (!present && cur !== null) { if (list.length) { cur = null; switchTo(list[0].name); } else location.href = '/'; }
   }
   function refresh() {
-    return fetch('/api/sessions', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(render).catch(function () {});
+    return fetch('/api/sessions', { cache: 'no-store' }).then(function (r) { return r.json(); })
+      .then(render).then(loadWins).catch(function () {});
   }
   function syncKind() {
     var k = (pop.querySelector('input[name=kind]:checked') || {}).value || 'shell';
@@ -1603,7 +2065,13 @@ APP_JS = r"""
     body.classList.toggle('showbar');
     if (!body.classList.contains('showbar')) { pop.classList.remove('open'); focusTerm(); }
   };
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') pop.classList.remove('open'); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { pop.classList.remove('open'); closeWins(); }
+  });
+  document.addEventListener('click', function (e) {
+    if (winmenu.hidden) return;
+    if (!winmenu.contains(e.target) && !(e.target.closest && e.target.closest('#tabs .tab.on'))) closeWins();
+  });
   document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
   setInterval(refresh, 15000);
   refresh(); hook(); touchCss(); focusTerm();
@@ -1713,6 +2181,20 @@ def tool_card(t, st, dirs, open_=False):
         return ('<form method="post" action="/tools">' + hid
                 + (dirline if with_dir else "") + inner + "</form>")
 
+    # "start at boot". Same form= trick as Stop: the checkbox sits in the
+    # option row, its form is hidden below. picker=True means "whatever the
+    # directory picker says at the moment you tick it" (the Start rows).
+    def autostart_box(fid, kind, cwd=None, picker=False):
+        on = autostart_on(tid, kind, cwd)
+        form = (f'<form method="post" action="/tools/autostart" id="{fid}" hidden>' + hid
+                + f'<input type="hidden" name="kind" value="{kind}">'
+                + f'<input type="hidden" name="dir" value="{esc(cwd or "")}"></form>')
+        box = (f'<label class="ab" title="Start this when serverjack starts">'
+               f'<input class="autostart" type="checkbox" form="{fid}" name="on" value="1"'
+               + (" checked" if on else "") + (' data-picker="1"' if picker else "")
+               + "> start at boot</label>")
+        return form, box
+
     open_btn = '<button class="btn sec" type="submit" name="do" value="/tools/open">Open</button>'
 
     if not st["installed"]:
@@ -1758,18 +2240,23 @@ def tool_card(t, st, dirs, open_=False):
                            + '<input type="hidden" name="action" value="stop">'
                            + f'<input type="hidden" name="session" value="{esc(inst["session"])}"></form>')
                 href = esc(term_href(inst["session"]))
+                aform, abox = autostart_box(f"a-{esc(tid)}-server-{n}", "server", inst["dir"])
+                aux.append(aform)
                 if inst["state"] == "on":
-                    btns = (f'<button class="btn sm sec" type="submit" form="{fid}">Stop</button>'
+                    btns = (abox
+                            + f'<button class="btn sm sec" type="submit" form="{fid}">Stop</button>'
                             f'<a class="btn sm sec" href="{href}">Open</a>')
                     rows.append(orow(f'{esc(label)} &middot; <code>{esc(inst["dir"])}</code>',
                                      "Running for this directory.", btns))
                 else:
-                    btns = (f'<a class="btn sm sec" href="{href}">Open</a>'
+                    btns = (abox + f'<a class="btn sm sec" href="{href}">Open</a>'
                             f'<button class="btn sm sec" type="submit" form="{fid}">Remove</button>')
                     rows.append(orow(f'{esc(label)} &middot; <code>{esc(inst["dir"])}</code>',
                                      "It exited; Open shows why.", btns))
+            aform, abox = autostart_box(f"a-{esc(tid)}-server-new", "server", picker=True)
+            aux.append(aform)
             rows.append(orow(f"Start {esc(label)}", esc(server.get("note", "")),
-                             '<button class="btn sm sec" type="submit" name="do" '
+                             abox + '<button class="btn sm sec" type="submit" name="do" '
                              'value="/tools/server">Start</button>'))
         elif server:
             label = server.get("label") or "server"
@@ -1779,14 +2266,21 @@ def tool_card(t, st, dirs, open_=False):
                 aux.append(f'<form method="post" action="/tools/server" id="{fid}" hidden'
                            + CONFIRM.format(esc(label)) + ">" + hid
                            + '<input type="hidden" name="action" value="stop"></form>')
-                btns = (f'<button class="btn sm sec" type="submit" form="{fid}">Stop</button>'
+                aform, abox = autostart_box(f"a-{esc(tid)}-server", "server",
+                                            st["servers"][0]["dir"] if st["servers"] else HOME)
+                aux.append(aform)
+                btns = (abox
+                        + f'<button class="btn sm sec" type="submit" form="{fid}">Stop</button>'
                         f'<a class="btn sm sec" href="{href}">Open</a>')
                 rows.append(orow(esc(label), esc(server.get("note", "")), btns))
             else:
-                btns = ('<button class="btn sm sec" type="submit" name="do" '
-                        'value="/tools/server">Start</button>')
+                aform, abox = autostart_box(f"a-{esc(tid)}-server", "server", picker=True)
+                aux.append(aform)
+                btns = abox
                 if sstate == "exited":
-                    btns = f'<a class="btn sm sec" href="{href}">Open</a>' + btns
+                    btns += f'<a class="btn sm sec" href="{href}">Open</a>'
+                btns += ('<button class="btn sm sec" type="submit" name="do" '
+                         'value="/tools/server">Start</button>')
                 rows.append(orow(esc(label), esc(server.get("note", "")), btns,
                                  hint=("It exited; Open shows why. Start replaces it."
                                        if sstate == "exited" else "")))
@@ -1799,8 +2293,10 @@ def tool_card(t, st, dirs, open_=False):
             aux.append(f'<form method="post" action="/tools/daemon" id="{fid}" hidden'
                        + (CONFIRM.format(esc(label)) if running else "") + ">" + hid
                        + f'<input type="hidden" name="action" value="{act}"></form>')
+            aform, abox = autostart_box(f"a-{esc(tid)}-daemon", "daemon")
+            aux.append(aform)
             rows.append(orow(esc(label), esc(daemon.get("note", "")),
-                             f'<button class="btn sm sec" type="submit" form="{fid}">'
+                             abox + f'<button class="btn sm sec" type="submit" form="{fid}">'
                              f'{word}</button>'))
 
         if t.get("login"):
@@ -1828,20 +2324,24 @@ def render(error=None, name="", dir_custom="", cmd="", label="", sc_label="", sc
             ago=ago(s["created"]),
             attached=" &middot; attached" if s["attached"] else "",
             href=esc(term_href(s["name"])),
-            dots=I_DOTS, i_here=I_HERE, i_popout=I_POPOUT, i_trash=I_TRASH,
+            dots=I_DOTS, i_here=I_HERE, i_popout=I_POPOUT, i_trash=I_TRASH, i_edit=I_EDIT,
             ssh_items=SSH_ITEMS.format(cmd=esc(ssh_cmd(s["name"])), url=esc("ssh://" + SSH_TARGET),
                                        i_copy=I_COPY, i_link=I_LINK) if SSH_TARGET else "",
         ) for s in sess)
     else:
         cards = '<div class="empty">No sessions running. Run a command above, or start a shell below.</div>'
     scs = load_shortcuts()
+    # The built-in row first, and only when this really is a git checkout --
+    # a tarball copy has nothing to pull.
+    builtin = (UPDATE_CARD.format(id=esc(UPDATE_ID), cmd=esc(UPDATE_CMD))
+               if update_available() else "")
     if scs:
-        shortcuts = "\n".join(SHORTCUT_CARD.format(
+        shortcuts = builtin + "\n" + "\n".join(SHORTCUT_CARD.format(
             id=esc(x["id"]), label=esc(x.get("label") or x["cmd"]), cmd=esc(x["cmd"]),
             trash=I_TRASH,
             dir=esc((x.get("dir") or HOME).replace(HOME, "~", 1))) for x in scs)
     else:
-        shortcuts = '<div class="empty">None yet. Tick “Save as a shortcut” above to keep a command here.</div>'
+        shortcuts = builtin + '\n<div class="empty">None yet. Tick “Save as a shortcut” above to keep a command here.</div>'
 
     tools, tools_error = load_tools()
     if tools:
@@ -1862,7 +2362,8 @@ def render(error=None, name="", dir_custom="", cmd="", label="", sc_label="", sc
         "<h2>Agents</h2>", agents,
     ])
     err = "".join(f'<div class="err">{esc(e)}</div>' for e in (error, tools_error) if e)
-    return PAGE.format(css=CSS, error=err, body=body, title=esc(TITLE), glyph=I_PROMPT)
+    return PAGE.format(css=CSS, error=err, body=body, title=esc(TITLE), glyph=I_PROMPT,
+                       sysline=system_line())
 
 
 def render_term(name, popout=False):
@@ -1951,7 +2452,8 @@ ICON_PNG = icon_png()
 # --------------------------------------------------------------- server ----
 
 TOOL_ROUTES = ("/tools/install", "/tools/login", "/tools/open",
-               "/tools/action", "/tools/server", "/tools/daemon")
+               "/tools/action", "/tools/server", "/tools/daemon",
+               "/tools/autostart")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1983,7 +2485,13 @@ class Handler(BaseHTTPRequestHandler):
     # because nothing else can reach us -- in unix mode the socket is 0600
     # inside a 0700 dir (tailscaled runs as root), and in tcp mode the README
     # says your proxy must set it and strip any client-supplied copy.
-    OPEN_PATHS = ("/healthz", "/manifest.webmanifest", "/icon.svg", "/icon-180.png")
+    # Exempt from SERVERJACK_ALLOW. /api/status is here for the same reason
+    # /healthz is: a dashboard tile polling it is a machine, not a tailnet
+    # user, so there is no Tailscale-User-Login header to match and an ALLOW
+    # check could only 403 it. Both are still behind the peer-uid check, and
+    # /api/status reports counts only -- never session names.
+    OPEN_PATHS = ("/healthz", "/api/status", "/manifest.webmanifest",
+                  "/icon.svg", "/icon-180.png")
 
     def identity_ok(self, path):
         """(ok, login). ok is always True when SERVERJACK_ALLOW is unset."""
@@ -2052,6 +2560,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(ICON_PNG, "image/png")
         if path == "/api/sessions":
             return self.send_json(sessions())
+        if path == "/api/windows":
+            q = parse_qs(urlparse(self.path).query)
+            name = (q.get("name") or [""])[0]
+            if not session_exists(name):
+                return self.send_json([], 404)
+            return self.send_json(windows(name))
+        if path == "/api/status":
+            return self.send_json(status())
         if path == "/api/tools":
             return self.send_json(tool_states(load_tools()[0]))
         if path == "/api/screen":
@@ -2141,6 +2657,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True})
             return self.redirect("/")
 
+        if path in ("/rename", "/api/rename"):
+            new, err = rename_session(f.get("name", ""), f.get("new", ""))
+            if path == "/api/rename":
+                if err:
+                    return self.send_json({"error": err}, 400)
+                return self.send_json({"ok": True, "name": new,
+                                       "token": session_token(new)})
+            if err:
+                return self.send_html(render(err), 400)
+            return self.redirect("/")
+
+        if path == "/api/window":
+            name = f.get("name", "")
+            idx = f.get("index", "")
+            if not session_exists(name) or not str(idx).isdigit():
+                return self.send_json({"error": "no such session or window"}, 404)
+            r = tmux("select-window", "-t", f"={name}:{int(idx)}")
+            if r.returncode != 0:
+                return self.send_json({"error": (r.stderr or r.stdout).strip()}, 400)
+            return self.send_json({"ok": True, "index": int(idx)})
+
         if path == "/shortcuts/add":
             cmd = f.get("cmd", "").strip()
             if not cmd:
@@ -2158,6 +2695,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/shortcuts/run":
             sid = f.get("id", "")
+            if sid == UPDATE_ID:
+                if not update_available():
+                    return self.send_html(render("This copy of serverjack is not a git checkout."), 400)
+                # install.sh restarts the unit at the end; KillMode=process
+                # keeps the tmux server (and this session) alive, so the
+                # result stays on screen and the page reconnects to it.
+                return self.launch(auto_name("update"), REPO, UPDATE_CMD)
             sc = next((x for x in load_shortcuts() if x["id"] == sid), None)
             if not sc:
                 return self.send_html(render("That shortcut no longer exists."), 404)
@@ -2250,6 +2794,22 @@ class Handler(BaseHTTPRequestHandler):
                     return fail(err)
             return self.launch(auto_name(a.get("label") or tid), cwd, a["cmd"], tid)
 
+        if path == "/tools/autostart":
+            kind = f.get("kind", "")
+            if kind not in ("server", "daemon"):
+                return fail("Unknown autostart kind.")
+            if kind == "server" and not (t.get("server") or {}).get("cmd"):
+                return fail(f"No server is configured for {t['label']}.")
+            if kind == "daemon" and not (t.get("daemon") or {}).get("start"):
+                return fail(f"No daemon is configured for {t['label']}.")
+            cwd = HOME
+            if kind == "server":
+                cwd, err = resolve_dir(f.get("dir"), "")
+                if err:
+                    return fail(err)
+            set_autostart(tid, kind, cwd, bool(f.get("on")))
+            return self.redirect("/")
+
         if path == "/tools/server":
             server = t.get("server") or {}
             sess = server.get("session")
@@ -2260,6 +2820,10 @@ class Handler(BaseHTTPRequestHandler):
                 # Only ever kill one of this server's own sessions.
                 if target == sess or (server.get("per_dir") and target.startswith(sess + "-")):
                     tmux("kill-session", "-t", f"={target}")
+                # A deliberate stop must not come back after a restart: drop
+                # the autostart entry that would recreate this same session.
+                drop_autostart(lambda e: e.get("tool") == tid and e.get("kind") == "server"
+                               and server_session_name(server, _auto_dir(e.get("dir"))) == target)
                 clear_tool_cache(tid)
                 return self.redirect("/")
             # Start in the directory picked on the card: Claude's server opens
@@ -2293,6 +2857,8 @@ class Handler(BaseHTTPRequestHandler):
             if r.returncode != 0:
                 tail = "\n".join(((r.stderr or "") + (r.stdout or "")).strip().splitlines()[-5:])
                 return fail(f"“{cmd}” exited with status {r.returncode}. {tail}", 500)
+            if action == "stop":
+                drop_autostart(lambda e: e.get("tool") == tid and e.get("kind") == "daemon")
             return self.redirect("/")
 
         return fail("Unknown action.", 404)
@@ -2354,6 +2920,9 @@ if __name__ == "__main__":
         peers = ",".join(str(u) for u in sorted(ALLOWED_UIDS))
     sys.stderr.write(f"serverjack listening on {where}  title={TITLE!r} allow={allow} "
                      f"uids={peers} dirs={DIR_ROOTS} tools={[t['id'] for t in load_tools()[0]]}\n")
+    # autostart.json, in the background: the page must come up now, not in
+    # AUTOSTART_DELAY seconds. Daemon thread, so Ctrl-C still exits.
+    threading.Thread(target=autostart_boot, name="autostart", daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

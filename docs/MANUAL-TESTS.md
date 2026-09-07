@@ -20,11 +20,13 @@ Open it in Chrome (with the Claude in Chrome extension) or do the steps by hand.
 7. Click another tab in the bar. The terminal switches; the URL changes to /s/<name>. Click back.
 8. Press + in the bar, try to create a session with the same name "t-desktop". An inline error appears. Escape closes the panel.
 9. On the home page, Open pops the session out into a separate small window with only the terminal (a ⋯ button in its top-right corner shows/hides the bar) and the home page stays. Clicking Open again for the same session refocuses that window instead of opening another. ☰ inside the pop-out closes it.
+9a. In the ⋯ menu of a session, tap **Rename**. A small text box unfolds in place with the current name in it. Change it and Save: the list comes back with the new name and `tmux ls` agrees. Try renaming it to the name of another session and to `a.b` — both are refused with the reason at the top of the page, and nothing is renamed. If you had a second tab open on the old session, it should move itself to another session within ~15 seconds (the token is tied to the name, so its terminal is gone on purpose).
 9b. In the ⋯ menu of a session: "Open here" opens it in this tab; "Copy SSH command" copies an `ssh -t ... tmux attach` line that works in a terminal; "Open in SSH app" launches your SSH client if one is installed.
 9c. From an in-tab session, ↗ pops it out and this tab goes back to the list (you are not attached twice).
 10. Press ✕ in the bar, confirm. You are moved to another session (or the list if none).
 11. Resize the browser window. The terminal reflows (tmux status bar stays at the bottom).
 12. Reload the page while in a session. You reconnect into the same session with its history intact.
+13. In the session's terminal run `tmux new-window`. The active tab in the bar grows a small `· 2/2` badge. Click the ACTIVE tab (not another one): a compact list of the windows opens, showing index, name and command, with the current one marked. Pick the other one — the terminal switches and the menu closes. Press Escape with it open: it closes. `tmux kill-window` back to one window; the badge disappears and clicking the active tab does nothing.
 Report PASS/FAIL per step plus browser name and OS.
 
 ## Mac (Safari and Chrome)
@@ -49,6 +51,8 @@ You are testing a browser-based tmux terminal at https://<your-host>/ on iPhone 
 12. Long-press in the terminal: can you select and copy text? Long-press then Paste: does it paste?
 13. Tap ↗ pop-out: expected to just open a new tab (phones don't do popups). Not a fail.
 14. Share → Add to Home Screen. Open it from the home screen. It should open full screen with no Safari bars, and opening a session should stay inside it.
+14b. **Mouse mode** (needs `set -g mouse on` — `bash install.sh --mouse` adds it): run `seq 1 500` in a session, then drag one finger up and down over the terminal. The pane's scrollback scrolls instead of the web page, and tapping the bottom or pressing `q` leaves copy mode. Without mouse mode this does nothing and PgUp/PgDn in the key row are the only way — check both and say which you tested.
+14c. In a session with two windows (`tmux new-window`), tap the active tab: the window list opens as a comfortable, readable sheet with 44px rows, and picking one switches. Nothing overflows sideways.
 15. ☰ goes back to the list; ✕ closes: in a pop-out it closes the window, in a tab it goes back to the list. The session keeps running either way (kill it from its menu on the landing page).
 Report PASS/FAIL per step and the iOS version.
 
@@ -171,3 +175,37 @@ account's serverjack up and published on 443.
 8. Re-install the second account and check `loginctl show-user <user> -p Linger`
    — linger is per user, so this account needs its own
    `sudo loginctl enable-linger` before its units survive a logout/reboot.
+
+## Start at boot (needs a reboot)
+
+Marked **needs a reboot** — the point of this one is that it survives one.
+
+1. On an agent row, tick **start at boot** next to a server or daemon you can
+   afford to have running (Claude Code's Remote Control server in a scratch
+   directory is a good one). `cat ~/.config/serverjack/autostart.json` shows an
+   entry with `tool`, `kind` and, for a server, the directory you had picked.
+2. `systemctl --user restart serverjack`, wait ~20 seconds, then reload the
+   page: the pill says running and the tmux session is there.
+   `journalctl --user -u serverjack | grep autostart` explains what it did.
+3. Start it, then **Stop** it from the page. The entry is gone from
+   `autostart.json` — a deliberate stop must not come back.
+4. Tick the box again, then reboot the machine. After it comes up (give it a
+   minute; the unit waits for `network-online.target` and then 15 seconds more),
+   the session is running without anyone opening the page. This is the whole
+   test — if linger is not enabled for your account
+   (`loginctl show-user $USER -p Linger`) nothing starts until you log in, and
+   that is the likely failure.
+5. Delete `autostart.json` (or untick everything) when you are done, so a test
+   server isn't left starting on every boot.
+
+## Update serverjack (any device)
+
+1. In Shortcuts, the first row is **Update serverjack**, marked *built-in*,
+   with a Run button and no delete button.
+2. Tap Run. A session called `update` opens, `git pull --ff-only` and
+   `bash install.sh` scroll past, the units restart — and the terminal
+   reconnects to the same session on its own within a few seconds, with the
+   installer's summary still on screen and a shell prompt under it.
+3. Go back to the list: the `update` session is in Sessions. Kill it.
+4. On a copy of serverjack that is not a git checkout (e.g. `rm -rf .git` in a
+   scratch clone), the row is not there at all.

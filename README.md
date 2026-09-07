@@ -12,8 +12,8 @@ Tailscale from an iPhone or a laptop. Open a URL and you get three things:
 - **Sessions** — every tmux session on the box as a button. Tap to attach.
   Any "type a path" field accepts a directory that doesn't exist yet and
   creates it, so starting a shell or an agent in a new project is one step.
-  Open, kill, pop out into its own window on a desktop, or hand off to a real
-  SSH client. A "New shell" form for starting one in a chosen directory.
+  Open, rename, kill, pop out into its own window on a desktop, or hand off to
+  a real SSH client. A "New shell" form for starting one in a chosen directory.
 - **Agents** — a collapsed accordion row per coding CLI (Claude Code, Codex,
   OpenCode, GitHub Copilot CLI, Gemini CLI). Open one and it lists the ways to
   start that tool side by side, one line each on how they differ: install it,
@@ -22,8 +22,9 @@ Tailscale from an iPhone or a laptop. Open a URL and you get three things:
   command in a tmux session and shows you the terminal.
 
 The terminal itself is [ttyd](https://github.com/tsl0922/ttyd) in an iframe,
-with session tabs, a phone soft-key row (Esc, Tab, Shift-Tab, Ctrl, arrows,
-^C, PgUp/PgDn, Paste, Copy) and a compose bar you can type or dictate into.
+with session tabs, a tmux-window picker on the active tab, a phone soft-key row
+(Esc, Tab, Shift-Tab, Ctrl, arrows, ^C, PgUp/PgDn, Paste, Copy) and a compose
+bar you can type or dictate into.
 "Add to Home Screen" on iOS gives a full-screen app with no browser chrome.
 
 Everything server-side is one stdlib Python file plus a prebuilt ttyd binary.
@@ -53,6 +54,53 @@ the terminal. So:
 
 Tick "save as a shortcut" and it becomes a one-tap button in the Shortcuts
 list for next time. Shortcuts live in `~/.config/serverjack/shortcuts.json`.
+
+### Update serverjack
+
+The Shortcuts list has one row you did not add: **Update serverjack**, marked
+*built-in* and with no delete button. It runs
+
+```
+cd <the checkout this is running from> && git pull --ff-only && bash install.sh
+```
+
+in an ordinary command session called `update`, so you watch the pull and the
+installer scroll past and are left at a prompt with the result. It only appears
+when the copy of serverjack you are running really is a git checkout (there is
+a `.git` next to `bin/`) — a tarball has nothing to pull.
+
+`install.sh` restarts the serverjack unit at the end, which is fine from inside
+the browser: the unit is `KillMode=process`, so the tmux server and this
+session outlive the restart, and the page reconnects to the same session as
+soon as the new process is listening.
+
+## Sessions
+
+Every tmux session on the box is a row: a status dot, the command, the
+directory, how many windows, and how long it has been there. **Open** attaches
+(a pop-out window on a desktop, the same tab on a phone). The ⋯ menu has
+*Open here*, *Pop out*, the two SSH hand-offs, **Rename**, and *Kill session*.
+
+Rename unfolds a small text box in place; the same rules as a new session
+apply, so tmux's forbidden characters (`:` and `.`) and a name something else
+already has are refused with the reason. Renaming a session changes its
+terminal token — the token is an HMAC over the name — so a browser sitting on
+the old `/s/<name>` loses its terminal. That is harmless: the page notices
+within 15 seconds that the name is gone and moves itself to another session,
+exactly as it does when a session is killed.
+
+### tmux windows
+
+The bar's tabs are *sessions*. Windows live inside a session, and when the one
+you are looking at has more than one the active tab gains a small count badge
+(`pwtest · 2/3`). Tapping the active tab opens a compact list of the windows —
+index, name, and the command running in each, with the current one marked —
+and tapping one selects it. With a single window the active tab does nothing,
+as before.
+
+Selecting a window is a tmux operation, not a browser one, so **every client
+attached to that session moves with you** — the phone and the desktop are
+looking at the same session. That is tmux, not serverjack.
 
 ## Agents
 
@@ -101,6 +149,30 @@ Coding CLIs like to install into a private bin directory that only your
 therefore lists the directories it might live in (`paths`); the ones that
 exist are added to the `PATH` used for the installed/logged-in checks, the
 daemon commands, and every session serverjack starts.
+
+### Start at boot
+
+Every server and daemon option row has a small **start at boot** checkbox. Tick
+it and the thing is recorded in `~/.config/serverjack/autostart.json`:
+
+```json
+[
+  {"tool": "claude", "kind": "server", "dir": "/home/you/projects/app"},
+  {"tool": "codex", "kind": "daemon"}
+]
+```
+
+An entry means "make sure this is running when serverjack starts". Fifteen
+seconds after startup (the unit waits for `network-online.target`, and these
+commands all want the network; override with `SERVERJACK_AUTOSTART_DELAY`) a
+background thread walks the list: a daemon whose pidfile names no live process
+is started, and a server whose session is missing — or is sitting at a dead
+shell — is created in its directory. Anything already up is left alone, and
+every decision is logged to `journalctl --user -u serverjack`.
+
+Stopping something from the page **removes** its entry, so a deliberate stop
+does not come back after the next restart. Starting something does not add one
+unless you tick the box.
 
 ## Why this and not X
 
@@ -209,6 +281,17 @@ Flags (all optional):
 | `--ttyd-port N` | ttyd port (default `7681`); implies `--tcp` |
 | `--https-port N` | HTTPS port `tailscale serve` publishes on: `443`, `8443` or `10000` (default `443`) |
 | `--title NAME` | page / tab / PWA name (default the hostname) |
+| `--mouse` | add `set -g mouse on` to `~/.tmux.conf` without asking (see below) |
+
+**tmux mouse mode.** Without `set -g mouse on`, a phone cannot scroll a pane's
+history — dragging scrolls the web page, and the soft PgUp/PgDn keys are the
+only way into tmux copy mode. Because that is a change to *your* tmux config,
+the installer never does it silently: `--mouse` adds the line (and
+`tmux source-file`s it into the running server, so existing sessions get it
+too), a real terminal is asked `Enable tmux mouse mode so phones can scroll
+history? [Y/n]`, and a non-interactive run with no flag just prints the line to
+add. It is idempotent — any uncommented `set … mouse on` already in the file
+counts, and nothing is appended twice.
 
 The value flags write into `~/.config/serverjack/env` — they set the
 initial value when the file is created, and rewrite just that line if you pass
@@ -318,6 +401,7 @@ left in place; delete it when you're happy.
 | `TTYD_EXTRA_ARGS` | | e.g. `-b /term` if your proxy does not strip the prefix |
 | `SERVERJACK_SSH` | `auto` | `user@host` for the SSH menu items (tailnet DNS name if Tailscale is up, else hostname); `off` hides them |
 | `SERVERJACK_CONFIG` | `~/.config/serverjack` | config directory override |
+| `SERVERJACK_AUTOSTART_DELAY` | `15` | seconds after startup before `autostart.json` is acted on |
 
 ### Tools
 
@@ -368,6 +452,69 @@ installed or isn't logged in you land on its error message and a prompt
 instead of a session that vanished. Shells with a start command, the Run box,
 and shortcuts all work the same way: the command runs, then you get a prompt.
 
+## Status line and /api/status
+
+Under the tagline is one quiet line of machine state:
+
+```
+load 0.42 · mem 61% · 1.2 TB free · up 12d 4h
+```
+
+straight from `os.getloadavg()`, `/proc/meminfo`, `shutil.disk_usage($HOME)`
+and `/proc/uptime`. No caching, no background thread; anything the platform
+doesn't answer is simply left out.
+
+The same numbers, plus what the agents are doing, come out of `GET
+/api/status` as JSON:
+
+```json
+{
+  "sessions": 6, "attached": 1,
+  "agents": [{"id": "claude", "label": "Claude Code", "installed": true,
+              "daemon_running": false,
+              "servers": [{"dir": "~/projects/app", "state": "on"}]}],
+  "agents_summary": "1 server · 1 daemon",
+  "load": [0.42, 0.5, 0.6], "mem_used_pct": 61,
+  "disk_free_gb": 1204.3, "uptime_s": 1051200, "version": "1.1"
+}
+```
+
+**Session names are deliberately not in it.** A dashboard should say how busy
+the box is, not what you called things.
+
+`/api/status` is exempt from `SERVERJACK_ALLOW`, for the same reason
+`/healthz` is: a dashboard tile polling it is a machine, not a tailnet user, so
+there is no `Tailscale-User-Login` header to match and the check could only
+ever 403 it. It is **not** exempt from the peer-uid check — only root
+(tailscaled), you, and any uid in `SERVERJACK_TRUST_UIDS` can open the socket
+at all.
+
+A [Homepage](https://gethomepage.dev) tile, for example — the widget's `url`
+must be one the dashboard's container can reach, so use the tailnet name if
+that is how it is published:
+
+```yaml
+- serverjack:
+    icon: mdi-console
+    href: https://myhost.my-tailnet.ts.net/
+    # Quoted: an unquoted colon in a value breaks Homepage's YAML.
+    description: "Jack into your server: tmux sessions, a paste-and-run box, coding agents"
+    widget:
+      type: customapi
+      url: https://myhost.my-tailnet.ts.net/api/status
+      refreshInterval: 30000
+      mappings:
+        - field: sessions
+          label: Sessions
+          format: number
+        - field: attached
+          label: Attached
+          format: number
+        - field: agents_summary
+          label: Agents
+          format: text
+```
+
 ## How it fits together
 
 ```
@@ -401,17 +548,21 @@ with a scratch runtime dir, so docker is the only thing that has to be
 installed and a real install is never touched. One of the suites (`pwauth`)
 brings up a second pair with `SERVERJACK_ALLOW` set and plays the part of
 `tailscale serve` by sending the identity header; a host-side check proves the
-peer-uid rule by curling from containers running as uid 65534, 0 and 101. `docs/MANUAL-TESTS.md` is a
+peer-uid rule by curling from containers running as uid 65534, 0 and 101, and
+another starts a throwaway instance with an `autostart.json` pointing at a fake
+server to prove it comes up on its own. `docs/MANUAL-TESTS.md` is a
 checklist for real devices; iOS Safari's soft-keyboard behaviour is only
 verifiable there.
 
 ## Known limitations
 
 - Linux WebKit browsers (Epiphany) still need Ctrl+Shift+C to copy.
+- Scrolling history on a phone needs `set -g mouse on` in `~/.tmux.conf` (or
+  the PgUp/PgDn soft keys, which enter tmux copy mode). `install.sh --mouse`
+  adds it, and an interactive install offers to; see
+  [Install](#install-no-sudo).
 - tmux resizes a session to its most recent client, so a phone attaching
   shrinks the desktop view until the desktop sends a key. That's tmux.
-- Scrolling history on a phone needs `set -g mouse on` in `~/.tmux.conf`
-  (or the PgUp/PgDn soft keys, which enter tmux copy mode).
 - Installer and units are Linux + systemd only.
 
 ## License

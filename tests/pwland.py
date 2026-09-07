@@ -16,6 +16,7 @@ import time
 from playwright.sync_api import sync_playwright
 
 BASE = "http://127.0.0.1:7699"
+AUTH = "http://127.0.0.1:7698"          # the SERVERJACK_ALLOW instance
 TAG = str(int(time.time()))[-6:]
 T = ["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default")]
 MADE = []          # sessions this suite created, killed at the end
@@ -76,6 +77,22 @@ with sync_playwright() as p:
     ok("Run card has the paste box, dir picker and Run button",
        page.locator("#cmd").count() == 1 and page.locator("#dir").count() == 1
        and page.locator('form[action="/run"] button[type=submit]').count() == 1)
+    sysline = page.locator(".sysline").inner_text() if page.locator(".sysline").count() else ""
+    ok("a system line renders under the tagline",
+       "load" in sysline and "up " in sysline, repr(sysline))
+    ok("...with memory and free disk too",
+       "mem " in sysline and "free" in sysline, repr(sysline))
+    # The one built-in shortcut. run.sh runs bin/serverjack out of the checkout,
+    # so REPO/.git is there; never actually clicked (it would restart the unit).
+    upd = page.locator("#sc-update")
+    ok("built-in Update serverjack row is offered", upd.count() == 1)
+    if upd.count():
+        ok("...marked built-in, with no delete button",
+           "built-in" in upd.inner_text().lower() and upd.locator('form[action="/shortcuts/del"]').count() == 0,
+           upd.inner_text())
+        ok("...showing the command and what it does",
+           "git pull --ff-only" in upd.inner_text() and "reconnects" in upd.inner_text(),
+           upd.inner_text())
     page.screenshot(path="shots/landing.png", full_page=True)
 
     # ------------------------------------------- run + save a shortcut ----
@@ -94,6 +111,43 @@ with sync_playwright() as p:
     ok("the pasted command ran in that session", f"LAND_{TAG}" in out, out[-300:])
     ok("...and the login shell reports its exit status",
        "[exited with status 0]" in out, out[-300:])
+
+    # ------------------------------------------------------------ rename ----
+    newname = f"landren-{TAG}"
+    page.goto(f"{BASE}/")
+    sel = f'.sess:has(a.open[data-name="{run_sess}"])'
+    page.click(f"{sel} details.menu summary")
+    page.click(f"{sel} details.ren summary")
+    page.fill(f'{sel} form[action="/rename"] input[name=new]', newname)
+    page.click(f'{sel} form[action="/rename"] button[type=submit]')
+    page.wait_for_load_state()
+    ok("Rename in the menu renames the tmux session",
+       exists(newname) and not exists(run_sess), f"{run_sess} -> {newname}")
+    ok("...and the list shows the new name",
+       page.locator(f'.sess:has(a.open[data-name="{newname}"])').count() == 1)
+    # a duplicate is refused, and nothing is renamed
+    sel = f'.sess:has(a.open[data-name="{newname}"])'
+    page.click(f"{sel} details.menu summary")
+    page.click(f"{sel} details.ren summary")
+    page.fill(f'{sel} form[action="/rename"] input[name=new]', "pwtest")
+    page.click(f'{sel} form[action="/rename"] button[type=submit]')
+    page.wait_for_load_state()
+    errtext = page.locator(".err").first.inner_text() if page.locator(".err").count() else ""
+    ok("renaming onto an existing name is refused",
+       "already exists" in errtext and exists(newname), errtext or "no error shown")
+    # and a name tmux can't have
+    r = page.request.post(f"{BASE}/api/rename", form={"name": newname, "new": "bad.name"})
+    ok("/api/rename refuses a name with a dot",
+       r.status == 400 and "contain" in r.json().get("error", ""), r.text())
+    # put it back, so the cleanup at the end finds it
+    page.goto(f"{BASE}/")
+    sel = f'.sess:has(a.open[data-name="{newname}"])'
+    page.click(f"{sel} details.menu summary")
+    page.click(f"{sel} details.ren summary")
+    page.fill(f'{sel} form[action="/rename"] input[name=new]', run_sess)
+    page.click(f'{sel} form[action="/rename"] button[type=submit]')
+    page.wait_for_load_state()
+    ok("renaming back restores the old name", exists(run_sess) and not exists(newname))
 
     # ----------------------------------------------- shortcut lifecycle ----
     page.goto(f"{BASE}/")
@@ -176,6 +230,50 @@ with sync_playwright() as p:
     if st:
         ok("...installed", st["installed"] is True, json.dumps(st))
         ok("...logged in", st["logged_in"] is True, json.dumps(st))
+
+    # ------------------------------------------------------ /api/status ----
+    r = page.request.get(f"{BASE}/api/status")
+    js = r.json()
+    ok("/api/status answers", r.status == 200, str(r.status))
+    ok("...with session counts",
+       isinstance(js.get("sessions"), int) and isinstance(js.get("attached"), int),
+       json.dumps(js)[:300])
+    ok("...machine stats (load, mem, disk, uptime)",
+       all(k in js for k in ("load", "mem_used_pct", "disk_free_gb", "uptime_s")),
+       str(sorted(js)))
+    ok("...a version", bool(js.get("version")), str(js.get("version")))
+    ok("...and one entry per agent with its state",
+       isinstance(js.get("agents"), list) and js["agents"]
+       and all(set(("id", "label", "installed", "daemon_running", "servers")) <= set(a)
+               for a in js["agents"]),
+       json.dumps(js.get("agents"))[:300])
+    # No session name may appear as a value anywhere in the payload. Compared
+    # against the parsed values, not the raw text: agent ids are in there on
+    # purpose ("fake" is both a tool and a session here), and a substring match
+    # would trip over ordinary words like "servers" too.
+    def strings(v):
+        if isinstance(v, str):
+            yield v
+        elif isinstance(v, dict):
+            for x in v.values():
+                yield from strings(x)
+        elif isinstance(v, list):
+            for x in v:
+                yield from strings(x)
+    values = set(strings(js))
+    agentwords = {w for a in js.get("agents", []) for w in (a["id"], a["label"])}
+    live = [n for n in subprocess.run(T + ["list-sessions", "-F", "#{session_name}"],
+                                      capture_output=True, text=True).stdout.split()
+            if n not in agentwords]
+    ok("/api/status names no sessions",
+       bool(live) and not (values & set(live)), f"{sorted(values & set(live))} of {live}")
+    # It is exempt from SERVERJACK_ALLOW on purpose: a dashboard tile carries
+    # no tailnet identity, and the page itself stays 403.
+    sr = page.request.get(f"{AUTH}/api/status")
+    pr = page.request.get(f"{AUTH}/")
+    ok("/api/status is reachable on the ALLOW instance with no identity header",
+       sr.status == 200, str(sr.status))
+    ok("...while the page itself is still 403", pr.status == 403, str(pr.status))
 
     # ------------------------------------------------------- clean up ----
     page.goto(f"{BASE}/")

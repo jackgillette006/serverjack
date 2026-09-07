@@ -10,6 +10,8 @@
 #   127.0.0.1:7691  ttyd              /
 #   127.0.0.1:7692  serverjack        \ SERVERJACK_ALLOW=alice@example.com,
 #   127.0.0.1:7693  ttyd              / driven by tests/pwauth.py
+#   127.0.0.1:7694  serverjack        a throwaway instance for the autostart
+#                                     check below, started and killed here
 #   127.0.0.1:7699 / :7698  nginx, mimicking tailscale serve's routing
 #     (/term/ -> ttyd with the prefix stripped, / -> the landing page)
 # plus a scratch tmux session "pwtest", then drives Chromium / Firefox / WebKit
@@ -29,13 +31,13 @@ RT=$PWD/shots/rt
 rm -rf "$RT"; mkdir -p "$RT"; chmod 700 "$RT"
 cleanup() {
   docker rm -f tw-proxy >/dev/null 2>&1
-  for port in 7690 7691 7692 7693; do
+  for port in 7690 7691 7692 7693 7694; do
     for p in $(ss -ltnp 2>/dev/null | grep ":$port " | grep -o 'pid=[0-9]*' | cut -d= -f2); do kill "$p" 2>/dev/null; done
   done
   tmux kill-session -t pwtest 2>/dev/null
   # sessions the landing-page suite creates: "echo ..." -> echo/echo-2,
   # the fake tool's Open -> fake/fake-2, its action -> hello/hello-2
-  for n in $(tmux ls -F '#{session_name}' 2>/dev/null | grep -E '^(echo|fake|fake2|hello)(-[0-9]+)?$'); do
+  for n in $(tmux ls -F '#{session_name}' 2>/dev/null | grep -E '^(echo|fake|fake2|hello|landren-[0-9]+|pwauto)(-[0-9]+)?$'); do
     tmux kill-session -t "=$n" 2>/dev/null
   done
 }
@@ -89,7 +91,38 @@ uidcheck "another local user (uid 65534) is refused" 403 --user 65534
 uidcheck "root (tailscaled's uid) gets in" 200 --user 0
 uidcheck "the trusted proxy uid (101) gets in" 200 --user 101
 
-suites=("$@"); [[ ${#suites[@]} -eq 0 ]] && suites=(pwtest pwclip pwmobile pwpop pwland pwauth)
+# ---------------------------------------------------------------- autostart
+# autostart.json is a boot-time thing, so it gets its own throwaway instance
+# rather than a browser: a config dir with one fake tool whose "server" is
+# `sleep 300`, an autostart entry for it, and a 2-second delay instead of 15.
+# Passing means the tmux session appeared without anyone pressing a button.
+echo "== autostart (host-side)"
+ACFG=$PWD/shots/cfg-auto
+rm -rf "$ACFG"; mkdir -p "$ACFG"
+cat > "$ACFG/tools.json" <<'JSON'
+[{"id": "fakesrv", "label": "Fake server", "bin": "true", "run": "bash",
+  "server": {"label": "Fake server", "cmd": "sleep 300", "session": "pwauto"}}]
+JSON
+cat > "$ACFG/autostart.json" <<'JSON'
+[{"tool": "fakesrv", "kind": "server", "dir": "."}]
+JSON
+tmux kill-session -t =pwauto 2>/dev/null
+auto=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE=test XDG_RUNTIME_DIR="$RT" SERVERJACK_CONFIG="$ACFG"
+      SERVERJACK_TOOLS=fakesrv SERVERJACK_PORT=7694 SERVERJACK_AUTOSTART_DELAY=2)
+(env "${auto[@]}" python3 ../bin/serverjack >shots/web-auto.log 2>&1 &)
+for i in $(seq 1 30); do tmux has-session -t =pwauto 2>/dev/null && break; sleep 0.5; done
+if tmux has-session -t =pwauto 2>/dev/null; then
+  echo "  PASS autostart started the fake server's session"
+  grep -q 'autostart: started fakesrv server' shots/web-auto.log \
+    && echo "  PASS ...and said so on stderr" \
+    || echo "  FAIL ...and said so on stderr  -- $(tail -1 shots/web-auto.log)"
+else
+  echo "  FAIL autostart started the fake server's session  -- $(tail -3 shots/web-auto.log | tr '\n' ' ')"
+fi
+tmux kill-session -t =pwauto 2>/dev/null
+for p in $(ss -ltnp 2>/dev/null | grep ':7694 ' | grep -o 'pid=[0-9]*' | cut -d= -f2); do kill "$p" 2>/dev/null; done
+
+suites=("$@"); [[ ${#suites[@]} -eq 0 ]] && suites=(pwtest pwclip pwmobile pwpop pwland pwauth pwwin)
 docker run --rm --network host -v "$PWD:/w" -w /w -v "$SOCK:$SOCK" -e TMUX_SOCK="$SOCK/default" "$IMG" bash -c '
   pip install -q playwright==1.62.0 >/dev/null 2>&1
   (apt-get -qq update && apt-get -qq install -y tmux) >/dev/null 2>&1
