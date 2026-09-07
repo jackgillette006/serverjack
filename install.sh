@@ -3,6 +3,9 @@
 #
 #   bash install.sh              install/refresh and (re)start
 #   bash install.sh --no-serve   skip the tailscale serve step
+#   bash install.sh --port N --ttyd-port N --https-port N --title NAME
+#                                pick ports/name -- needed when a second Linux
+#                                account on this machine also runs serverjack
 #
 # What it does, all inside your own account:
 #   0. migrates an older tmux-web install (env file, shortcuts, old user units)
@@ -26,7 +29,33 @@ CFG_DIR=$HOME/.config/serverjack
 ENV_FILE=$CFG_DIR/env
 UNIT_DIR=$HOME/.config/systemd/user
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
-NO_SERVE=0; [[ "${1:-}" == "--no-serve" ]] && NO_SERVE=1
+NO_SERVE=0
+# Empty unless passed on the command line. A flag sets the value in a NEW env
+# file, and rewrites that one line in an existing one -- everything else kept.
+OPT_PORT=; OPT_TTYD_PORT=; OPT_HTTPS_PORT=; OPT_TITLE=
+usage() { sed -n '2,8p' "$0"; exit "${1:-0}"; }
+while (( $# )); do
+  case "$1" in
+    --no-serve)   NO_SERVE=1 ;;
+    --port)       OPT_PORT=${2:?--port needs a number}; shift ;;
+    --ttyd-port)  OPT_TTYD_PORT=${2:?--ttyd-port needs a number}; shift ;;
+    --https-port) OPT_HTTPS_PORT=${2:?--https-port needs a number}; shift ;;
+    --title)      OPT_TITLE=${2:?--title needs a name}; shift ;;
+    --port=*)       OPT_PORT=${1#*=} ;;
+    --ttyd-port=*)  OPT_TTYD_PORT=${1#*=} ;;
+    --https-port=*) OPT_HTTPS_PORT=${1#*=} ;;
+    --title=*)      OPT_TITLE=${1#*=} ;;
+    -h|--help)    usage 0 ;;
+    *) echo "unknown option: $1" >&2; usage 1 >&2 ;;
+  esac
+  shift
+done
+for p in "$OPT_PORT" "$OPT_TTYD_PORT" "$OPT_HTTPS_PORT"; do
+  [[ -z $p || $p =~ ^[0-9]+$ ]] || { echo "not a port number: $p" >&2; exit 1; }
+done
+# tailscale only terminates HTTPS on these three ports.
+[[ -z $OPT_HTTPS_PORT || $OPT_HTTPS_PORT =~ ^(443|8443|10000)$ ]] \
+  || { echo "--https-port must be 443, 8443 or 10000 (tailscale serve only listens on those)" >&2; exit 1; }
 
 TTYD_VER=1.7.7
 FZF_VER=0.74.3
@@ -111,9 +140,12 @@ if [[ ! -f "$ENV_FILE" ]]; then
 # serverjack configuration. Restart after editing:
 #   systemctl --user restart serverjack serverjack-ttyd
 PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
-SERVERJACK_PORT=7680
-TTYD_PORT=7681
-SERVERJACK_TITLE=$(hostname -s)
+SERVERJACK_PORT=${OPT_PORT:-7680}
+TTYD_PORT=${OPT_TTYD_PORT:-7681}
+# HTTPS port \`tailscale serve\` publishes on (443, 8443 or 10000). serve is
+# machine-wide, so a second account on this box needs its own port here.
+SERVERJACK_HTTPS_PORT=${OPT_HTTPS_PORT:-443}
+SERVERJACK_TITLE=${OPT_TITLE:-$(hostname -s)}
 # Directories offered when starting a session (colon-separated, ~ ok)
 SERVERJACK_DIRS=~/projects:~/src:~/workspace:~
 # Coding tools come from a registry: the built-ins (Claude Code, Codex, OpenCode,
@@ -134,29 +166,90 @@ fi
 # Read the few values we need the way systemd does (KEY=value, optional
 # quotes) -- NOT with `source`, which chokes on unquoted spaces like "Claude Code".
 cfg() { local v; v=$(grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2-); v=${v#\"}; v=${v%\"}; printf '%s' "${v:-$2}"; }
+# Explicitly-passed flags update an existing env file: rewrite that one line in
+# place (or append it if the file predates the setting), keep everything else.
+setcfg() {
+  local key=$1 val=$2
+  if grep -qE "^$key=" "$ENV_FILE"; then
+    [[ "$(cfg "$key")" == "$val" ]] && return 0
+    sed -i "s|^$key=.*|$key=$val|" "$ENV_FILE"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$ENV_FILE"
+  fi
+  say "Set $key=$val in $ENV_FILE"
+}
+[[ -n $OPT_PORT       ]] && setcfg SERVERJACK_PORT       "$OPT_PORT"
+[[ -n $OPT_TTYD_PORT  ]] && setcfg TTYD_PORT             "$OPT_TTYD_PORT"
+[[ -n $OPT_HTTPS_PORT ]] && setcfg SERVERJACK_HTTPS_PORT "$OPT_HTTPS_PORT"
+[[ -n $OPT_TITLE      ]] && setcfg SERVERJACK_TITLE      "$OPT_TITLE"
 SERVERJACK_PORT=$(cfg SERVERJACK_PORT 7680)
 TTYD_PORT=$(cfg TTYD_PORT 7681)
+HTTPS_PORT=$(cfg SERVERJACK_HTTPS_PORT 443)
 SERVERJACK_TERM=$(cfg SERVERJACK_TERM /term/)
+
+# ---------------------------------------------------------------- port clashes
+port_free() { ! ss -ltnp 2>/dev/null | grep -q ":$1 "; }
+# ss shows the listener as users:(("python3",pid=...)) -- we can't see WHOSE it
+# is without root, but the process name is enough to guess "another account's".
+port_holder() { ss -ltnp 2>/dev/null | grep ":$1 " | grep -o 'users:.*' | head -1; }
+# First free (n, n+1) pair at or after $1, so the remedy suggests real ports.
+free_pair() {
+  local p=$1
+  while (( p < 65000 )); do
+    port_free "$p" && port_free "$((p+1))" && { printf '%s' "$p"; return; }
+    p=$((p+10))
+  done
+  printf '%s' "$1"
+}
+# An HTTPS port for this account that nothing else is serving on.
+free_https() {
+  local p
+  for p in 443 8443 10000; do
+    [[ -z "$(serve_backend_for "$p" /)" ]] && { printf '%s' "$p"; return; }
+  done
+  printf '8443'
+}
+# Backend port `tailscale serve` currently proxies <https port><path> to, if any.
+serve_backend_for() {
+  command -v tailscale >/dev/null 2>&1 || return 0
+  tailscale serve status 2>/dev/null | awk -v wp="$1" -v wpath="$2" '
+    /^https:\/\// { h=$1; sub(/^https:\/\//,"",h); n=split(h,a,":");
+                    cur=(n>1 ? a[n] : "443"); next }
+    /^\|--/ && cur==wp && $2==wpath { n=split($NF,b,":"); print b[n]; exit }'
+}
+remedy() {  # $1 = why, printed first
+  local p; p=$(free_pair $(( SERVERJACK_PORT + 10 )))
+  echo "$1" >&2
+  echo "Pick free ports and a free HTTPS port for this account, e.g.:" >&2
+  echo "  bash $REPO/install.sh --port $p --ttyd-port $((p+1)) --https-port $(free_https)" >&2
+  echo "  (add --title $USER-serverjack so the two pages are told apart on a phone)" >&2
+}
+
+# refuse to fight another process for the ports (e.g. an older system-level
+# install, or another Linux account's serverjack)
+for port in "$SERVERJACK_PORT" "$TTYD_PORT"; do
+  if ! port_free "$port" && ! systemctl --user is-active --quiet serverjack serverjack-ttyd 2>/dev/null; then
+    holder=$(port_holder "$port")
+    if [[ $holder == *'"python3"'* || $holder == *'"ttyd"'* || $holder == *'"serverjack"'* ]]; then
+      whose="another process (probably another user's serverjack)"
+    else
+      whose="another process"
+    fi
+    remedy "port $port is in use by $whose: $holder"
+    if [[ -f /etc/systemd/system/tmux-web.service || -f /etc/systemd/system/ttyd.service ]]; then
+      echo "Or, if that is the old system-level tmux-web install, remove it once (needs root):" >&2
+      echo "  sudo systemctl disable --now tmux-web ttyd; sudo rm -f /etc/systemd/system/{tmux-web,ttyd}.service; sudo systemctl daemon-reload" >&2
+      echo "then re-run: bash $REPO/install.sh" >&2
+    fi
+    exit 1
+  fi
+done
 
 # ---------------------------------------------------------------- units
 for u in serverjack serverjack-ttyd; do
   sed "s|@REPO@|$REPO|g" "systemd/$u.service" > "$UNIT_DIR/$u.service"
 done
 systemctl --user daemon-reload
-
-# refuse to fight another process for the ports (e.g. an older system-level install)
-for port in "$SERVERJACK_PORT" "$TTYD_PORT"; do
-  if ss -ltnp 2>/dev/null | grep -q ":$port " && ! systemctl --user is-active --quiet serverjack serverjack-ttyd 2>/dev/null; then
-    holder=$(ss -ltnp 2>/dev/null | grep ":$port " | grep -o 'users:.*' | head -1)
-    echo "port $port is already in use by something that isn't our user unit: $holder" >&2
-    if [[ -f /etc/systemd/system/tmux-web.service || -f /etc/systemd/system/ttyd.service ]]; then
-      echo "That looks like the old system-level tmux-web install. Remove it once (needs root):" >&2
-      echo "  sudo systemctl disable --now tmux-web ttyd; sudo rm -f /etc/systemd/system/{tmux-web,ttyd}.service; sudo systemctl daemon-reload" >&2
-    fi
-    echo "then re-run: bash $REPO/install.sh" >&2
-    exit 1
-  fi
-done
 
 say "Starting user units"
 systemctl --user enable serverjack serverjack-ttyd >/dev/null 2>&1
@@ -173,17 +266,33 @@ fi
 
 # ---------------------------------------------------------------- tailscale serve
 if (( ! NO_SERVE )) && command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
-  say "Publishing on the tailnet (tailscale serve, HTTPS 443, tailnet only)"
+  say "Publishing on the tailnet (tailscale serve, HTTPS $HTTPS_PORT, tailnet only)"
   mount=${SERVERJACK_TERM%/}
-  if out=$(tailscale serve --bg --https=443 "http://127.0.0.1:$SERVERJACK_PORT" 2>&1) \
-     && out2=$(tailscale serve --bg --https=443 --set-path="$mount" "http://127.0.0.1:$TTYD_PORT" 2>&1); then
+  # `tailscale serve` is machine-wide, not per-user: whoever runs it owns that
+  # (https port, path). Don't take over a mount that points somewhere else --
+  # that would be silently unpublishing another account's serverjack.
+  clash=
+  for pair in "/ $SERVERJACK_PORT" "$mount $TTYD_PORT"; do
+    set -- $pair
+    cur=$(serve_backend_for "$HTTPS_PORT" "$1")
+    [[ -n $cur && $cur != "$2" ]] && clash="https://<host>:$HTTPS_PORT$1 already proxies to 127.0.0.1:$cur, not our $2"
+  done
+  if [[ -n $clash ]]; then
+    remedy "tailscale serve conflict: $clash (probably another user's serverjack)."
+    echo "Skipped tailscale serve; the local units are running on $SERVERJACK_PORT/$TTYD_PORT." >&2
+  elif out=$(tailscale serve --bg --https="$HTTPS_PORT" "http://127.0.0.1:$SERVERJACK_PORT" 2>&1) \
+     && out2=$(tailscale serve --bg --https="$HTTPS_PORT" --set-path="$mount" "http://127.0.0.1:$TTYD_PORT" 2>&1); then
     tailscale serve status | sed 's/^/  /'
     host=$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)
-    [[ -n "$host" ]] && say "Open: https://$host/"
+    hostport=$host; [[ $HTTPS_PORT != 443 ]] && hostport=$host:$HTTPS_PORT
+    [[ -n "$host" ]] && say "Open: https://$hostport/"
   else
-    echo "$out $out2" | grep -qi "denied" \
-      && todo+=("sudo tailscale set --operator=$USER   # then re-run install.sh: serve without sudo") \
-      || { echo "tailscale serve failed:"; echo "$out"; echo "$out2"; }
+    echo "${out:-} ${out2:-}" | grep -qi "denied" \
+      && todo+=("sudo tailscale set --operator=$USER   # then re-run install.sh: serve without sudo.
+   NOTE: --operator takes ONE username for the whole machine. If another account
+   already has it, either leave serve to that account (install.sh --no-serve) or
+   run the serve commands with sudo from this one.") \
+      || { echo "tailscale serve failed:"; echo "${out:-}"; echo "${out2:-}"; }
   fi
 else
   (( NO_SERVE )) || echo "tailscale not found/up: expose it yourself behind something that authenticates (see examples/nginx.conf)"

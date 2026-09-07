@@ -49,8 +49,11 @@ JSON *list* in $SERVERJACK_CONFIG/tools.json; entries are merged over the
 built-in tool with the same id (field by field, except "server"/"daemon",
 which replace wholesale), "hidden": true drops one, and unknown ids are
 appended. Fields: id, label, bin, paths, docs, install, install_note, needs ("node"),
-login, login_note, login_check, run, run_note, server{label,cmd,session,note},
+login, login_note, login_check, run, run_note, server{label,cmd,session,note,per_dir},
 daemon{label,start,stop,pidfile,note}, actions[{label,cmd,note,dir}], hidden.
+server.per_dir: true means one server per project directory (Claude's model):
+each Start makes another tmux session named <session>-<dirname> and the card
+lists every instance with its directory. Otherwise there is one session.
 run_note, actions[].note, server.note and daemon.note are the one-line
 explanations shown beside those options; keep them to a single sentence.
 "paths" lists extra directories to look for "bin" in -- a coding CLI often
@@ -178,6 +181,7 @@ BUILTIN_TOOLS = [
             "label": "Remote Control server",
             "cmd": "claude remote-control",
             "session": "claude-remote",
+            "per_dir": True,
             "note": "No local chat: the Claude app starts Claude Code sessions here on "
                     "demand, several at once, in the directory picked above. One server "
                     "per project directory. Prints a QR code; gives up after ~10 minutes "
@@ -386,18 +390,26 @@ def tool_state(tool, names=None):
     server = tool.get("server") or {}
     sess = server.get("session") or ""
     if names is None:
-        exists = bool(sess) and session_exists(sess)
-    else:
-        exists = bool(sess) and sess in names
+        names = sessions()
+    # Instances: the one session, or (per_dir) every "<session>-<dir>" one.
     # "exited": the session is there but the command has died into the
     # fallback shell (e.g. Claude refusing an untrusted directory); the error
     # is on screen and the server can be started again.
-    state = "off" if not exists else ("exited" if session_idle(sess) else "on")
+    instances = []
+    if sess:
+        for s in names:
+            if s["name"] == sess or (server.get("per_dir") and s["name"].startswith(sess + "-")):
+                instances.append({"session": s["name"], "dir": s["path"],
+                                  "state": "exited" if s["cmd"] in SHELLS else "on"})
+    states = {i["state"] for i in instances}
+    state = "on" if "on" in states else ("exited" if "exited" in states else "off")
     return {
         "id": tid, "label": tool.get("label") or tid,
         "installed": installed, "logged_in": logged_in, "needs_ok": needs_ok,
         "daemon_running": daemon_pid(tool["daemon"]) is not None if tool.get("daemon") else False,
-        "server_running": state == "on", "server_state": state, "server_session": sess,
+        "server_running": state == "on", "server_state": state,
+        "server_session": instances[0]["session"] if instances else sess,
+        "servers": instances,
     }
 
 
@@ -406,7 +418,7 @@ def tool_states(tools):
     one login check, not one per tool."""
     if not tools:
         return []
-    names = {s["name"] for s in sessions()}
+    names = sessions()
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(tools)) as ex:
         return list(ex.map(lambda t: tool_state(t, names), tools))
 
@@ -451,11 +463,24 @@ def session_exists(name):
     return tmux("has-session", "-t", f"={name}").returncode == 0
 
 
+SHELLS = ("bash", "sh", "zsh", "fish", "dash")
+
+
 def session_idle(name):
     """True when the session's pane is sitting at a plain shell, i.e. the
     command a server/tool session was started for has exited."""
     r = tmux("display-message", "-p", "-t", f"={name}:", "#{pane_current_command}")
-    return r.returncode == 0 and r.stdout.strip() in ("bash", "sh", "zsh", "fish", "dash")
+    return r.returncode == 0 and r.stdout.strip() in SHELLS
+
+
+def server_session_name(server, cwd):
+    """tmux session name for a server started in cwd: the configured name, or
+    for per-directory servers "<name>-<dirname>"."""
+    base = server.get("session") or "server"
+    if not server.get("per_dir"):
+        return base
+    tail = re.sub(r"[^A-Za-z0-9_-]+", "-", os.path.basename(cwd.rstrip("/")) or "root").strip("-")
+    return f"{base}-{tail or 'root'}"
 
 
 def auto_name(base="shell"):
@@ -1463,7 +1488,17 @@ def tool_card(t, st, dirs, open_=False):
             bits.append(f'<i class="pill{" on" if on else ""}">'
                         f'{esc(daemon.get("label") or "Daemon")}: '
                         f'{"running" if on else "stopped"}</i>')
-        if server:
+        if server and server.get("per_dir"):
+            # One pill per instance, each naming its directory: "running" alone
+            # would hide the fact that it only serves that one project.
+            label = esc(server.get("label") or "Server")
+            if not st["servers"]:
+                bits.append(f'<i class="pill">{label}: stopped</i>')
+            for inst in st["servers"]:
+                cls = " on" if inst["state"] == "on" else " warn"
+                word = "running" if inst["state"] == "on" else "exited"
+                bits.append(f'<i class="pill{cls}">{label}: {word} &middot; {esc(inst["dir"])}</i>')
+        elif server:
             word = {"on": "running", "exited": "exited", "off": "stopped"}[sstate]
             cls = {"on": " on", "exited": " warn", "off": ""}[sstate]
             bits.append(f'<i class="pill{cls}">{esc(server.get("label") or "Server")}: '
@@ -1521,7 +1556,31 @@ def tool_card(t, st, dirs, open_=False):
                              '<button class="btn sm sec" type="submit" name="do" '
                              f'value="/tools/action:{i}">{word}</button>'))
 
-        if server:
+        if server and server.get("per_dir"):
+            # One row per running/exited instance (Stop + Open), then a Start
+            # row for the directory picked above.
+            label = server.get("label") or "server"
+            for n, inst in enumerate(st["servers"]):
+                fid = f"f-{esc(tid)}-server-{n}"
+                aux.append(f'<form method="post" action="/tools/server" id="{fid}" hidden'
+                           + CONFIRM.format(esc(label)) + ">" + hid
+                           + '<input type="hidden" name="action" value="stop">'
+                           + f'<input type="hidden" name="session" value="{esc(inst["session"])}"></form>')
+                href = esc(term_href(inst["session"]))
+                if inst["state"] == "on":
+                    btns = (f'<button class="btn sm sec" type="submit" form="{fid}">Stop</button>'
+                            f'<a class="btn sm sec" href="{href}">Open</a>')
+                    rows.append(orow(f'{esc(label)} &middot; <code>{esc(inst["dir"])}</code>',
+                                     "Running for this directory.", btns))
+                else:
+                    btns = (f'<a class="btn sm sec" href="{href}">Open</a>'
+                            f'<button class="btn sm sec" type="submit" form="{fid}">Remove</button>')
+                    rows.append(orow(f'{esc(label)} &middot; <code>{esc(inst["dir"])}</code>',
+                                     "It exited; Open shows why.", btns))
+            rows.append(orow(f"Start {esc(label)}", esc(server.get("note", "")),
+                             '<button class="btn sm sec" type="submit" name="do" '
+                             'value="/tools/server">Start</button>'))
+        elif server:
             label = server.get("label") or "server"
             href = esc(term_href(st["server_session"]))
             if sstate == "on":
@@ -1937,23 +1996,27 @@ class Handler(BaseHTTPRequestHandler):
             if not sess or not server.get("cmd"):
                 return fail(f"No server is configured for {t['label']}.")
             if f.get("action") == "stop":
-                tmux("kill-session", "-t", f"={sess}")
+                target = f.get("session") or sess
+                # Only ever kill one of this server's own sessions.
+                if target == sess or (server.get("per_dir") and target.startswith(sess + "-")):
+                    tmux("kill-session", "-t", f"={target}")
                 clear_tool_cache(tid)
                 return self.redirect("/")
-            if session_exists(sess):
-                if not session_idle(sess):
-                    return fail(f"“{sess}” is already running. Open it from the Sessions list.")
-                tmux("kill-session", "-t", f"={sess}")     # exited into its shell: replace it
             # Start in the directory picked on the card: Claude's server opens
             # its sessions there (and never trusts the home directory).
             cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
             if err:
                 return fail(err)
-            err = create_command_session(sess, cwd, server["cmd"])
+            name = server_session_name(server, cwd)
+            if session_exists(name):
+                if not session_idle(name):
+                    return fail(f"“{name}” is already running. Open it from the Sessions list.")
+                tmux("kill-session", "-t", f"={name}")     # exited into its shell: replace it
+            err = create_command_session(name, cwd, server["cmd"])
             clear_tool_cache(tid)
             if err:
                 return fail(err, 500)
-            return self.redirect(term_href(sess))
+            return self.redirect(term_href(name))
 
         if path == "/tools/daemon":
             daemon = t.get("daemon") or {}

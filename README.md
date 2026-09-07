@@ -78,7 +78,7 @@ Ready-state options, per tool:
 
 | Tool | Open | Remote control | Server / daemon |
 |---|---|---|---|
-| Claude Code | `claude` — interactive Claude Code in this terminal only | **Open with remote control**: `claude --remote-control`, the same interactive session, also steerable from the Claude app and claude.ai/code | **Remote Control server**: `claude remote-control` in tmux session `claude-remote`, started in the directory you pick. No local chat — the Claude app starts sessions here on demand, several at once. One server per project directory; prints a QR code, gives up after ~10 minutes without network |
+| Claude Code | `claude` — interactive Claude Code in this terminal only | **Open with remote control**: `claude --remote-control`, the same interactive session, also steerable from the Claude app and claude.ai/code | **Remote Control server**: `claude remote-control`, started in the directory you pick, in a tmux session named `claude-remote-<dir>`. No local chat — the Claude app starts sessions here on demand, several at once. One server per project directory, so the row lists every running one with its directory and Start adds another; prints a QR code, gives up after ~10 minutes without network |
 | Codex | `codex` — interactive Codex in this terminal only | **Pair with phone**: `codex remote-control pair`, prints a short-lived pairing code | **Remote control daemon**: `codex remote-control start` / `stop` (status from `~/.codex/app-server-daemon/app-server.pid`). The ChatGPT app connects to it and opens Codex sessions in any directory on this machine |
 | OpenCode | `opencode` — interactive TUI in this terminal | — | **Server for the mobile app**: `opencode serve` in tmux session `opencode-serve`. Binds 127.0.0.1:4096 by default; override `cmd` in `tools.json` to reach it over Tailscale |
 | GitHub Copilot CLI | `copilot` — interactive Copilot in this terminal only | **Open with remote control**: `copilot --remote`, same session, also steerable from GitHub Mobile or github.com | — |
@@ -157,6 +157,21 @@ The installer downloads pinned, checksum-verified ttyd and fzf binaries into
 systemd units, starts them, and publishes them with `tailscale serve` on
 `https://<machine>.<tailnet>.ts.net/`.
 
+Flags (all optional):
+
+| Flag | Effect |
+|---|---|
+| `--no-serve` | skip the `tailscale serve` step entirely |
+| `--port N` | landing page port (default `7680`) |
+| `--ttyd-port N` | ttyd port (default `7681`) |
+| `--https-port N` | HTTPS port `tailscale serve` publishes on: `443`, `8443` or `10000` (default `443`) |
+| `--title NAME` | page / tab / PWA name (default the hostname) |
+
+The four value flags write into `~/.config/serverjack/env` — they set the
+initial value when the file is created, and rewrite just that line if you pass
+one later. Everything else in the file is left alone, so editing the file by
+hand and passing flags are interchangeable.
+
 Two things need root **once per machine**. The installer detects and prints
 them rather than prompting for a password:
 
@@ -173,6 +188,42 @@ journalctl --user -u serverjack -f
 bash install.sh                                       # re-run after git pull (idempotent)
 bash uninstall.sh
 ```
+
+### Two accounts on one machine
+
+serverjack is per-user by design: user systemd units, your own tmux server,
+your own config. Two Linux accounts can each run one, and each sees **only its
+own tmux sessions** — there is no shared view and no way to reach the other
+account's shells. Three things are machine-wide, though, so the second account
+has to be installed with flags:
+
+```
+bash install.sh --port 7690 --ttyd-port 7691 --https-port 8443 --title serverjack-alice
+```
+
+- **Ports.** Both accounts default to 7680/7681. The first one to start wins;
+  the second's units would crash-loop, so the installer checks first, refuses,
+  and prints a ready-to-paste command with free ports.
+- **`tailscale serve` is machine-wide, not per-user.** Whoever runs it owns
+  that (HTTPS port, path) pair for the whole machine. The first account takes
+  `/` and `/term` on 443; the second uses `--https-port 8443` and is reached at
+  `https://<machine>.<tailnet>.ts.net:8443/` (10000 is the third and last port
+  tailscale will terminate TLS on). The installer will not overwrite a mount
+  that points at someone else's backend — it prints the remedy and skips serve.
+  `uninstall.sh` only turns off the HTTPS port recorded in *its own*
+  `SERVERJACK_HTTPS_PORT`, so it can't unpublish the other account.
+- **`--title`.** Both accounts default the title to the hostname, so on a phone
+  the two pages, tab titles and home-screen icons are indistinguishable. Give
+  each account its own (`--title serverjack-alice`).
+- **The operator grant is *not* per user.** `tailscale set --operator=` takes a
+  single Unix username for the whole machine, so only one account can run
+  `tailscale serve` without sudo. Either leave publishing to that account (the
+  other installs with `--no-serve`), or run the second account's install with
+  `sudo` available; the installer says which case it hit.
+- `loginctl enable-linger` **is** per user: each account needs its own, or its
+  units only run while it is logged in.
+- Don't run `tests/run.sh` from two accounts at once: it uses fixed scratch
+  ports (7690 and 7699) and the second run will fail on the busy port.
 
 ### Upgrading from tmux-web
 
@@ -192,6 +243,7 @@ left in place; delete it when you're happy.
 |---|---|---|
 | `SERVERJACK_PORT` | `7680` | landing page port (localhost) |
 | `TTYD_PORT` | `7681` | ttyd port (localhost) |
+| `SERVERJACK_HTTPS_PORT` | `443` | HTTPS port `tailscale serve` publishes on, and the only one `uninstall.sh` turns off — `443`, `8443` or `10000`. Give a second account on the machine its own |
 | `SERVERJACK_TITLE` | hostname | page title, tab title, PWA name |
 | `SERVERJACK_DIRS` | `~/projects:~/src:~/workspace:~` | directories offered when starting a session |
 | `SERVERJACK_TOOLS` | unset (all) | optional comma-separated tool ids: restricts and orders the Agent rows, e.g. `claude,codex` |
@@ -223,7 +275,7 @@ unrecognised `id` is appended as a new tool.
 | `run` | interactive command for the "Open" option |
 | `run_note` | one-line note under the Open option — how it differs from the others |
 | `paths` | extra directories (may use `~`) to look for `bin` in, on top of `PATH` |
-| `server` | `{label, cmd, session, note}` — long-running command kept in a named tmux session |
+| `server` | `{label, cmd, session, note, per_dir}` — long-running command kept in a named tmux session; `per_dir: true` means one per project directory, sessions named `<session>-<dir>`, each listed with its directory |
 | `daemon` | `{label, start, stop, pidfile, note}` — self-daemonizing command with start/stop and a pidfile for status |
 | `actions` | list of `{label, cmd, note, dir}` extra option rows; `note` is the one-liner beside it, `"dir": true` gives it the directory picker |
 

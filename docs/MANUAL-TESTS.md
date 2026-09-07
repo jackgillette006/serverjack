@@ -96,3 +96,36 @@ Then test each of the three states. The easiest way to see all three is on a mac
 1. From the Claude Code row, pick a directory and tap Open. Claude Code starts inside the session in that directory.
 2. Same for Codex. If Codex isn't installed you should see "codex: command not found" followed by a shell prompt in the chosen directory — not a blank or vanished session.
 3. Kill both test sessions with ✕ when done.
+
+## Second account on the same machine
+
+Needs a second Linux login on the box. Run as that account, with the first
+account's serverjack up and published on 443.
+
+1. `bash install.sh` with no flags: it refuses before starting anything, names
+   the port that is taken, and prints a paste-ready command with free ports,
+   a free HTTPS port and a `--title` suggestion. Check with `systemctl --user
+   status serverjack` that nothing of this account's was started.
+2. Re-run with the printed flags. `~/.config/serverjack/env` now has
+   `SERVERJACK_PORT`, `TTYD_PORT`, `SERVERJACK_HTTPS_PORT` and
+   `SERVERJACK_TITLE` set to those values; both units are active.
+3. The "Open:" line ends in `:8443` (or whichever HTTPS port). Open it on a
+   phone: the page loads, the tab title is this account's `--title`, and the
+   Sessions list shows **only this account's** tmux sessions (`tmux ls` in the
+   terminal agrees; the other account's sessions are not listed anywhere).
+4. Reload the first account's URL (no port). It still works and still shows the
+   first account's sessions — the second install did not steal `/` on 443.
+   `tailscale serve status` lists both blocks.
+5. Re-run `bash install.sh` in the second account with no flags: same ports
+   read back from the env file, no duplicate lines in the env file, no change
+   to the 443 mounts.
+6. If the second account is not the `tailscale set --operator` user, serve is
+   denied: the installer prints the one-time root step and the note that the
+   operator grant is a single username per machine, and the local units are
+   still running (reachable at `http://127.0.0.1:<port>/`).
+7. `bash uninstall.sh` in the second account: it says it is turning off
+   `https=<its own port>` only, and `tailscale serve status` still shows the
+   first account's 443 block intact and working in a browser.
+8. Re-install the second account and check `loginctl show-user <user> -p Linger`
+   — linger is per user, so this account needs its own
+   `sudo loginctl enable-linger` before its units survive a logout/reboot.

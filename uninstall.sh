@@ -23,8 +23,13 @@ fi
 systemctl --user daemon-reload
 
 if command -v tailscale >/dev/null 2>&1; then
-  mount=$(grep -E '^SERVERJACK_TERM=' ~/.config/serverjack/env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'); mount=${mount:-/term/}
-  tailscale serve --https=443 off 2>/dev/null
-  tailscale serve --https=443 --set-path="${mount%/}" off 2>/dev/null
+  # `tailscale serve` is machine-wide. Only ever turn off the HTTPS port THIS
+  # account installed on -- another user's serverjack may own a different one.
+  env_get() { grep -E "^$1=" "$HOME/.config/serverjack/env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'; }
+  mount=$(env_get SERVERJACK_TERM);      mount=${mount:-/term/}
+  https=$(env_get SERVERJACK_HTTPS_PORT); https=${https:-443}
+  echo "turning off tailscale serve on https=$https (/ and ${mount%/})"
+  tailscale serve --https="$https" off 2>/dev/null
+  tailscale serve --https="$https" --set-path="${mount%/}" off 2>/dev/null
 fi
 echo "removed. tmux sessions were not touched."
