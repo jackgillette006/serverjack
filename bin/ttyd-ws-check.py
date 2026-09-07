@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Probe ttyd's WebSocket handshake: same-origin must be accepted (101),
 a foreign Origin must be refused (ttyd -O). Usage:
-    ttyd-ws-check.py https://serverjack.tail1fdec1.ts.net/term/
+    ttyd-ws-check.py https://<machine>.<tailnet>.ts.net/term/
 Exit 0 only if both hold."""
 import base64, os, sys, http.client, ssl
 from urllib.parse import urlparse
