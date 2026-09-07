@@ -83,10 +83,9 @@ directory, how many windows, and how long it has been there. **Open** attaches
 
 Rename unfolds a small text box in place; the same rules as a new session
 apply, so tmux's forbidden characters (`:` and `.`) and a name something else
-already has are refused with the reason. Renaming a session changes its
-terminal token — the token is an HMAC over the name — so a browser sitting on
-the old `/s/<name>` loses its terminal. That is harmless: the page notices
-within 15 seconds that the name is gone and moves itself to another session,
+already has are refused with the reason. Renaming a session leaves a browser
+sitting on the old `/s/<name>` without a session. That is harmless: the page
+notices within 15 seconds that the name is gone and moves itself to another session,
 exactly as it does when a session is killed.
 
 ### tmux windows
@@ -211,46 +210,92 @@ Treat the URL exactly like SSH access. The app refuses cross-site POSTs and
 ttyd rejects WebSockets from other origins, so a malicious web page can't
 drive it from a logged-in browser, but that's hardening, not auth.
 
+**There is one listener, and the terminal is behind it.** serverjack serves
+`/term/` itself: it reverse-proxies that path — WebSocket upgrade and all — to
+ttyd on `$XDG_RUNTIME_DIR/serverjack/ttyd.sock`, a socket inside a `0700`
+directory that no other account and no tailnet device can open. ttyd has no
+notion of a user and cannot tell who is on the other end of its socket, so it
+is never exposed; every check below runs before a single byte reaches it. The
+runtime directory itself is verified at startup (a real directory, not a
+symlink, owned by you, mode `0700`) and serverjack refuses to start otherwise —
+the `/tmp/serverjack-$UID` fallback used when there is no `$XDG_RUNTIME_DIR`
+lives in a world-writable place, so its parent is checked the same way.
+
 **Other accounts on the same machine can't reach it.** A localhost TCP port
 has no owner: on a box with two logins, `curl http://127.0.0.1:7680/run` would
 otherwise hand the *other* account a shell as you. So serverjack looks every
 connection up in `/proc/net/tcp` and answers only root (that's `tailscaled`
 proxying for `tailscale serve`) and its own user — anyone else gets a plain
-403, before routing, before `/healthz`. A reverse proxy running as its own user
-needs its worker uid in `SERVERJACK_TRUST_UIDS`; `SERVERJACK_TRUST_LOCAL=1`
-turns the check off entirely, which hands every local account a shell, so
-don't. ttyd has no such check, and doesn't need one: `bin/tmux-attach.sh`
-refuses to attach without a session token, and only the page can mint those.
+403, before routing, before `/healthz`, before `/term/`. A reverse proxy running
+as its own user needs its worker uid in `SERVERJACK_TRUST_UIDS`;
+`SERVERJACK_TRUST_LOCAL=1` turns the check off entirely, which hands every local
+account a shell, so don't. (Only the exact words `1`, `yes`, `true` or `on`
+count as on — a typo, or `false`, leaves the check running.)
 
-`SERVERJACK_LISTEN=unix` is the alternative: both services bind sockets in
-`$XDG_RUNTIME_DIR/serverjack`, mode `0600` inside a `0700` directory, and the
-kernel does the same job with no uid list to maintain. The catch is that
-`tailscale serve` will not proxy to a Unix socket for an unprivileged caller,
-so that mode costs a one-time `sudo`. tcp is the default because the no-sudo
-install matters more.
+`SERVERJACK_LISTEN=unix` is the alternative: serverjack binds a socket in
+`$XDG_RUNTIME_DIR/serverjack` too, mode `0600` inside that `0700` directory,
+and the kernel does the same job with no uid list to maintain. The catch is
+that `tailscale serve` will not proxy to a Unix socket for an unprivileged
+caller, so that mode costs a one-time `sudo`. tcp is the default because the
+no-sudo install matters more — see the residual risk at the end of this
+section.
 
 **`SERVERJACK_ALLOW` restricts an instance to named tailnet logins.**
 `tailscale serve` authenticates the tailnet *device*, not the person, so on a
 shared tailnet every device that can reach the port gets that account's shell.
 Set `SERVERJACK_ALLOW=alice@github` (comma-separated for more) and every
-request must carry a matching `Tailscale-User-Login` header — the one
-`tailscale serve` injects — or it gets a 403 page naming who the instance
-belongs to. That header is trustworthy in both listen modes, because the checks
-above mean nothing but tailscaled and you can open a connection in the first
-place. Leave `ALLOW` unset and there is no identity check: the tailnet is the
-trust boundary, as before.
+request — the terminal included, because serverjack serves that too — must
+carry a matching `Tailscale-User-Login` header or it gets a 403 page. The page
+deliberately does *not* name the allowed logins; it says only that this
+serverjack belongs to someone else and who you are signed in as. Leave `ALLOW`
+unset and there is no identity check: the tailnet is the trust boundary.
 
-**The terminal is token-gated, always.** `/term/?arg=<name>` only attaches when
-the URL also carries that session's token — an HMAC over the session name,
-keyed by a per-account secret in the runtime dir, minted by the page and
-verified by `bin/tmux-attach.sh`. Without it, ttyd would be the way around
-both of the checks above: it cannot tell a browser the page sent from one
-that typed its URL. There is no no-argument fallback any more (`tmux-picker.sh`
-is still in the repo for use from a real terminal).
+**That header is only believed from a peer that could have authenticated it.**
+`Tailscale-User-Login` is read when the connection's owner is root (that is
+`tailscaled`, and it is what `tailscale serve` sets the header from), or a uid
+you list in `SERVERJACK_TRUST_IDENTITY_UIDS`. For every other allowed peer —
+your own account, a proxy uid from `SERVERJACK_TRUST_UIDS` — the header is
+treated as absent, because such a peer could simply have written it. Only add a
+uid to `SERVERJACK_TRUST_IDENTITY_UIDS` for a proxy that authenticates the user
+itself *and* strips any copy the client sent; `examples/nginx.conf` shows both
+halves.
+
+**Only known `Host:` values are answered.** A domain someone else controls can
+be pointed at `127.0.0.1` and then loaded in your browser — DNS rebinding — and
+the page would be same-origin with *their* name, free to read responses and
+POST back. Nothing above stops that: the connection really does come from a
+browser on this machine. So every request must name a host serverjack knows:
+`127.0.0.1`, `localhost`, `[::1]` (any port), this machine's hostname, its
+tailnet DNS name, and anything you add in `SERVERJACK_HOSTS`. Anything else
+gets `421 unknown Host` before routing. Put your own domain in
+`SERVERJACK_HOSTS` if you front this with a reverse proxy.
+
+**Cross-site POSTs are refused**, by `Sec-Fetch-Site` when the browser sends it
+and by comparing `Origin` to `Host` when it doesn't. A POST carrying *neither*
+is refused as well — every browser sends one of them, so its absence means the
+request did not come from a page on this site. A script that means it (curl, the
+test suite) says `Sec-Fetch-Site: same-origin`.
 
 Identity comes from Tailscale, never from a password serverjack made up. If
 you front it with your own proxy instead, that proxy must set
 `Tailscale-User-Login` itself and strip any copy the client sent.
+
+### Residual risk
+
+In **tcp mode**, `tailscale serve` proxies to `127.0.0.1:7680`, and that port
+belongs to whoever binds it first. While serverjack is *not* running — a crash,
+a restart, the gap after `systemctl --user stop` — another local account can
+bind 7680 and receive everything `tailscale serve` sends to it, including the
+terminal traffic and your `Tailscale-User-Login` header. The peer-uid check
+cannot help: it protects the port serverjack holds, not a port it has lost.
+`Restart=on-failure` keeps retrying, so in practice the window is `RestartSec`
+(3 seconds) after a crash — but it is unbounded while the unit is deliberately
+stopped.
+
+**`SERVERJACK_LISTEN=unix` is immune to this**: the socket lives in a `0700`
+directory, so no other account can create it in serverjack's place. On a
+machine you share with anyone, run `install.sh --unix` and paste the one
+`sudo tailscale serve` line it prints. On a single-user box, tcp is fine.
 
 Every button on the page runs a command as your user. The Agent rows run
 vendor install scripts from the internet; the exact command is shown before
@@ -265,10 +310,13 @@ git clone https://github.com/jackgillette006/serverjack ~/projects/serverjack
 bash ~/projects/serverjack/install.sh
 ```
 
-The installer downloads pinned, checksum-verified ttyd and fzf binaries into
-`~/.local/bin`, writes `~/.config/serverjack/env`, installs two **user**
-systemd units, starts them, and publishes them with `tailscale serve` on
-`https://<machine>.<tailnet>.ts.net/`.
+The installer downloads ttyd and fzf binaries into `~/.local/bin` — HTTPS
+only, and verified against sha256 hashes **pinned in `install.sh` itself**, not
+just against a checksum file fetched from the same host as the binary — writes
+`~/.config/serverjack/env`, installs two **user** systemd units, starts them,
+and publishes serverjack with `tailscale serve` on
+`https://<machine>.<tailnet>.ts.net/`. That is a single mount, `/`: ttyd is not
+published at all, because serverjack proxies the terminal to it.
 
 Flags (all optional):
 
@@ -277,8 +325,7 @@ Flags (all optional):
 | `--no-serve` | skip the `tailscale serve` step entirely |
 | `--tcp` | listen on `127.0.0.1` ports (the default) |
 | `--unix` | listen on private Unix sockets instead — needs one `sudo tailscale serve` |
-| `--port N` | landing page port (default `7680`); implies `--tcp` |
-| `--ttyd-port N` | ttyd port (default `7681`); implies `--tcp` |
+| `--port N` | serverjack's port (default `7680`); implies `--tcp` |
 | `--https-port N` | HTTPS port `tailscale serve` publishes on: `443`, `8443` or `10000` (default `443`) |
 | `--title NAME` | page / tab / PWA name (default the hostname) |
 | `--mouse` | add `set -g mouse on` to `~/.tmux.conf` without asking (see below) |
@@ -335,16 +382,18 @@ here needs sudo beyond the operator grant, and that is only for whoever
 publishes. The second account installs with its own ports, HTTPS port and name:
 
 ```
-bash install.sh --port 7690 --ttyd-port 7691 --https-port 8443 --title serverjack-alice
+bash install.sh --port 7690 --https-port 8443 --title serverjack-alice
 ```
 
-- **Ports.** Both accounts default to 7680/7681. The first one to start wins,
-  so the installer checks first, refuses, and prints a ready-to-paste command
-  with free ports. The other account can't *use* your port anyway — the
-  peer-uid check refuses it — but two processes still can't bind one port.
+- **Ports.** Both accounts default to 7680 (ttyd needs none — it is on a Unix
+  socket in each account's own runtime dir, so those never collide). The first
+  one to start wins, so the installer checks first, refuses, and prints a
+  ready-to-paste command with a free port. The other account can't *use* your
+  port anyway — the peer-uid check refuses it — but two processes still can't
+  bind one port.
 - **`tailscale serve` is machine-wide, not per-user.** Whoever runs it owns
-  that (HTTPS port, path) pair for the whole machine. The first account takes
-  `/` and `/term` on 443; the second uses `--https-port 8443` and is reached at
+  that (HTTPS port, path) pair for the whole machine. Each account needs one
+  mount: the first takes `/` on 443; the second uses `--https-port 8443` and is reached at
   `https://<machine>.<tailnet>.ts.net:8443/` (10000 is the third and last port
   tailscale will terminate TLS on). The installer will not overwrite a mount
   that points at someone else's backend — it prints the remedy and skips serve.
@@ -364,12 +413,21 @@ bash install.sh --port 7690 --ttyd-port 7691 --https-port 8443 --title serverjac
 **Set `SERVERJACK_ALLOW` in each account's env file to that account's own
 tailnet login.** Without it, `tailscale serve` will happily hand *any* tailnet
 device that opens `:8443` a shell as alice — serve authenticates devices, not
-people. With it, bob gets a 403 page, and the terminal refuses him too because
-he has no token. Per-port tailnet ACLs are worth adding on top, but they are
+people. With it, bob gets a 403 page — the terminal included, since serverjack
+serves that itself. Per-port tailnet ACLs are worth adding on top, but they are
 defence in depth, not the mechanism.
 
 Don't run `tests/run.sh` from two accounts at once: it uses fixed scratch ports
-(7690-7693, 7698, 7699) and the second run will fail on the busy port.
+(7690, 7692, 7694) and the second run will fail on the busy port.
+
+### Upgrading from tmux-web
+
+Re-running `install.sh` after a pull is always safe, and from this version on
+it also **removes the old `/term` `tailscale serve` mount** if your machine
+still has one: the terminal now goes through serverjack, so a mount pointing
+straight at ttyd's port would be a way around every check. The installer says
+so when it takes one down. `uninstall.sh` turns off the `/` mount (and that old
+`/term` one, for installs that predate the change).
 
 ### Upgrading from tmux-web
 
@@ -387,18 +445,19 @@ left in place; delete it when you're happy.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SERVERJACK_LISTEN` | `tcp` | `tcp`: the two ports below on `127.0.0.1`, with connections from other local accounts refused by the peer-uid check. `unix`: sockets in `$XDG_RUNTIME_DIR/serverjack` (`web.sock`, `ttyd.sock`) instead, `0600` in a `0700` directory — needs one `sudo tailscale serve` |
+| `SERVERJACK_LISTEN` | `tcp` | How **serverjack** listens; ttyd is always on `$XDG_RUNTIME_DIR/serverjack/ttyd.sock` behind it. `tcp`: the port below on `127.0.0.1`, with connections from other local accounts refused by the peer-uid check. `unix`: `web.sock` in that same `0700` directory, mode `0600` — needs one `sudo tailscale serve`, and is immune to the port-stealing risk above |
 | `SERVERJACK_TRUST_UIDS` | unset | extra uids allowed to connect in `tcp` mode, comma-separated. A reverse proxy running as its own user needs its **worker** uid here (101 on `nginx:alpine`, 33 for Debian `www-data`) |
-| `SERVERJACK_TRUST_LOCAL` | unset | `1` disables the peer-uid check. Only if you know why — it gives every local account a shell as you |
-| `SERVERJACK_ALLOW` | unset | comma-separated tailnet logins (`alice@github`) allowed in. Unset = no identity check. Set = 403 for anyone else, and the terminal requires the page's signed token |
-| `SERVERJACK_PORT` | `7680` | landing page port (localhost) — `tcp` mode only |
-| `TTYD_PORT` | `7681` | ttyd port (localhost) — `tcp` mode only |
+| `SERVERJACK_TRUST_LOCAL` | unset | `1` (or `yes`/`true`/`on`; nothing else) disables the peer-uid check. Only if you know why — it gives every local account a shell as you |
+| `SERVERJACK_TRUST_IDENTITY_UIDS` | unset (root only) | extra uids whose `Tailscale-User-Login` header is believed. root (tailscaled) always is; every other peer's copy of that header is ignored. Only for a proxy that authenticates the user itself and strips the client's copy |
+| `SERVERJACK_ALLOW` | unset | comma-separated tailnet logins (`alice@github`) allowed in. Unset = no identity check. Set = 403 for anyone else, terminal included |
+| `SERVERJACK_HOSTS` | unset | extra `Host:` values to answer to, comma-separated (`term.example.com`). `127.0.0.1`, `localhost`, `[::1]`, the hostname and the tailnet DNS name are always accepted; anything else gets `421` |
+| `SERVERJACK_PORT` | `7680` | serverjack's port (localhost) — `tcp` mode only |
 | `SERVERJACK_HTTPS_PORT` | `443` | HTTPS port `tailscale serve` publishes on, and the only one `uninstall.sh` turns off — `443`, `8443` or `10000`. Give a second account on the machine its own |
 | `SERVERJACK_TITLE` | hostname | page title, tab title, PWA name |
 | `SERVERJACK_DIRS` | `~/projects:~/src:~/workspace:~` | directories offered when starting a session |
 | `SERVERJACK_TOOLS` | unset (all) | optional comma-separated tool ids: restricts and orders the Agent rows, e.g. `claude,codex` |
-| `SERVERJACK_TERM` | `/term/` | URL path your proxy mounts ttyd on |
-| `TTYD_EXTRA_ARGS` | | e.g. `-b /term` if your proxy does not strip the prefix |
+| `SERVERJACK_TERM` | `/term/` | URL path serverjack serves the terminal on (proxying it to ttyd's socket) |
+| `TTYD_EXTRA_ARGS` | | extra ttyd flags; rarely needed, serverjack strips the prefix itself |
 | `SERVERJACK_SSH` | `auto` | `user@host` for the SSH menu items (tailnet DNS name if Tailscale is up, else hostname); `off` hides them |
 | `SERVERJACK_CONFIG` | `~/.config/serverjack` | config directory override |
 | `SERVERJACK_AUTOSTART_DELAY` | `15` | seconds after startup before `autostart.json` is acted on |
@@ -470,17 +529,18 @@ The same numbers, plus what the agents are doing, come out of `GET
 ```json
 {
   "sessions": 6, "attached": 1,
-  "agents": [{"id": "claude", "label": "Claude Code", "installed": true,
-              "daemon_running": false,
-              "servers": [{"dir": "~/projects/app", "state": "on"}]}],
+  "agents": [{"id": "claude", "installed": true,
+              "servers_running": 1, "daemon_running": false}],
   "agents_summary": "1 server · 1 daemon",
   "load": [0.42, 0.5, 0.6], "mem_used_pct": 61,
   "disk_free_gb": 1204.3, "uptime_s": 1051200, "version": "1.1"
 }
 ```
 
-**Session names are deliberately not in it.** A dashboard should say how busy
-the box is, not what you called things.
+**Counts only.** No session names, no directories, not even the agents'
+labels: a dashboard should say how busy the box is, not what you called things
+or where they run. This is the one route `SERVERJACK_ALLOW` cannot check an
+identity on, so it is kept to numbers.
 
 `/api/status` is exempt from `SERVERJACK_ALLOW`, for the same reason
 `/healthz` is: a dashboard tile polling it is a machine, not a tailnet user, so
@@ -518,21 +578,29 @@ that is how it is published:
 ## How it fits together
 
 ```
-browser ──HTTPS──▶ tailscale serve ──┬── /      ──▶ 127.0.0.1:7680  bin/serverjack (page, JSON API)
-                                     └── /term/ ──▶ 127.0.0.1:7681  ttyd
-                                                     └─▶ bin/tmux-attach.sh <session> <token> ──▶ tmux attach
+browser ──HTTPS──▶ tailscale serve ── / ──▶ 127.0.0.1:7680  bin/serverjack
+                                              │   the page, the JSON API, and
+                                              │   /term/ reverse-proxied to:
+                                              └─▶ $XDG_RUNTIME_DIR/serverjack/ttyd.sock  ttyd
+                                                    └─▶ bin/tmux-attach.sh <session> ──▶ tmux attach
 ```
 
-(In `SERVERJACK_LISTEN=unix` mode the two backends are
-`$XDG_RUNTIME_DIR/serverjack/web.sock` and `ttyd.sock` instead.)
+**One `tailscale serve` mount, `/`.** ttyd is never published: it listens only
+on that Unix socket, inside a `0700` directory, and serverjack forwards
+everything under `SERVERJACK_TERM` to it — request line with the prefix
+stripped, headers verbatim (so ttyd's own origin check still sees the real
+`Host` and `Origin`), then raw bytes in both directions once the WebSocket
+upgrade succeeds. If ttyd is down you get a 502 page saying so, in the frame.
+
+(In `SERVERJACK_LISTEN=unix` mode serverjack's own backend is
+`$XDG_RUNTIME_DIR/serverjack/web.sock` instead of the port.)
 
 Both services run as you and talk to your normal tmux server, so the sessions
 shown are the same ones `tmux ls` shows in any other login — including the
 ones an Install or Run button started. Opening a session loads `/s/<name>`,
-whose bar sits over an iframe of `/term/?arg=<name>&arg=<token>`; ttyd passes
-both arguments to `tmux-attach.sh`, which verifies the token and attaches. A
-missing or wrong token is always refused — there is no fallback, so
-`bin/tmux-picker.sh` is now only for use from a real terminal.
+whose bar sits over an iframe of `/term/?arg=<name>`; ttyd passes that one
+argument to `tmux-attach.sh`, which attaches. There is no no-argument fallback,
+so `bin/tmux-picker.sh` is only for use from a real terminal.
 
 The units use `KillMode=process` on purpose: if the browser is the first thing
 to create a tmux session after boot, the tmux server is a child of the unit,
@@ -541,16 +609,20 @@ and a default restart would take every session down with it.
 ## Tests
 
 `tests/run.sh` runs real browsers (Chromium, Firefox, WebKit with iPhone
-emulation) in a Playwright container against a local nginx that mimics
-tailscale serve's routing, and reads the tmux pane from the host to prove
-keystrokes arrived. It starts its own serverjack and ttyd on scratch ports
-with a scratch runtime dir, so docker is the only thing that has to be
-installed and a real install is never touched. One of the suites (`pwauth`)
-brings up a second pair with `SERVERJACK_ALLOW` set and plays the part of
-`tailscale serve` by sending the identity header; a host-side check proves the
-peer-uid rule by curling from containers running as uid 65534, 0 and 101, and
-another starts a throwaway instance with an `autostart.json` pointing at a fake
-server to prove it comes up on its own. `docs/MANUAL-TESTS.md` is a
+emulation) in a Playwright container straight against serverjack — no proxy in
+the middle any more, since serverjack serves the terminal itself — and reads the
+tmux pane from the host to prove keystrokes arrived. It starts two instances on
+scratch ports, each with its own scratch runtime dir (and so its own
+`ttyd.sock`), so docker is the only thing that has to be installed and a real
+install is never touched. One of the suites (`pwauth`) drives the instance with
+`SERVERJACK_ALLOW` set, plays the part of `tailscale serve` by sending the
+identity header, and proves the terminal is behind that check — both a page
+fetch and a raw WebSocket handshake to `/term/ws` are refused without it.
+Host-side checks prove the peer-uid rule by curling from containers running as
+uid 65534, 0 and 101 (including `/term/`), that an unknown `Host:` gets 421, and
+that the terminal's WebSocket accepts a same-origin and refuses a foreign
+origin through the proxy; another starts a throwaway instance with an
+`autostart.json` pointing at a fake server to prove it comes up on its own. `docs/MANUAL-TESTS.md` is a
 checklist for real devices; iOS Safari's soft-keyboard behaviour is only
 verifiable there.
 

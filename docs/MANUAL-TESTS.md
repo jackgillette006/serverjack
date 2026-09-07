@@ -20,7 +20,7 @@ Open it in Chrome (with the Claude in Chrome extension) or do the steps by hand.
 7. Click another tab in the bar. The terminal switches; the URL changes to /s/<name>. Click back.
 8. Press + in the bar, try to create a session with the same name "t-desktop". An inline error appears. Escape closes the panel.
 9. On the home page, Open pops the session out into a separate small window with only the terminal (a ⋯ button in its top-right corner shows/hides the bar) and the home page stays. Clicking Open again for the same session refocuses that window instead of opening another. ☰ inside the pop-out closes it.
-9a. In the ⋯ menu of a session, tap **Rename**. A small text box unfolds in place with the current name in it. Change it and Save: the list comes back with the new name and `tmux ls` agrees. Try renaming it to the name of another session and to `a.b` — both are refused with the reason at the top of the page, and nothing is renamed. If you had a second tab open on the old session, it should move itself to another session within ~15 seconds (the token is tied to the name, so its terminal is gone on purpose).
+9a. In the ⋯ menu of a session, tap **Rename**. A small text box unfolds in place with the current name in it. Change it and Save: the list comes back with the new name and `tmux ls` agrees. Try renaming it to the name of another session and to `a.b` — both are refused with the reason at the top of the page, and nothing is renamed. If you had a second tab open on the old session, it should move itself to another session within ~15 seconds (its session name no longer exists).
 9b. In the ⋯ menu of a session: "Open here" opens it in this tab; "Copy SSH command" copies an `ssh -t ... tmux attach` line that works in a terminal; "Open in SSH app" launches your SSH client if one is installed.
 9c. From an in-tab session, ↗ pops it out and this tab goes back to the list (you are not attached twice).
 10. Press ✕ in the bar, confirm. You are moved to another session (or the list if none).
@@ -109,19 +109,36 @@ Then test each of the three states. The easiest way to see all three is on a mac
    browser on any tailnet device: everything still works, sessions open, keys
    arrive. Nothing about the experience changes when you are on the list.
 2. Change it to someone else's login and restart. The page is now a 403 that
-   reads "This serverjack belongs to … You are signed in to Tailscale as
-   …", with your real login in the second half. `/healthz` still answers
-   `ok` (health checks carry no identity).
+   reads "This serverjack belongs to another tailnet user. You are signed in as
+   …", with your real login — and it must **not** name the allowed login.
+   `/healthz` still answers `ok` (health checks carry no identity).
 3. With that wrong login still set, open `https://<host>/term/?arg=<a session
-   name>` directly, no token. The terminal says **"Open this session from the
-   serverjack page."** and no new client shows up in `tmux ls` (`session_attached`
-   does not go up). Same with a made-up token appended as a second `&arg=`.
-   This is the check that matters: without it, the 403 above would be a
-   speed bump you could walk around by typing the ttyd URL. Worth repeating
-   with `SERVERJACK_ALLOW` **unset** — the token is required either way.
+   name>` directly. You get the same 403 page, not a terminal, and no new
+   client shows up in `tmux ls` (`session_attached` does not go up). This is
+   the point of serving the terminal through serverjack: there is no ttyd URL
+   to walk around the 403 with.
 4. Put your own login back, restart, and confirm a session opens again.
 5. Optional, with a second person on the tailnet: have them open the URL from
    their own device and confirm they get the 403 page, not a shell.
+
+## Host validation and the terminal proxy
+
+1. `curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: evil.example'
+   http://127.0.0.1:7680/` prints **421**, and so does the same probe against
+   `/healthz` and `/term/`. With no `-H` at all it is 200. That is the DNS
+   rebinding guard: a name someone else controls, pointed at this port and
+   loaded in your browser, gets nothing.
+2. If you front serverjack with your own proxy on some other domain, set
+   `SERVERJACK_HOSTS=that.domain` in the env file and restart, or every request
+   is a 421.
+3. `systemctl --user stop serverjack-ttyd`, then reload a session page: the
+   frame shows a **502 "The terminal isn't answering"** page naming the socket,
+   not a blank frame or a hang. The rest of the page still works and the tmux
+   session is untouched. `systemctl --user start serverjack-ttyd` and reload;
+   the terminal comes back.
+4. `tailscale serve status` lists **one** mount for your HTTPS port, `/`. If a
+   `/term` mount is still there, re-run `bash install.sh` — it takes it down
+   and says so.
 
 ## Local accounts (needs a second Linux login on the box)
 
@@ -129,9 +146,9 @@ Then test each of the three states. The easiest way to see all three is on a mac
    `curl http://127.0.0.1:7680/healthz` prints **"this serverjack belongs to
    another user on this machine"** with status 403, and so does `curl
    http://127.0.0.1:7680/`. From your own account both work normally.
-2. From the other account, open `http://127.0.0.1:7681/?arg=<a session name>`
-   (ttyd's port, which has no uid check): the terminal says "Open this session
-   from the serverjack page." and nothing attaches. It cannot guess a token.
+2. From the other account, `curl http://127.0.0.1:7680/term/` is 403 too, and
+   `ls $XDG_RUNTIME_DIR/serverjack` (yours) is permission denied — ttyd has no
+   port at all any more, only a socket in that 0700 directory.
 3. Set `SERVERJACK_TRUST_LOCAL=1`, restart, and repeat step 1: it answers 200.
    That is the escape hatch working — take it back out afterwards.
 4. Optional, `SERVERJACK_LISTEN=unix` instead: from the other account
@@ -150,7 +167,7 @@ account's serverjack up and published on 443.
    a free HTTPS port and a `--title` suggestion. Check with `systemctl --user
    status serverjack` that nothing of this account's was started.
 2. Re-run with the printed flags. `~/.config/serverjack/env` now has
-   `SERVERJACK_PORT`, `TTYD_PORT`, `SERVERJACK_HTTPS_PORT` and
+   `SERVERJACK_PORT`, `SERVERJACK_HTTPS_PORT` and
    `SERVERJACK_TITLE` set to those values; both units are active, and no sudo
    was needed. From the *first* account, `curl http://127.0.0.1:<new port>/`
    returns 403 — neither account can drive the other's.

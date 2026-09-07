@@ -15,8 +15,8 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-BASE = "http://127.0.0.1:7699"
-AUTH = "http://127.0.0.1:7698"          # the SERVERJACK_ALLOW instance
+BASE = "http://127.0.0.1:7690"
+AUTH = "http://127.0.0.1:7692"          # the SERVERJACK_ALLOW instance
 TAG = str(int(time.time()))[-6:]
 T = ["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default")]
 MADE = []          # sessions this suite created, killed at the end
@@ -136,7 +136,10 @@ with sync_playwright() as p:
     ok("renaming onto an existing name is refused",
        "already exists" in errtext and exists(newname), errtext or "no error shown")
     # and a name tmux can't have
-    r = page.request.post(f"{BASE}/api/rename", form={"name": newname, "new": "bad.name"})
+    # Sec-Fetch-Site: a browser sets it; Playwright's API client does not, and
+    # a POST with neither it nor an Origin is refused as cross-site.
+    r = page.request.post(f"{BASE}/api/rename", headers={"Sec-Fetch-Site": "same-origin"},
+                          form={"name": newname, "new": "bad.name"})
     ok("/api/rename refuses a name with a dot",
        r.status == 400 and "contain" in r.json().get("error", ""), r.text())
     # put it back, so the cleanup at the end finds it
@@ -242,9 +245,9 @@ with sync_playwright() as p:
        all(k in js for k in ("load", "mem_used_pct", "disk_free_gb", "uptime_s")),
        str(sorted(js)))
     ok("...a version", bool(js.get("version")), str(js.get("version")))
-    ok("...and one entry per agent with its state",
+    ok("...and one counts-only entry per agent",
        isinstance(js.get("agents"), list) and js["agents"]
-       and all(set(("id", "label", "installed", "daemon_running", "servers")) <= set(a)
+       and all(set(a) == {"id", "installed", "servers_running", "daemon_running"}
                for a in js["agents"]),
        json.dumps(js.get("agents"))[:300])
     # No session name may appear as a value anywhere in the payload. Compared
@@ -261,7 +264,7 @@ with sync_playwright() as p:
             for x in v:
                 yield from strings(x)
     values = set(strings(js))
-    agentwords = {w for a in js.get("agents", []) for w in (a["id"], a["label"])}
+    agentwords = {a["id"] for a in js.get("agents", [])}
     live = [n for n in subprocess.run(T + ["list-sessions", "-F", "#{session_name}"],
                                       capture_output=True, text=True).stdout.split()
             if n not in agentwords]

@@ -1,31 +1,34 @@
-"""Identity + terminal tokens (Chromium only -- nothing here is engine-specific).
+"""Identity, and the terminal being behind it (Chromium only -- nothing here is
+engine-specific).
 
-run.sh brings up a second serverjack/ttyd pair with
-SERVERJACK_ALLOW=alice@example.com behind nginx on 7698, alongside the
-unrestricted pair on 7699. Playwright plays the part of `tailscale serve` by
-sending (or withholding) the Tailscale-User-Login header.
+run.sh brings up two serverjack instances, each with its own ttyd on its own
+Unix socket: 7690 with no SERVERJACK_ALLOW, 7692 with
+SERVERJACK_ALLOW=alice@example.com. Playwright plays the part of `tailscale
+serve` by sending (or withholding) the Tailscale-User-Login header.
 
-What must hold:
-  * no header, or the wrong login  -> 403, and the page names who it belongs to
+There are no terminal tokens any more. serverjack serves /term/ itself, by
+proxying to ttyd's socket, so the identity check covers the terminal exactly
+as it covers the page -- which is what these assertions are about:
+  * no header, or the wrong login  -> 403, and the page does not name the owner
   * the allowed login              -> the page works, and a session really attaches
-  * /term/ with no token, or a wrong one -> refused on BOTH instances: no new
-    tmux client, and the terminal says to open it from the page. The token is
-    not tied to SERVERJACK_ALLOW; ttyd cannot tell who is calling, so it is
-    always the thing that says "the page sent you".
-  * /term/ with the right token -> attaches, on either instance
+  * /term/ on the restricted instance with no header -> 403, for the page fetch
+    AND for a raw WebSocket handshake to /term/ws (no new tmux client either)
+  * /term/ with the allowed header -> attaches end to end
+  * /term/ on the unrestricted instance -> attaches
 """
+import base64
+import http.client
 import os
 import subprocess
 import time
 
 from playwright.sync_api import sync_playwright
 
-OPEN = "http://127.0.0.1:7699"          # no SERVERJACK_ALLOW
-AUTH = "http://127.0.0.1:7698"          # SERVERJACK_ALLOW=alice@example.com
+OPEN = "http://127.0.0.1:7690"          # no SERVERJACK_ALLOW
+AUTH = "http://127.0.0.1:7692"          # SERVERJACK_ALLOW=alice@example.com
 SESS = "pwtest"
 TAG = str(int(time.time()))[-6:]
 T = ["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default")]
-BAD = "0" * 32
 
 fails = 0
 
@@ -48,37 +51,77 @@ def clients():
     return int((r.stdout.strip() or "0"))
 
 
-def term_text(page):
-    """What the terminal is showing. xterm.js paints to a canvas, so run.sh
-    starts this instance's ttyd with -t screenReaderMode=true, which mirrors
-    the screen into .xterm-accessibility."""
+def ws_status(base, headers=None):
+    """Raw WebSocket handshake against <base>/term/ws, bypassing the browser:
+    the status serverjack answers with, or "closed" if it hung up. This is the
+    route a device turned away by SERVERJACK_ALLOW would try to sneak in on."""
+    host = base.split("//", 1)[1]
+    h = {"Host": host, "Origin": base, "Upgrade": "websocket", "Connection": "Upgrade",
+         "Sec-WebSocket-Version": "13", "Sec-WebSocket-Protocol": "tty",
+         "Sec-WebSocket-Key": base64.b64encode(os.urandom(16)).decode()}
+    h.update(headers or {})
+    hostname, _, port = host.partition(":")
+    c = http.client.HTTPConnection(hostname, int(port), timeout=15)
     try:
-        return page.evaluate(
-            "() => (document.querySelector('.xterm-accessibility')"
-            "       || document.body).innerText || ''")
-    except Exception:
-        return ""
+        c.request("GET", "/term/ws", headers=h)
+        return c.getresponse().status
+    except (http.client.HTTPException, OSError):
+        return "closed"
+    finally:
+        c.close()
+
+
+def attaches(ctx, base, label):
+    """Open <base>/term/?arg=SESS and prove a real shell is on the other end."""
+    before = clients()
+    tp = ctx.new_page()
+    tp.goto(f"{base}/term/?arg={SESS}")
+    tp.locator(".xterm-helper-textarea").wait_for(state="attached", timeout=15000)
+    time.sleep(2.5)
+    ok(f"{label}: the terminal attaches", clients() > before, f"{before} -> {clients()}")
+    marker = f"TERM{label.upper().replace(' ', '')}_{TAG}"
+    tp.keyboard.type(f"echo {marker}")
+    tp.keyboard.press("Enter")
+    time.sleep(1.0)
+    out = pane()
+    ok(f"{label}: ...and it is a real shell", out.count(marker) >= 2, out[-200:])
+    tp.close()
+    time.sleep(1.0)
 
 
 with sync_playwright() as p:
     b = p.chromium.launch()
-
-    # ---- the token this page would hand out, straight from the JSON API
     anon = b.new_context()
-    tok = next(s["token"] for s in anon.request.get(f"{OPEN}/api/sessions").json() if s["name"] == SESS)
-    ok("/api/sessions carries a per-session token", len(tok) == 32 and tok != BAD, tok)
+
+    ok("/api/sessions no longer hands out a terminal token",
+       all("token" not in s for s in anon.request.get(f"{OPEN}/api/sessions").json()),
+       str(anon.request.get(f"{OPEN}/api/sessions").json())[:200])
 
     print("no header:")
     page = anon.new_page()
     r = page.goto(f"{AUTH}/")
     ok("landing page is 403", r.status == 403, str(r.status))
     body = page.inner_text("body")
-    ok("403 page names the allowed login", "alice@example.com" in body, body[:200])
+    ok("403 page does NOT name the allowed login", "alice@example.com" not in body, body[:200])
     ok("...and says who you are", "nobody" in body, body[:200])
     r = anon.request.get(f"{AUTH}/api/sessions")
     ok("JSON API is 403 too", r.status == 403, str(r.status))
     ok("/healthz needs no tailnet identity (the peer-uid check still applies)",
        anon.request.get(f"{AUTH}/healthz").status == 200)
+
+    print("the terminal is behind the same check:")
+    before = clients()
+    r = anon.request.get(f"{AUTH}/term/")
+    ok("GET /term/ is 403 without the header", r.status == 403, str(r.status))
+    st = ws_status(AUTH)
+    ok("a raw /term/ws handshake is refused too", st == 403, str(st))
+    tp = anon.new_page()
+    tp.goto(f"{AUTH}/term/?arg={SESS}")
+    time.sleep(3.0)
+    ok("no new terminal attaches", clients() == before, f"{before} -> {clients()}")
+    tp.close()
+    ok("...and the unrestricted instance is not affected",
+       ws_status(OPEN) == 101, str(ws_status(OPEN)))
 
     print("wrong login:")
     mal = b.new_context(extra_http_headers={"Tailscale-User-Login": "mallory@example.com"})
@@ -87,7 +130,11 @@ with sync_playwright() as p:
     ok("landing page is 403", r.status == 403, str(r.status))
     ok("403 page names them", "mallory@example.com" in mp.inner_text("body"), mp.inner_text("body")[:200])
     ok("POST is refused as well",
-       mal.request.post(f"{AUTH}/api/kill", form={"name": SESS}).status == 403)
+       mal.request.post(f"{AUTH}/api/kill", headers={"Sec-Fetch-Site": "same-origin"},
+                        form={"name": SESS}).status == 403)
+    ok("and so is the terminal", mal.request.get(f"{AUTH}/term/").status == 403)
+    st = ws_status(AUTH, {"Tailscale-User-Login": "mallory@example.com"})
+    ok("...websocket included", st == 403, str(st))
     mal.close()
 
     print("allowed login:")
@@ -99,58 +146,28 @@ with sync_playwright() as p:
     ok("landing page is 200", r.status == 200, str(r.status))
     gp.goto(f"{AUTH}/s/{SESS}")
     gp.wait_for_selector("#tabs .tab.on")
-    ok("frame url carries the token", f"arg={tok}" in gp.get_attribute("#frame", "src"),
-       gp.get_attribute("#frame", "src"))
+    src = gp.get_attribute("#frame", "src")
+    ok("frame url carries the session name and nothing else",
+       src == f"/term/?arg={SESS}", src)
     gp.frame_locator("#frame").locator(".xterm-helper-textarea").wait_for(state="attached", timeout=15000)
     time.sleep(1.5)
     gp.keyboard.type(f"echo AUTH_{TAG}")
     gp.keyboard.press("Enter")
     time.sleep(1.0)
     out = pane()
-    ok("typing reaches the tmux session", out.count(f"AUTH_{TAG}") >= 2, out[-200:])
+    ok("typing reaches the tmux session through the proxied terminal",
+       out.count(f"AUTH_{TAG}") >= 2, out[-200:])
     gp.screenshot(path="shots/auth.png")
+    st = ws_status(AUTH, {"Tailscale-User-Login": "alice@example.com"})
+    ok("a websocket handshake with the header is accepted", st == 101, str(st))
     good.close()
     time.sleep(1.0)
 
-    print("terminal without a valid token (restricted instance):")
-    for label, url in (("no token", f"{AUTH}/term/?arg={SESS}"),
-                       ("wrong token", f"{AUTH}/term/?arg={SESS}&arg={BAD}")):
-        before = clients()
-        tp = anon.new_page()
-        tp.goto(url)
-        time.sleep(3.0)
-        txt = term_text(tp)
-        ok(f"{label}: no new terminal attaches", clients() == before, f"{before} -> {clients()}")
-        msg = "Open this session from the serverjack page."
-        ok(f"{label}: the terminal says {msg!r}", msg in txt, repr(" ".join(txt.split())[:200]))
-        tp.close()
-        time.sleep(0.5)
-
-    print("terminal on the unrestricted instance (tokens are not tied to ALLOW):")
-    for label, url in (("no token", f"{OPEN}/term/?arg={SESS}"),
-                       ("wrong token", f"{OPEN}/term/?arg={SESS}&arg={BAD}")):
-        time.sleep(1.0)
-        before = clients()
-        tp = anon.new_page()
-        tp.goto(url)
-        time.sleep(3.0)
-        ok(f"{label}: refused even with no ALLOW list", clients() == before,
-           f"{before} -> {clients()}")
-        tp.close()
-
-    time.sleep(1.0)
-    before = clients()
-    tp = anon.new_page()
-    tp.goto(f"{OPEN}/term/?arg={SESS}&arg={tok}")
-    tp.locator(".xterm-helper-textarea").wait_for(state="attached", timeout=15000)
-    time.sleep(2.5)
-    ok("the right token attaches", clients() > before, f"{before} -> {clients()}")
-    tp.keyboard.type(f"echo TOKOK_{TAG}")
-    tp.keyboard.press("Enter")
-    time.sleep(1.0)
-    out = pane()
-    ok("...and it is a real shell", out.count(f"TOKOK_{TAG}") >= 2, out[-200:])
-    tp.close()
+    print("terminal end to end:")
+    attaches(anon, OPEN, "unrestricted")
+    allowed = b.new_context(extra_http_headers={"Tailscale-User-Login": "alice@example.com"})
+    attaches(allowed, AUTH, "allowed")
+    allowed.close()
 
     anon.close()
     b.close()

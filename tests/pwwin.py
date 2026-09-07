@@ -14,7 +14,7 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-BASE = "http://127.0.0.1:7699"
+BASE = "http://127.0.0.1:7690"
 SESS = "pwtest"
 T = ["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default")]
 fails = 0

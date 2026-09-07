@@ -23,8 +23,9 @@ fi
 
 systemctl --user daemon-reload
 
-# Sockets and the terminal-token secret live in the runtime dir. The directory
-# itself is left: the other unit of a *second* instance may still be using it.
+# The sockets live in the runtime dir. The directory itself is left: the other
+# unit of a *second* instance may still be using it. "secret" is from the old
+# token scheme and no longer written; removed here so it does not linger.
 RUNTIME=${XDG_RUNTIME_DIR}/serverjack
 rm -f "$RUNTIME/web.sock" "$RUNTIME/ttyd.sock" "$RUNTIME/secret"
 
@@ -34,7 +35,10 @@ if command -v tailscale >/dev/null 2>&1; then
   env_get() { grep -E "^$1=" "$HOME/.config/serverjack/env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'; }
   mount=$(env_get SERVERJACK_TERM);      mount=${mount:-/term/}
   https=$(env_get SERVERJACK_HTTPS_PORT); https=${https:-443}
-  echo "turning off tailscale serve on https=$https (/ and ${mount%/})"
+  # One mount these days: "/" -> serverjack, which serves the terminal itself.
+  # The --set-path line is only for installs made before that change, which
+  # also published <mount> -> ttyd; it is a no-op otherwise.
+  echo "turning off tailscale serve on https=$https (/)"
   tailscale serve --https="$https" off 2>/dev/null
   tailscale serve --https="$https" --set-path="${mount%/}" off 2>/dev/null
 fi

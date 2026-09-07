@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Probe ttyd's WebSocket handshake: same-origin must be accepted (101),
-a foreign Origin must be refused (ttyd -O). Usage:
+"""Probe the terminal's WebSocket handshake through serverjack's /term/ proxy:
+same-origin must be accepted (101), a foreign Origin must be refused (ttyd -O,
+which still sees the real Host and Origin because the proxy forwards them
+verbatim). Usage:
     ttyd-ws-check.py https://<machine>.<tailnet>.ts.net/term/
 Exit 0 only if both hold."""
 import base64, os, sys, http.client, ssl

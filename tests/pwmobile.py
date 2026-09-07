@@ -1,7 +1,7 @@
 """Paste / Copy / compose-bar checks: Chromium desktop, then WebKit iPhone."""
 import os, sys, time, subprocess
 from playwright.sync_api import sync_playwright
-BASE = "http://127.0.0.1:7699"; SESS = "pwtest"
+BASE = "http://127.0.0.1:7690"; SESS = "pwtest"
 T = ["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default")]
 def pane(): return subprocess.run(T + ["capture-pane", "-p", "-t", SESS], capture_output=True, text=True).stdout
 def clear(): subprocess.run(T + ["send-keys", "-t", SESS, "C-c", ""]); time.sleep(0.2); subprocess.run(T + ["send-keys", "-t", SESS, "clear", "Enter"]); time.sleep(0.4)

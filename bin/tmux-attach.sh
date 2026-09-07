@@ -1,26 +1,40 @@
 #!/usr/bin/env bash
-# ttyd's command. The landing page (bin/serverjack) sends the browser to
-# /term/?arg=<session>&arg=<token> and ttyd (-a) turns those into "$1" and
-# "$2" here.
+# ttyd's command. The terminal page loads /term/?arg=<session>, bin/serverjack
+# proxies that to ttyd, and ttyd (-a) turns the argument into "$1" here.
 #
-# A valid token is ALWAYS required. It is HMAC-SHA256(<runtime dir>/secret,
-# name)[:32], minted by bin/serverjack and recomputed here by
-# bin/serverjack-token. ttyd has no idea who is on the other end of its socket,
-# so the token is the only thing separating "the page sent you" from "you typed
-# ttyd's URL": without it, another account on this machine could open ttyd's
-# port, and a tailnet device that SERVERJACK_ALLOW turned away with a 403 could
-# walk straight around it.
+# There is no authentication in this file and none is needed: ttyd listens only
+# on <runtime dir>/ttyd.sock, inside a 0700 directory, and the one thing that
+# connects to it is bin/serverjack -- which has already checked the connection's
+# owner, the Host, and SERVERJACK_ALLOW. Nothing else on the machine or the
+# tailnet can reach it, so there is nothing left here to prove.
 #
-# That also means there is no no-argument fallback any more --
-# bin/tmux-picker.sh is still in the repo (run it yourself in a terminal if you
-# like it) but nothing reaches it through the browser.
+# No no-argument fallback: bin/tmux-picker.sh is still in the repo (run it
+# yourself in a terminal if you like it) but nothing reaches it this way.
 #
 # The argument is only ever used as a tmux session name, never executed.
 
 set -uo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 export TERM="${TERM:-xterm-256color}"
-here=$(dirname "$(readlink -f "$0")")
+
+# The runtime dir this terminal was reached through must be ours: a real
+# directory, not a symlink, owned by us, mode 0700. Same rule as
+# bin/serverjack's safe_dir() and bin/serverjack-ttyd's check_dir(). Fails
+# closed. (Belt and braces -- ttyd already refused to bind an unsafe one.)
+check_dir() {
+  local d=$1 what=$2 owner mode
+  [[ -L $d ]] && { echo "serverjack: $what $d is a symlink -- refusing" >&2; return 1; }
+  [[ -d $d ]] || { echo "serverjack: $what $d is not a directory -- refusing" >&2; return 1; }
+  read -r owner mode < <(stat -c '%u %a' "$d") || return 1
+  [[ $owner == "$(id -u)" ]] || {
+    echo "serverjack: $what $d is owned by uid $owner, not $(id -u) -- refusing" >&2; return 1; }
+  [[ $mode == 700 ]] || {
+    chmod 700 "$d" 2>/dev/null || { echo "serverjack: $what $d is mode $mode, not 0700" >&2; return 1; }
+    read -r owner mode < <(stat -c '%u %a' "$d")
+    [[ $mode == 700 ]] || { echo "serverjack: $what $d is mode $mode, not 0700" >&2; return 1; }
+  }
+  return 0
+}
 
 refuse() {
   printf '\n  %s\n\n' "$1"
@@ -30,10 +44,15 @@ refuse() {
   exit 1
 }
 
+base=${XDG_RUNTIME_DIR:-/tmp/serverjack-$(id -u)}
+if [[ -z ${XDG_RUNTIME_DIR:-} ]]; then
+  check_dir "$base" "runtime dir parent" || refuse "The serverjack runtime directory is not safe to use."
+fi
+check_dir "$base/serverjack" "runtime dir" || refuse "The serverjack runtime directory is not safe to use."
+
 name="${1:-}"
-token="${2:-}"
-if [[ -z $name || -z $token ]] || ! python3 "$here/serverjack-token" "$name" "$token"; then
-  refuse "Open this session from the serverjack page."
+if [[ -z $name ]]; then
+  refuse "Open a session from the serverjack page."
 fi
 
 if ! tmux has-session -t "=$name" 2>/dev/null; then

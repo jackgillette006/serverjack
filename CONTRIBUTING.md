@@ -27,8 +27,8 @@ Out of scope, on purpose:
   comes from Tailscale's headers, never from a password serverjack invents:
   `SERVERJACK_ALLOW` filters on `Tailscale-User-Login`. Keeping *local*
   accounts out is a different problem with a different answer -- the peer-uid
-  check on the listening socket, and the terminal token -- and neither is a
-  login either.
+  check on the single listening socket, which covers the terminal too because
+  serverjack proxies it -- and that is not a login either.
 - Dependencies. No pip packages, no Node, no compiled extensions, no CDN
   assets, no webfonts.
 

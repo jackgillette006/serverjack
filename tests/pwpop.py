@@ -2,7 +2,7 @@
 pop-out returns the tab to the list; SSH copy item present."""
 import os, time
 from playwright.sync_api import sync_playwright
-BASE = "http://127.0.0.1:7699"; SESS = "pwtest"
+BASE = "http://127.0.0.1:7690"; SESS = "pwtest"
 def ok(label, cond, extra=""):
     print(("  PASS " if cond else "  FAIL ") + label + (("  -- " + extra) if extra and not cond else ""))
 with sync_playwright() as p:

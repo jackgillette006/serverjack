@@ -1,39 +1,65 @@
 #!/usr/bin/env bash
-# What the serverjack-ttyd user unit runs. It only exists to pick the socket
-# or the port before exec'ing ttyd; the unit supplies the environment
+# What the serverjack-ttyd user unit runs. It only exists to prepare the socket
+# before exec'ing ttyd; the unit supplies the environment
 # (EnvironmentFile=~/.config/serverjack/env).
 #
-#   SERVERJACK_LISTEN=tcp (default) : bind 127.0.0.1:$TTYD_PORT
-#   SERVERJACK_LISTEN=unix          : bind <runtime dir>/ttyd.sock instead
-#
-# Either way another local account cannot get a shell out of ttyd: the socket
-# is inside a 0700 directory in unix mode, and in tcp mode the session token
-# does it -- bin/tmux-attach.sh refuses to attach without one, and only
-# bin/serverjack can mint them. (ttyd itself has no notion of a user, so there
-# is nothing here to check a peer uid with, the way bin/serverjack does.)
+# ttyd ALWAYS listens on <runtime dir>/ttyd.sock and nothing else. It has no
+# notion of a user and cannot tell who is on the other end of its socket, so it
+# is never exposed directly: the socket lives inside a 0700 directory only this
+# account can enter, and bin/serverjack reverse-proxies SERVERJACK_TERM
+# (default /term/) to it -- after its own peer-uid, Host and SERVERJACK_ALLOW
+# checks. SERVERJACK_LISTEN describes how bin/serverjack listens; it has
+# nothing to say about this file.
 #
 # ttyd flags, unchanged from when they lived in the unit file:
 #   -W  writable (ttyd >= 1.7 is read-only by default)
-#   -a  pass ?arg=... from the URL to tmux-attach.sh -- serverjack sends two,
-#       the session name and its token; both are required
-#   -O  refuse WebSockets from other origins (cross-site hijack guard)
+#   -a  pass ?arg=... from the URL to tmux-attach.sh -- serverjack sends one,
+#       the session name
+#   -O  refuse WebSockets from other origins (cross-site hijack guard). The
+#       proxy forwards Host and Origin verbatim so this still compares the
+#       names the browser used.
 # reconnect stays ON: phones drop the socket on screen lock; ttyd re-attaches.
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
+
+# A directory that must be ours before a shell-granting socket goes in it: a
+# real directory, not a symlink, owned by us, mode 0700. Same rule as
+# bin/serverjack's safe_dir(). Fails closed -- another account owning this path
+# means it owns the socket.
+check_dir() {
+  local d=$1 what=$2 owner mode
+  [[ -L $d ]] && { echo "serverjack-ttyd: $what $d is a symlink -- refusing" >&2; exit 1; }
+  [[ -d $d ]] || { echo "serverjack-ttyd: $what $d is not a directory -- refusing" >&2; exit 1; }
+  read -r owner mode < <(stat -c '%u %a' "$d") || {
+    echo "serverjack-ttyd: cannot stat $what $d" >&2; exit 1; }
+  [[ $owner == "$(id -u)" ]] || {
+    echo "serverjack-ttyd: $what $d is owned by uid $owner, not $(id -u) -- refusing" >&2; exit 1; }
+  if [[ $mode != 700 ]]; then
+    chmod 700 "$d" || { echo "serverjack-ttyd: $what $d is mode $mode, not 0700" >&2; exit 1; }
+    read -r owner mode < <(stat -c '%u %a' "$d")
+    [[ $mode == 700 ]] || { echo "serverjack-ttyd: $what $d is mode $mode, not 0700" >&2; exit 1; }
+  fi
+}
+
 # Same expression as bin/serverjack's runtime_dir() and tmux-attach.sh. NOT a
 # systemd RuntimeDirectory=: that would delete the directory (and the landing
 # page's socket) whenever this unit stops.
-RUNTIME=${XDG_RUNTIME_DIR:-/tmp/serverjack-$(id -u)}/serverjack
-mkdir -p "$RUNTIME"; chmod 700 "$RUNTIME"
-
-if [[ ${SERVERJACK_LISTEN:-tcp} != unix ]]; then
-  bind=(-i 127.0.0.1 -p "${TTYD_PORT:-7681}")
+if [[ -n ${XDG_RUNTIME_DIR:-} ]]; then
+  base=$XDG_RUNTIME_DIR
 else
-  sock=$RUNTIME/ttyd.sock
-  rm -f "$sock"                       # stale socket from a hard kill
-  bind=(-i "$sock")
+  # /tmp is world-writable, so the fallback parent is checked too: whoever wins
+  # the race to create /tmp/serverjack-<uid> would own the socket directory.
+  base=/tmp/serverjack-$(id -u)
+  mkdir -m 700 -p "$base"
+  check_dir "$base" "runtime dir parent"
 fi
+RUNTIME=$base/serverjack
+mkdir -m 700 -p "$RUNTIME"
+check_dir "$RUNTIME" "runtime dir"
 
-exec ttyd "${bind[@]}" -W -a -O \
+sock=$RUNTIME/ttyd.sock
+rm -f "$sock"                       # stale socket from a hard kill
+
+exec ttyd -i "$sock" -W -a -O \
   -t "titleFixed=${SERVERJACK_TITLE:-serverjack}" -t disableLeaveAlert=true \
   ${TTYD_EXTRA_ARGS:-} "$here/tmux-attach.sh"

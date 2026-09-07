@@ -5,9 +5,10 @@ After=network.target
 
 [Service]
 EnvironmentFile=%h/.config/serverjack/env
-# The wrapper picks the Unix socket (default) or 127.0.0.1:$TTYD_PORT from
-# SERVERJACK_LISTEN and keeps the ttyd flags; see bin/serverjack-ttyd. It also
-# creates the runtime dir 0700 -- deliberately NOT systemd's RuntimeDirectory=,
+# The wrapper binds ttyd to <runtime dir>/ttyd.sock -- always, never a port --
+# and keeps the ttyd flags; see bin/serverjack-ttyd. bin/serverjack proxies
+# SERVERJACK_TERM to that socket. The wrapper also creates the runtime dir 0700
+# (and refuses an unsafe one) -- deliberately NOT systemd's RuntimeDirectory=,
 # which would delete the directory, and the landing page's socket in it,
 # whenever this unit stops.
 ExecStart=@REPO@/bin/serverjack-ttyd

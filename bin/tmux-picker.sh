@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # tmux session picker. Standalone: run it in a terminal (`bash bin/tmux-picker.sh`)
 # when you want a menu instead of the web page. It used to be what
-# bin/tmux-attach.sh fell back to when ttyd was opened with no ?arg=, but the
-# terminal now requires a session token that only bin/serverjack can mint, so
-# nothing reaches this through the browser.
+# bin/tmux-attach.sh fell back to when ttyd was opened with no ?arg=; ttyd is
+# now behind bin/serverjack on a private socket and is only ever handed a
+# session name, so nothing reaches this through the browser.
 #
 #   Menu of tmux sessions (fzf) -> pick one -> attached. Detach (prefix d)
 #   comes back to the menu instead of closing the tab. "New session" asks for
@@ -16,9 +16,8 @@
 #   a login shell, so if it isn't installed or isn't logged in you land on the
 #   error message and a prompt instead of the session silently vanishing.
 #
-# Fallback UI: used when ttyd is opened without a session argument (i.e. not
-# via the serverjack page). Needs fzf. Talks to your normal tmux server, so the
-# sessions here are the same ones "tmux ls" shows anywhere else.
+# Needs fzf. Talks to your normal tmux server, so the sessions here are the
+# same ones "tmux ls" shows anywhere else.
 #
 # Try it locally without ttyd:  bash bin/tmux-picker.sh
 

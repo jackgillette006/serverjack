@@ -1,6 +1,6 @@
 import os, sys, time, subprocess
 from playwright.sync_api import sync_playwright
-BASE = "http://127.0.0.1:7699"; SESS = "pwtest"
+BASE = "http://127.0.0.1:7690"; SESS = "pwtest"
 T = ["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default")]
 def pane(): return subprocess.run(T + ["capture-pane", "-p", "-t", SESS], capture_output=True, text=True).stdout
 def cmd(): return subprocess.run(T + ["display", "-p", "-t", SESS, "#{pane_current_command}"], capture_output=True, text=True).stdout.strip()
