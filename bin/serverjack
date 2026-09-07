@@ -1299,7 +1299,7 @@ body.popout #popout,body.touch #popout{{display:none}}
   <button class="ib" id="add" title="New session" aria-label="New session">{i_plus}</button>
   <button class="ib" id="keysbtn" title="Show/hide extra keys" aria-label="Show/hide extra keys">{i_keys}</button>
   <button class="ib" id="popout" title="Pop out into a small window" aria-label="Pop out">{i_popout}</button>
-  <button class="ib x" id="kill" title="Kill this session" aria-label="Kill this session">{i_close}</button>
+  <button class="ib" id="close" title="Close (the session keeps running)" aria-label="Close">{i_close}</button>
 </div>
 <form id="pop" autocomplete="off">
   <div class="kinds">{kinds}</div>
@@ -1568,13 +1568,11 @@ APP_JS = r"""
     pop.classList.toggle('open'); err.classList.remove('on');
     if (pop.classList.contains('open')) pop.elements.name.focus();
   };
-  document.getElementById('kill').onclick = function () {
-    if (!confirm('Kill session “' + cur + '”? Anything running in it is lost.')) return;
-    var dead = cur; cur = null;
-    fetch('/api/kill', { method: 'POST', body: new URLSearchParams({ name: dead }) })
-      .then(function () { return fetch('/api/sessions', { cache: 'no-store' }); })
-      .then(function (r) { return r.json(); })
-      .then(function (list) { learn(list); if (!list.length) { location.href = '/'; return; } switchTo(list[0].name); });
+  // Close means close: the session keeps running (kill it from its menu on
+  // the landing page). Pop-out window: close it; normal tab: back to the list.
+  document.getElementById('close').onclick = function () {
+    if (POP) { window.close(); setTimeout(function () { location.href = '/'; }, 150); return; }
+    location.href = '/';
   };
   pop.onsubmit = function (e) {
     e.preventDefault(); err.classList.remove('on');

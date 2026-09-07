@@ -49,7 +49,7 @@ You are testing a browser-based tmux terminal at https://<your-host>/ on iPhone 
 12. Long-press in the terminal: can you select and copy text? Long-press then Paste: does it paste?
 13. Tap ↗ pop-out: expected to just open a new tab (phones don't do popups). Not a fail.
 14. Share → Add to Home Screen. Open it from the home screen. It should open full screen with no Safari bars, and opening a session should stay inside it.
-15. ☰ goes back to the list; ✕ kills the current session after a confirm.
+15. ☰ goes back to the list; ✕ closes: in a pop-out it closes the window, in a tab it goes back to the list. The session keeps running either way (kill it from its menu on the landing page).
 Report PASS/FAIL per step and the iOS version.
 
 ## Run a command (any device; step 4 needs a real iPhone)
@@ -89,13 +89,13 @@ Then test each of the three states. The easiest way to see all three is on a mac
 2. **Codex daemon**: on the Codex row, tap Start on the daemon option row. Reload the landing page: the summary pill shows the daemon as running, and `~/.codex/app-server-daemon/app-server.pid` exists with a live pid. Tap Stop, reload: it shows stopped and the pidfile is gone or stale. Start it again and tap "Pair with phone": `codex remote-control pair` runs in a terminal and prints pairing output; pair the ChatGPT app and open a session in a directory from the app.
 3. **OpenCode**: tap Start on its server option row. Session `opencode-serve` appears and `opencode serve` stays up; the OpenCode mobile app can reach it over the tailnet.
 4. **Copilot CLI**: the "Open with remote control" option row runs `copilot --remote` in a session; the plain Open row above it runs `copilot` without it. Claude Code has the same pair.
-5. Kill any test sessions with ✕ when done.
+5. Kill any test sessions from their menu on the landing page when done.
 
 ## Coding-tool sessions (any device)
 
 1. From the Claude Code row, pick a directory and tap Open. Claude Code starts inside the session in that directory.
 2. Same for Codex. If Codex isn't installed you should see "codex: command not found" followed by a shell prompt in the chosen directory — not a blank or vanished session.
-3. Kill both test sessions with ✕ when done.
+3. Kill both test sessions from their menus on the landing page when done.
 
 ## Identity (needs `SERVERJACK_ALLOW`, and a second tailnet login to be thorough)
 
