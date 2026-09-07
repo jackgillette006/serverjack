@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Remove serverjack's user units and tailscale serve entries. Leaves ~/.local/bin
-# binaries, ~/.config/serverjack (env, shortcuts.json, tools.json) and your tmux
-# sessions alone -- delete those yourself if you want them gone.
+# Remove serverjack's user units, its runtime sockets and its tailscale serve
+# entries. Leaves ~/.local/bin binaries, ~/.config/serverjack (env,
+# shortcuts.json, tools.json) and your tmux sessions alone -- delete those
+# yourself if you want them gone.
 set -uo pipefail
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 UNIT_DIR=$HOME/.config/systemd/user
@@ -21,6 +22,11 @@ if (( ${#old[@]} )); then
 fi
 
 systemctl --user daemon-reload
+
+# Sockets and the terminal-token secret live in the runtime dir. The directory
+# itself is left: the other unit of a *second* instance may still be using it.
+RUNTIME=${XDG_RUNTIME_DIR}/serverjack
+rm -f "$RUNTIME/web.sock" "$RUNTIME/ttyd.sock" "$RUNTIME/secret"
 
 if command -v tailscale >/dev/null 2>&1; then
   # `tailscale serve` is machine-wide. Only ever turn off the HTTPS port THIS

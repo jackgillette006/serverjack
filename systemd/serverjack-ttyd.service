@@ -1,16 +1,16 @@
 [Unit]
-Description=serverjack terminal (ttyd, localhost only; attaches to the tmux session named in the URL)
+Description=serverjack terminal (ttyd on a private Unix socket; attaches to the tmux session named in the URL)
 Documentation=https://github.com/jackgillette006/serverjack
 After=network.target
 
 [Service]
 EnvironmentFile=%h/.config/serverjack/env
-# -i 127.0.0.1 : never bind a real interface
-# -W           : writable (ttyd >= 1.7 is read-only by default)
-# -a           : pass ?arg=<session> from the URL to tmux-attach.sh
-# -O           : refuse WebSockets from other origins (cross-site hijack guard)
-# reconnect stays ON: phones drop the socket on screen lock; ttyd re-attaches.
-ExecStart=/usr/bin/env ttyd -i 127.0.0.1 -p ${TTYD_PORT} -W -a -O -t titleFixed=${SERVERJACK_TITLE} -t disableLeaveAlert=true $TTYD_EXTRA_ARGS @REPO@/bin/tmux-attach.sh
+# The wrapper picks the Unix socket (default) or 127.0.0.1:$TTYD_PORT from
+# SERVERJACK_LISTEN and keeps the ttyd flags; see bin/serverjack-ttyd. It also
+# creates the runtime dir 0700 -- deliberately NOT systemd's RuntimeDirectory=,
+# which would delete the directory, and the landing page's socket in it,
+# whenever this unit stops.
+ExecStart=@REPO@/bin/serverjack-ttyd
 WorkingDirectory=%h
 Restart=on-failure
 RestartSec=3

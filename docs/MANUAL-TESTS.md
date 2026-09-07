@@ -97,6 +97,45 @@ Then test each of the three states. The easiest way to see all three is on a mac
 2. Same for Codex. If Codex isn't installed you should see "codex: command not found" followed by a shell prompt in the chosen directory — not a blank or vanished session.
 3. Kill both test sessions with ✕ when done.
 
+## Identity (needs `SERVERJACK_ALLOW`, and a second tailnet login to be thorough)
+
+1. Add `SERVERJACK_ALLOW=<your own tailnet login>` to `~/.config/serverjack/env`
+   (the exact string `tailscale status --json` shows, e.g. `you@github`) and
+   `systemctl --user restart serverjack serverjack-ttyd`. Reload the page in a
+   browser on any tailnet device: everything still works, sessions open, keys
+   arrive. Nothing about the experience changes when you are on the list.
+2. Change it to someone else's login and restart. The page is now a 403 that
+   reads "This serverjack belongs to … You are signed in to Tailscale as
+   …", with your real login in the second half. `/healthz` still answers
+   `ok` (health checks carry no identity).
+3. With that wrong login still set, open `https://<host>/term/?arg=<a session
+   name>` directly, no token. The terminal says **"Open this session from the
+   serverjack page."** and no new client shows up in `tmux ls` (`session_attached`
+   does not go up). Same with a made-up token appended as a second `&arg=`.
+   This is the check that matters: without it, the 403 above would be a
+   speed bump you could walk around by typing the ttyd URL. Worth repeating
+   with `SERVERJACK_ALLOW` **unset** — the token is required either way.
+4. Put your own login back, restart, and confirm a session opens again.
+5. Optional, with a second person on the tailnet: have them open the URL from
+   their own device and confirm they get the 403 page, not a shell.
+
+## Local accounts (needs a second Linux login on the box)
+
+1. Default (`SERVERJACK_LISTEN` unset or `tcp`): from the other account,
+   `curl http://127.0.0.1:7680/healthz` prints **"this serverjack belongs to
+   another user on this machine"** with status 403, and so does `curl
+   http://127.0.0.1:7680/`. From your own account both work normally.
+2. From the other account, open `http://127.0.0.1:7681/?arg=<a session name>`
+   (ttyd's port, which has no uid check): the terminal says "Open this session
+   from the serverjack page." and nothing attaches. It cannot guess a token.
+3. Set `SERVERJACK_TRUST_LOCAL=1`, restart, and repeat step 1: it answers 200.
+   That is the escape hatch working — take it back out afterwards.
+4. Optional, `SERVERJACK_LISTEN=unix` instead: from the other account
+   `ls /run/user/<your uid>/serverjack/` is permission denied and
+   `curl --unix-socket /run/user/<your uid>/serverjack/web.sock http://x/healthz`
+   fails the same way, while your own account can do both. Remember this mode
+   needs the two `sudo tailscale serve … unix:…` lines the installer prints.
+
 ## Second account on the same machine
 
 Needs a second Linux login on the box. Run as that account, with the first
@@ -108,7 +147,9 @@ account's serverjack up and published on 443.
    status serverjack` that nothing of this account's was started.
 2. Re-run with the printed flags. `~/.config/serverjack/env` now has
    `SERVERJACK_PORT`, `TTYD_PORT`, `SERVERJACK_HTTPS_PORT` and
-   `SERVERJACK_TITLE` set to those values; both units are active.
+   `SERVERJACK_TITLE` set to those values; both units are active, and no sudo
+   was needed. From the *first* account, `curl http://127.0.0.1:<new port>/`
+   returns 403 — neither account can drive the other's.
 3. The "Open:" line ends in `:8443` (or whichever HTTPS port). Open it on a
    phone: the page loads, the tab title is this account's `--title`, and the
    Sessions list shows **only this account's** tmux sessions (`tmux ls` in the
@@ -122,7 +163,8 @@ account's serverjack up and published on 443.
 6. If the second account is not the `tailscale set --operator` user, serve is
    denied: the installer prints the one-time root step and the note that the
    operator grant is a single username per machine, and the local units are
-   still running (reachable at `http://127.0.0.1:<port>/`).
+   still running (reachable over their sockets with
+   `curl --unix-socket /run/user/<uid>/serverjack/web.sock http://x/healthz`).
 7. `bash uninstall.sh` in the second account: it says it is turning off
    `https=<its own port>` only, and `tailscale serve status` still shows the
    first account's 443 block intact and working in a browser.

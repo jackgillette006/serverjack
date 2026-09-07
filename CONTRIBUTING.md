@@ -23,7 +23,12 @@ Out of scope, on purpose:
   the server, they handle the agent.
 - Built-in authentication. serverjack is meant to live behind `tailscale
   serve` or an authenticating reverse proxy, and a home-grown login would
-  invite people to expose it. See the security section of the README.
+  invite people to expose it. See the security section of the README. Identity
+  comes from Tailscale's headers, never from a password serverjack invents:
+  `SERVERJACK_ALLOW` filters on `Tailscale-User-Login`. Keeping *local*
+  accounts out is a different problem with a different answer -- the peer-uid
+  check on the listening socket, and the terminal token -- and neither is a
+  login either.
 - Dependencies. No pip packages, no Node, no compiled extensions, no CDN
   assets, no webfonts.
 
@@ -33,9 +38,10 @@ Out of scope, on purpose:
 - The visual layer follows `docs/design/DESIGN.md`. Don't add one-off colours,
   radii or fonts; add a token if a genuinely new semantic role is missing.
 - The terminal is ttyd's xterm.js. Don't theme it from serverjack.
-- Real-browser tests live in `tests/`. `bash tests/run.sh` needs docker and a
-  running ttyd. Keep the selectors those tests use, or update the tests with
-  the change. `docs/MANUAL-TESTS.md` covers what only a real phone can prove.
+- Real-browser tests live in `tests/`. `bash tests/run.sh` needs docker and
+  nothing else -- it starts its own serverjack and ttyd. Keep the selectors
+  those tests use, or update the tests with the change.
+  `docs/MANUAL-TESTS.md` covers what only a real phone can prove.
 - Run `bash install.sh` after pulling; it is idempotent.
 
 ## Reporting a bug

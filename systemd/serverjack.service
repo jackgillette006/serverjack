@@ -1,5 +1,5 @@
 [Unit]
-Description=serverjack landing page: tmux sessions, shortcuts and coding agents (localhost only; publish via tailscale serve or an authenticating proxy)
+Description=serverjack landing page: tmux sessions, shortcuts and coding agents (private socket or localhost port; publish via tailscale serve or an authenticating proxy)
 Documentation=https://github.com/jackgillette006/serverjack
 After=network.target
 

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# tmux session picker -- what ttyd runs for every browser connection.
+# tmux session picker. Standalone: run it in a terminal (`bash bin/tmux-picker.sh`)
+# when you want a menu instead of the web page. It used to be what
+# bin/tmux-attach.sh fell back to when ttyd was opened with no ?arg=, but the
+# terminal now requires a session token that only bin/serverjack can mint, so
+# nothing reaches this through the browser.
 #
 #   Menu of tmux sessions (fzf) -> pick one -> attached. Detach (prefix d)
 #   comes back to the menu instead of closing the tab. "New session" asks for

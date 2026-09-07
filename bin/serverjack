@@ -34,7 +34,31 @@ Stdlib only, no dependencies. Runs as your user and talks to your normal tmux
 server, so it sees the same sessions as any other login.
 
 Configuration is by environment variables (see install.sh / README):
-    SERVERJACK_PORT   listen port (127.0.0.1 only)          default 7680
+    SERVERJACK_LISTEN "tcp" (default) or "unix". tcp binds
+                      127.0.0.1:$SERVERJACK_PORT and refuses any connection
+                      whose other end is not owned by root (tailscaled) or by
+                      us -- see peer_uid() below. unix binds
+                      $XDG_RUNTIME_DIR/serverjack/web.sock (fallback base
+                      /tmp/serverjack-$UID), mode 0600, which the kernel
+                      enforces instead; that mode needs `tailscale serve` to be
+                      run as root once, because tailscale will not proxy to a
+                      Unix socket for an unprivileged caller.
+    SERVERJACK_PORT   listen port (127.0.0.1, tcp mode only) default 7680
+    SERVERJACK_TRUST_UIDS
+                      extra uids allowed to connect in tcp mode, comma-
+                      separated -- a reverse proxy running as its own user
+                      (nginx is often uid 101 or 33).
+    SERVERJACK_TRUST_LOCAL
+                      set to 1 to turn the peer-uid check off entirely. Only
+                      if you know why: it hands every local account a shell.
+    SERVERJACK_ALLOW  comma-separated tailnet logins (alice@github, ...).
+                      When set, every request must carry a Tailscale-User-Login
+                      header naming one of them or it gets a 403 page. The
+                      header is `tailscale serve`'s, and it is trustworthy in
+                      both modes because nothing but tailscaled and this
+                      account can open a connection in the first place. Unset =
+                      no check: every tailnet device that reaches the port gets
+                      a shell.
     SERVERJACK_TITLE  page title                             default hostname
     SERVERJACK_DIRS   colon-separated dirs offered for new sessions
     SERVERJACK_TOOLS  comma-separated agent ids to show, in that order
@@ -43,6 +67,16 @@ Configuration is by environment variables (see install.sh / README):
     SERVERJACK_SSH    user@host for the "open in an SSH app" menu item,
                       or "off" to hide it   (default: the tailnet name)
     SERVERJACK_CONFIG config dir  (default ~/.config/serverjack)
+
+Runtime dir: $XDG_RUNTIME_DIR/serverjack (fallback /tmp/serverjack-$UID/
+serverjack), created 0700 by whichever of serverjack / serverjack-ttyd starts
+first. It holds "secret" (0600) -- 32 random bytes minted on first start -- and,
+in unix mode, web.sock and ttyd.sock. Every session name gets a token,
+HMAC-SHA256(secret, name)[:32], which the page puts in the terminal URL
+(/term/?arg=<name>&arg=<token>). bin/tmux-attach.sh recomputes it and ALWAYS
+requires it: ttyd has no idea who is on the other end, so without the token a
+device turned away by SERVERJACK_ALLOW -- or, in tcp mode, anything that got to
+ttyd's port -- could get a shell by loading the ttyd URL directly.
 
 Agents come from BUILTIN_TOOLS below. To change one, or add your own, drop a
 JSON *list* in $SERVERJACK_CONFIG/tools.json; entries are merged over the
@@ -75,15 +109,23 @@ pressed carries the route in its value ("/tools/open", "/tools/action:0"...),
 so a card can share one directory picker between several buttons. Those same
 routes also work as plain endpoints of their own.
 
-Security: NO authentication of its own. Every button on this page runs a
-command as the user serverjack runs as -- it is SSH with a nicer font. Only
-expose it through something that authenticates (tailscale serve, an SSO
-reverse proxy, a VPN); never `tailscale funnel` it. State-changing POSTs are
+Security: no password of its own. Every button on this page runs a command as
+the user serverjack runs as -- it is SSH with a nicer font. Only expose it
+through something that authenticates (tailscale serve, an SSO reverse proxy, a
+VPN); never `tailscale funnel` it. Other accounts on the same machine are kept
+out two ways: in tcp mode every connection's owner is looked up in
+/proc/net/tcp and refused unless it is root, us, or a uid in
+SERVERJACK_TRUST_UIDS; in unix mode the socket is 0600 inside a 0700 directory
+and the kernel does it. Identity, when you want it, comes from Tailscale:
+SERVERJACK_ALLOW names the tailnet logins allowed in, and the terminal is
+token-gated so it cannot be reached around the page. State-changing POSTs are
 refused when the browser says they came from another site (Sec-Fetch-Site /
 Origin), so a random web page can't drive it from a logged-in browser.
 """
 
 import concurrent.futures
+import hashlib
+import hmac
 import html
 import json
 import os
@@ -92,6 +134,7 @@ import getpass
 import shlex
 import shutil
 import socket
+import socketserver
 import subprocess
 import sys
 import time
@@ -99,7 +142,142 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 HOME = os.path.expanduser("~")
+LISTEN = (os.environ.get("SERVERJACK_LISTEN") or "tcp").strip().lower()
 BIND = ("127.0.0.1", int(os.environ.get("SERVERJACK_PORT", "7680")))
+
+
+def runtime_dir():
+    """Where the sockets and the token secret live. Same expression as
+    bin/serverjack-ttyd and bin/tmux-attach.sh use in shell:
+        ${XDG_RUNTIME_DIR:-/tmp/serverjack-$(id -u)}/serverjack
+    Not a systemd RuntimeDirectory=: that would delete the directory (and the
+    other unit's socket) whenever one of the two units stops."""
+    base = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/serverjack-{os.getuid()}"
+    d = os.path.join(base, "serverjack")
+    os.makedirs(d, exist_ok=True)
+    os.chmod(d, 0o700)                 # private to this account, whoever made it
+    return d
+
+
+RUNTIME_DIR = runtime_dir()
+WEB_SOCK = os.path.join(RUNTIME_DIR, "web.sock")
+
+
+def _secret():
+    """32 random bytes (hex) in <runtime dir>/secret, mode 0600, minted once."""
+    p = os.path.join(RUNTIME_DIR, "secret")
+    for _ in range(2):
+        try:
+            fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(os.urandom(32).hex().encode())
+        except FileExistsError:
+            pass
+        try:
+            with open(p, "rb") as f:
+                data = f.read().strip()
+            if data:
+                return data
+        except OSError:
+            pass
+        try:
+            os.unlink(p)               # empty/unreadable: start over once
+        except OSError:
+            pass
+    raise SystemExit(f"cannot create {p}")
+
+
+SECRET = _secret()
+
+
+def session_token(name):
+    """Unguessable per-session token. tmux-attach.sh recomputes it from the
+    same secret, so only a URL this page handed out attaches a terminal."""
+    return hmac.new(SECRET, name.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+ALLOW = [x.strip().lower() for x in (os.environ.get("SERVERJACK_ALLOW") or "").split(",") if x.strip()]
+
+# --- who else on this machine may connect (tcp mode only) -------------------
+#
+# A localhost TCP port has no owner: any Linux account on the box can open
+# 127.0.0.1:7680 and press the buttons, which is a shell as us. The kernel does
+# record who owns each socket, though, so before routing anything we look the
+# peer up in /proc/net/tcp and refuse a stranger. Allowed by default: root
+# (that is tailscaled proxying for `tailscale serve`) and our own uid.
+# SERVERJACK_TRUST_UIDS adds more -- a reverse proxy running as its own user.
+# SERVERJACK_TRUST_LOCAL=1 turns the whole thing off; see the README.
+# In unix mode none of this runs: the 0700 directory already says it.
+
+TRUST_LOCAL = (os.environ.get("SERVERJACK_TRUST_LOCAL") or "").strip() not in ("", "0", "no", "false")
+TRUST_UIDS = {int(x) for x in re.findall(r"\d+", os.environ.get("SERVERJACK_TRUST_UIDS") or "")}
+ALLOWED_UIDS = {0, os.getuid()} | TRUST_UIDS
+_warned_no_row = False
+
+
+def _proc_addr(field):
+    """"0100007F:1E08" -> ("127.0.0.1", 7680). Each 4-byte word of the address
+    is little-endian; tcp6 rows are four such words, and an IPv4-mapped peer
+    (::ffff:127.0.0.1) is normalised back to its IPv4 form so both files
+    compare against the same thing."""
+    hexip, _, hexport = field.partition(":")
+    raw = bytes.fromhex(hexip)
+    raw = b"".join(raw[i:i + 4][::-1] for i in range(0, len(raw), 4))
+    fam = socket.AF_INET if len(raw) == 4 else socket.AF_INET6
+    ip = socket.inet_ntop(fam, raw)
+    if ip.startswith("::ffff:"):
+        ip = ip[7:]
+    return ip, int(hexport, 16)
+
+
+def _norm(ip):
+    return ip[7:] if ip.startswith("::ffff:") else ip
+
+
+def peer_uid(conn):
+    """uid owning the other end of this connection, or None if we can't tell.
+    The peer's own row is the one whose local address is our remote address and
+    whose remote address is our local one."""
+    try:
+        peer = conn.getpeername()
+        ours = conn.getsockname()
+    except OSError:
+        return None
+    want_local = (_norm(peer[0]), peer[1])
+    want_remote = (_norm(ours[0]), ours[1])
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path) as f:
+                next(f, None)                      # header
+                for line in f:
+                    col = line.split()
+                    if len(col) < 8:
+                        continue
+                    try:
+                        if _proc_addr(col[1]) == want_local and _proc_addr(col[2]) == want_remote:
+                            return int(col[7])
+                    except (ValueError, OSError):
+                        continue
+        except OSError:
+            continue
+    return None
+
+
+def peer_allowed(conn):
+    """Fails CLOSED: a peer we cannot identify is a peer we don't serve."""
+    global _warned_no_row
+    if LISTEN != "tcp" or TRUST_LOCAL:
+        return True
+    uid = peer_uid(conn)
+    if uid is None:
+        if not _warned_no_row:
+            _warned_no_row = True
+            sys.stderr.write(
+                "serverjack: cannot find the peer's socket in /proc/net/tcp -- refusing "
+                "connections it cannot identify. Set SERVERJACK_TRUST_LOCAL=1 to disable "
+                "the check, or SERVERJACK_LISTEN=unix to not need it.\n")
+        return False
+    return uid in ALLOWED_UIDS
 TITLE = os.environ.get("SERVERJACK_TITLE") or socket.gethostname().split(".")[0]
 TERM_PATH = os.environ.get("SERVERJACK_TERM", "/term/")
 if not TERM_PATH.endswith("/"):
@@ -444,7 +622,7 @@ def sessions():
     for line in r.stdout.splitlines():
         name, windows, attached, created, cmd, path = (line.split("\t") + [""] * 6)[:6]
         out.append({
-            "name": name, "windows": int(windows or 0),
+            "name": name, "token": session_token(name), "windows": int(windows or 0),
             "attached": attached not in ("", "0"),
             "created": int(created or 0), "cmd": cmd,
             "path": path.replace(HOME, "~", 1),
@@ -1158,7 +1336,7 @@ body.popout #popout,body.touch #popout{{display:none}}
     <button class="ib" id="screen-close" title="Close" aria-label="Close">{i_close}</button></div>
   <pre id="screen-text"></pre>
 </div>
-<script>window.SJ = {{term: {term_path_json}, name: {name_json}, title: {title_json}}};</script>
+<script>window.SJ = {{term: {term_path_json}, name: {name_json}, title: {title_json}, token: {token_json}}};</script>
 <script src="/app.js"></script>
 </body></html>
 """
@@ -1167,6 +1345,15 @@ APP_JS = r"""
 (function () {
   'use strict';
   var TERM = window.SJ.term, cur = window.SJ.name, TITLE = window.SJ.title;
+  // name -> terminal token, refreshed from every /api/sessions payload. The
+  // frame URL carries it so ttyd's command can tell a link this page handed
+  // out from someone typing /term/?arg=<name> themselves.
+  var TOK = {}; if (window.SJ.token) TOK[cur] = window.SJ.token;
+  function learn(list) { list.forEach(function (s) { if (s.token) TOK[s.name] = s.token; }); return list; }
+  function termSrc(name) {
+    var t = TOK[name];
+    return TERM + '?arg=' + encodeURIComponent(name) + (t ? '&arg=' + encodeURIComponent(t) : '');
+  }
   var body = document.body, POP = body.classList.contains('popout');
   var frame = document.getElementById('frame'), tabs = document.getElementById('tabs');
   var pop = document.getElementById('pop'), err = document.getElementById('err');
@@ -1347,10 +1534,11 @@ APP_JS = r"""
   function switchTo(name) {
     if (name === cur) { focusTerm(); return; }
     cur = name;
-    frame.src = TERM + '?arg=' + encodeURIComponent(name);
+    frame.src = termSrc(name);
     setUrl(name); refresh();
   }
   function render(list) {
+    learn(list);
     tabs.innerHTML = '';
     var present = false;
     list.forEach(function (s) {
@@ -1386,7 +1574,7 @@ APP_JS = r"""
     fetch('/api/kill', { method: 'POST', body: new URLSearchParams({ name: dead }) })
       .then(function () { return fetch('/api/sessions', { cache: 'no-store' }); })
       .then(function (r) { return r.json(); })
-      .then(function (list) { if (!list.length) { location.href = '/'; return; } switchTo(list[0].name); });
+      .then(function (list) { learn(list); if (!list.length) { location.href = '/'; return; } switchTo(list[0].name); });
   };
   pop.onsubmit = function (e) {
     e.preventDefault(); err.classList.remove('on');
@@ -1394,7 +1582,9 @@ APP_JS = r"""
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (j.error) { err.textContent = j.error; err.classList.add('on'); return; }
-        pop.classList.remove('open'); pop.reset(); switchTo(j.name);
+        pop.classList.remove('open'); pop.reset();
+        if (j.token) TOK[j.name] = j.token;
+        switchTo(j.name);
       })
       .catch(function () { err.textContent = 'request failed'; err.classList.add('on'); });
   };
@@ -1432,7 +1622,10 @@ def term_href(name):                 # the wrapper page with the menu bar
 
 
 def ttyd_src(name):                  # what the wrapper's frame loads
-    return f"{TERM_PATH}?arg={quote(name, safe='')}"
+    # ttyd -a turns each ?arg= into an argv entry for bin/tmux-attach.sh:
+    # $1 = session name, $2 = its token.
+    return (f"{TERM_PATH}?arg={quote(name, safe='')}"
+            f"&arg={quote(session_token(name), safe='')}")
 
 
 def kind_options():
@@ -1681,7 +1874,30 @@ def render_term(name, popout=False):
         i_dots=I_DOTS, i_list=I_LIST, i_plus=I_PLUS, i_keys=I_KEYBOARD, i_popout=I_POPOUT,
         i_close=I_CLOSE, i_send=I_SEND, i_refresh=I_REFRESH,
         term_path_json=json.dumps(TERM_PATH), name_json=json.dumps(name), title_json=json.dumps(TITLE),
+        token_json=json.dumps(session_token(name)),
         body_class=' class="popout"' if popout else "")
+
+
+DENY_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>{title}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#080f0e">
+<style>{css}</style></head><body><main>
+<h1>{glyph}serverjack <small>{title}</small></h1>
+<div class="err">Not your serverjack.</div>
+<p class="tagline">This serverjack belongs to {who}. You are signed in to Tailscale as {you}.</p>
+<p class="foot">Identity comes from Tailscale: <code>tailscale serve</code> adds a
+<code>Tailscale-User-Login</code> header for the tailnet user on the other end, and this
+instance only answers to the logins its owner listed in <code>SERVERJACK_ALLOW</code>.
+Your own account on this machine can run its own serverjack on its own HTTPS port.</p>
+</main></body></html>
+"""
+
+
+def render_deny(login):
+    who = ", ".join(ALLOW) or "nobody"
+    return DENY_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_PROMPT,
+                            who=esc(who), you=esc(login or "nobody"))
 
 
 # --- PWA bits: manifest + icons (so "Add to Home Screen" on iOS / "Install"
@@ -1743,8 +1959,40 @@ TOOL_ROUTES = ("/tools/install", "/tools/login", "/tools/open",
 class Handler(BaseHTTPRequestHandler):
     server_version = "serverjack/1"
 
+    def setup(self):
+        # Once per connection, not per request: ThreadingHTTPServer keeps the
+        # socket open for keep-alive, and the owner of a socket cannot change.
+        BaseHTTPRequestHandler.setup(self)
+        self.peer_ok = peer_allowed(self.connection)
+
+    def refuse_peer(self):
+        return self.send_bytes(
+            b"this serverjack belongs to another user on this machine\n",
+            "text/plain; charset=utf-8", 403, cache=False)
+
+    def address_string(self):
+        # On a Unix socket there is no peer address at all (client_address is
+        # ""), and the base class would index it. Say where we are instead.
+        ca = self.client_address
+        return str(ca[0]) if isinstance(ca, tuple) and ca else "unix"
+
     def log_message(self, fmt, *args):
         sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+
+    # ------------------------------------------------------------ identity --
+    # SERVERJACK_ALLOW lists tailnet logins. `tailscale serve` authenticates
+    # the tailnet user and injects Tailscale-User-Login; we trust that header
+    # because nothing else can reach us -- in unix mode the socket is 0600
+    # inside a 0700 dir (tailscaled runs as root), and in tcp mode the README
+    # says your proxy must set it and strip any client-supplied copy.
+    OPEN_PATHS = ("/healthz", "/manifest.webmanifest", "/icon.svg", "/icon-180.png")
+
+    def identity_ok(self, path):
+        """(ok, login). ok is always True when SERVERJACK_ALLOW is unset."""
+        login = (self.headers.get("Tailscale-User-Login") or "").strip()
+        if not ALLOW or path in self.OPEN_PATHS:
+            return True, login
+        return login.lower() in ALLOW, login
 
     def send_html(self, body, status=200):
         data = body.encode()
@@ -1780,7 +2028,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if not self.peer_ok:
+            return self.refuse_peer()
         path = urlparse(self.path).path
+        ok, login = self.identity_ok(path)
+        if not ok:
+            if path.startswith("/api/"):
+                return self.send_json({"error": "not your serverjack"}, 403)
+            return self.send_html(render_deny(login), 403)
         if path == "/":
             return self.send_html(render())
         if path.startswith("/s/"):
@@ -1844,7 +2099,14 @@ class Handler(BaseHTTPRequestHandler):
         return name, err
 
     def do_POST(self):
+        if not self.peer_ok:
+            return self.refuse_peer()
         path = urlparse(self.path).path
+        ok, login = self.identity_ok(path)
+        if not ok:
+            if path.startswith("/api/"):
+                return self.send_json({"error": "not your serverjack"}, 403)
+            return self.send_html(render_deny(login), 403)
         if not self.same_site():
             if path.startswith("/api/"):
                 return self.send_json({"error": "cross-site request refused"}, 403)
@@ -1871,7 +2133,7 @@ class Handler(BaseHTTPRequestHandler):
             name, err = self.new_from_form(f)
             if err:
                 return self.send_json({"error": err}, 400)
-            return self.send_json({"ok": True, "name": name})
+            return self.send_json({"ok": True, "name": name, "token": session_token(name)})
 
         if path in ("/kill", "/api/kill"):
             name = f.get("name", "")
@@ -2047,10 +2309,56 @@ class Handler(BaseHTTPRequestHandler):
         return self.redirect(term_href(name))
 
 
+class UnixHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer on an AF_UNIX socket. HTTPServer.server_bind wants a
+    (host, port) tuple to build server_name from, so it is bypassed here."""
+    address_family = socket.AF_UNIX
+
+    def server_bind(self):
+        try:
+            os.unlink(self.server_address)     # stale socket from a hard kill
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        socketserver.TCPServer.server_bind(self)
+        os.chmod(self.server_address, 0o600)   # only this account, belt and braces
+        self.server_name, self.server_port = "serverjack", 0
+
+    def server_close(self):
+        super().server_close()
+        try:
+            os.unlink(self.server_address)
+        except OSError:
+            pass
+
+
 if __name__ == "__main__":
-    srv = ThreadingHTTPServer(BIND, Handler)
-    sys.stderr.write(f"serverjack listening on http://{BIND[0]}:{BIND[1]}  title={TITLE!r} dirs={DIR_ROOTS} tools={[t['id'] for t in load_tools()[0]]}\n")
+    if LISTEN == "tcp":
+        srv = ThreadingHTTPServer(BIND, Handler)
+        where = f"http://{BIND[0]}:{BIND[1]}"
+    else:
+        try:
+            srv = UnixHTTPServer(WEB_SOCK, Handler)
+        except OSError as e:
+            # AF_UNIX paths max out around 108 bytes -- only ever hit with an
+            # unusual XDG_RUNTIME_DIR, and worth naming rather than a bare errno.
+            raise SystemExit(f"cannot bind {WEB_SOCK}: {e}"
+                             + (" (path too long -- set XDG_RUNTIME_DIR to something shorter,"
+                                " or SERVERJACK_LISTEN=tcp)" if "too long" in str(e) else ""))
+        where = f"unix:{WEB_SOCK}"
+    allow = ",".join(ALLOW) or "(any tailnet device that reaches it)"
+    if LISTEN != "tcp":
+        peers = "(socket is 0600)"
+    elif TRUST_LOCAL:
+        peers = "ANY local user (SERVERJACK_TRUST_LOCAL)"
+    else:
+        peers = ",".join(str(u) for u in sorted(ALLOWED_UIDS))
+    sys.stderr.write(f"serverjack listening on {where}  title={TITLE!r} allow={allow} "
+                     f"uids={peers} dirs={DIR_ROOTS} tools={[t['id'] for t in load_tools()[0]]}\n")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        srv.server_close()
