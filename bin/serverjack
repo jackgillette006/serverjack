@@ -1,0 +1,1993 @@
+"""serverjack: a phone-friendly web front door to your home server.
+
+    https://<host>/        -> this app (default 127.0.0.1:7680)
+    https://<host>/term/   -> ttyd      (default 127.0.0.1:7681)
+
+Everything it does ends in the same place: a command running inside a tmux
+session, with a terminal on your screen. The landing page has three panels,
+in the order you actually need them from a phone:
+
+  1. Run a command  -- an agent told you to run `sudo apt install ffmpeg` and
+     it can't do that itself. Paste it, tap Run: it starts in a new session in
+     front of a login shell, so a sudo password prompt works and the output
+     stays on screen afterwards.
+  2. Sessions       -- list, open, kill; plus a plain new shell.
+  3. Agents         -- an accordion with one collapsed row per coding CLI
+     (Claude Code, Codex, OpenCode, Copilot, Gemini). The row shows the tool
+     and its state: not installed / installed but not logged in / ready, plus
+     a pill for any server or daemon. Open one (they are exclusive, native
+     <details name=...>, no JS) and the body offers one option row per way of
+     starting it -- here in this terminal, with remote control, as a server,
+     as a daemon -- each with a one-line note on the difference. Every button
+     just launches a command in a session and shows you the terminal --
+     install scripts print progress, login flows print a URL or a device code,
+     remote-control servers print a QR code. serverjack never parses what a
+     tool prints. The one exception is the Codex daemon, whose start/stop are
+     quick non-interactive commands.
+
+Opening a session goes to /s/<name>: a slim menu bar (session tabs, + new,
+x close, pop-out, soft keys for phones) over ttyd in a frame at
+/term/?arg=<name>; ttyd runs bin/tmux-attach.sh with that argument, which
+attaches. The terminal only ever appears once you are inside a session.
+
+Stdlib only, no dependencies. Runs as your user and talks to your normal tmux
+server, so it sees the same sessions as any other login.
+
+Configuration is by environment variables (see install.sh / README):
+    SERVERJACK_PORT   listen port (127.0.0.1 only)          default 7680
+    SERVERJACK_TITLE  page title                             default hostname
+    SERVERJACK_DIRS   colon-separated dirs offered for new sessions
+    SERVERJACK_TOOLS  comma-separated agent ids to show, in that order
+                      (default: every tool in the registry below)
+    SERVERJACK_TERM   URL path where ttyd is mounted         default /term/
+    SERVERJACK_SSH    user@host for the "open in an SSH app" menu item,
+                      or "off" to hide it   (default: the tailnet name)
+    SERVERJACK_CONFIG config dir  (default ~/.config/serverjack)
+
+Agents come from BUILTIN_TOOLS below. To change one, or add your own, drop a
+JSON *list* in $SERVERJACK_CONFIG/tools.json; entries are merged over the
+built-in tool with the same id (field by field, except "server"/"daemon",
+which replace wholesale), "hidden": true drops one, and unknown ids are
+appended. Fields: id, label, bin, paths, docs, install, install_note, needs ("node"),
+login, login_note, login_check, run, run_note, server{label,cmd,session,note},
+daemon{label,start,stop,pidfile,note}, actions[{label,cmd,note,dir}], hidden.
+run_note, actions[].note, server.note and daemon.note are the one-line
+explanations shown beside those options; keep them to a single sentence.
+"paths" lists extra directories to look for "bin" in -- a coding CLI often
+installs into a private bin dir that only your .bashrc adds to PATH; the ones
+that exist are appended to the PATH used for the installed/login checks, the
+daemon commands and every session serverjack starts.
+Only id, label and bin are required. Example:
+
+    [
+      {"id": "opencode", "server": {"label": "Server for the mobile app",
+        "cmd": "opencode serve --hostname 0.0.0.0", "session": "opencode-serve"}},
+      {"id": "gemini", "hidden": true},
+      {"id": "aider", "label": "Aider", "bin": "aider", "run": "aider",
+       "install": "pipx install aider-chat"}
+    ]
+
+Every agent card submits one form to POST /tools, and the button that was
+pressed carries the route in its value ("/tools/open", "/tools/action:0"...),
+so a card can share one directory picker between several buttons. Those same
+routes also work as plain endpoints of their own.
+
+Security: NO authentication of its own. Every button on this page runs a
+command as the user serverjack runs as -- it is SSH with a nicer font. Only
+expose it through something that authenticates (tailscale serve, an SSO
+reverse proxy, a VPN); never `tailscale funnel` it. State-changing POSTs are
+refused when the browser says they came from another site (Sec-Fetch-Site /
+Origin), so a random web page can't drive it from a logged-in browser.
+"""
+
+import concurrent.futures
+import html
+import json
+import os
+import re
+import getpass
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, quote, unquote, urlparse
+
+HOME = os.path.expanduser("~")
+BIND = ("127.0.0.1", int(os.environ.get("SERVERJACK_PORT", "7680")))
+TITLE = os.environ.get("SERVERJACK_TITLE") or socket.gethostname().split(".")[0]
+TERM_PATH = os.environ.get("SERVERJACK_TERM", "/term/")
+if not TERM_PATH.endswith("/"):
+    TERM_PATH += "/"          # ttyd builds its ws URL relative to the page path
+
+
+def _dirs():
+    raw = os.environ.get("SERVERJACK_DIRS") or "~/projects:~/src:~/workspace:~"
+    out = []
+    for d in raw.split(":"):
+        d = os.path.expanduser(d.strip())
+        if d and os.path.isdir(d) and d not in out:
+            out.append(d)
+    if HOME not in out:
+        out.append(HOME)      # last, so the picker defaults to a real project dir
+    return out
+
+
+DIR_ROOTS = _dirs()
+CONFIG_DIR = os.environ.get("SERVERJACK_CONFIG") or os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or f"{HOME}/.config", "serverjack")
+SHORTCUTS_FILE = os.path.join(CONFIG_DIR, "shortcuts.json")
+TOOLS_FILE = os.path.join(CONFIG_DIR, "tools.json")
+
+
+def _ssh_target():
+    """user@host for 'connect over SSH instead' links. SERVERJACK_SSH overrides;
+    otherwise the tailnet DNS name if tailscale is up, else the hostname."""
+    t = os.environ.get("SERVERJACK_SSH", "").strip()
+    if t == "off":
+        return ""
+    if t:
+        return t
+    host = ""
+    try:
+        r = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            host = (json.loads(r.stdout).get("Self") or {}).get("DNSName", "").rstrip(".")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    host = host or socket.getfqdn() or socket.gethostname()
+    return f"{getpass.getuser()}@{host}"
+
+
+SSH_TARGET = _ssh_target()
+
+
+def ssh_cmd(name):
+    return f"ssh -t {SSH_TARGET} tmux attach -t {shlex.quote(name)}" if SSH_TARGET else ""
+
+
+PATH_ENV = os.environ.get("PATH") or f"{HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+
+# ------------------------------------------------------------- agents -----
+#
+# The registry. Every command here is one a human would type; serverjack only
+# ever runs it in a tmux session and shows you the terminal. See the module
+# docstring for how to override any of this from tools.json.
+
+BUILTIN_TOOLS = [
+    {
+        "id": "claude", "label": "Claude Code", "bin": "claude",
+        "paths": ["~/.local/bin", "~/.claude/local/bin"],
+        "docs": "https://code.claude.com/docs/en/remote-control",
+        "install": "curl -fsSL https://claude.ai/install.sh | bash",
+        "install_note": "native installer, no Node.js needed",
+        "login": "claude auth login",
+        "login_check": "claude auth status",
+        "run": "claude",
+        "run_note": "Interactive Claude Code in this terminal only.",
+        "actions": [
+            {"label": "Open with remote control", "cmd": "claude --remote-control",
+             "dir": True,
+             "note": "The same interactive session, also steerable from the Claude app "
+                     "and claude.ai/code. Best for one session you want on both."},
+        ],
+        "server": {
+            "label": "Remote Control server",
+            "cmd": "claude remote-control",
+            "session": "claude-remote",
+            "note": "No local chat: the Claude app starts Claude Code sessions here on "
+                    "demand, several at once, in the directory picked above. One server "
+                    "per project directory. Prints a QR code; gives up after ~10 minutes "
+                    "without network.",
+        },
+    },
+    {
+        "id": "codex", "label": "Codex", "bin": "codex",
+        "paths": ["~/.local/bin", "~/.codex/bin"],
+        "docs": "https://learn.chatgpt.com/docs/remote-connections",
+        "install": "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+        "install_note": "standalone binary, no Node.js needed",
+        "login": "codex login",
+        "login_check": "codex login status",
+        "run": "codex",
+        "run_note": "Interactive Codex in this terminal only.",
+        "daemon": {
+            "label": "Remote control daemon",
+            "start": "codex remote-control start",
+            "stop": "codex remote-control stop",
+            "pidfile": "~/.codex/app-server-daemon/app-server.pid",
+            "note": "The ChatGPT app connects to this daemon and opens Codex sessions "
+                    "in any directory on this machine. Pair once with the code below.",
+        },
+        "actions": [
+            {"label": "Pair with phone", "cmd": "codex remote-control pair",
+             "note": "Prints a short-lived pairing code to enter in the ChatGPT app."},
+        ],
+    },
+    {
+        "id": "opencode", "label": "OpenCode", "bin": "opencode",
+        "paths": ["~/.opencode/bin"],
+        "docs": "https://opencode.ai/docs/server/",
+        "install": "curl -fsSL https://opencode.ai/install | bash",
+        "login": "opencode auth login",
+        "run": "opencode",
+        "run_note": "Interactive TUI in this terminal.",
+        "server": {
+            "label": "Server for the mobile app",
+            "cmd": "opencode serve",
+            "session": "opencode-serve",
+            "note": "Headless server for the OpenCode mobile app. Binds 127.0.0.1:4096 "
+                    "by default; override cmd in tools.json to reach it over Tailscale.",
+        },
+    },
+    {
+        "id": "copilot", "label": "GitHub Copilot CLI", "bin": "copilot",
+        "paths": ["~/.local/bin"],
+        "docs": "https://docs.github.com/en/copilot/how-tos/copilot-cli/"
+                "set-up-copilot-cli/install-copilot-cli",
+        "install": "curl -fsSL https://gh.io/copilot-install | bash",
+        "login": "copilot", "login_note": "type /login at the prompt",
+        "run": "copilot",
+        "run_note": "Interactive Copilot in this terminal only.",
+        "actions": [
+            {"label": "Open with remote control", "cmd": "copilot --remote", "dir": True,
+             "note": "Same session, also steerable from GitHub Mobile or github.com."},
+        ],
+    },
+    {
+        "id": "gemini", "label": "Gemini CLI", "bin": "gemini",
+        "paths": ["~/.npm-global/bin", "~/.local/share/npm/bin"],
+        "docs": "https://github.com/google-gemini/gemini-cli",
+        "install": "npm install -g @google/gemini-cli", "needs": "node",
+        "login": "gemini", "login_note": "signs you in on first run",
+        "run": "gemini",
+        "run_note": "Interactive Gemini CLI in this terminal.",
+    },
+]
+
+
+def load_tools():
+    """The visible tool list, plus an error string if tools.json is unusable
+    (a bad config must not take the page down)."""
+    tools = [dict(t) for t in BUILTIN_TOOLS]
+    by_id = {t["id"]: t for t in tools}
+    error = None
+    try:
+        with open(TOOLS_FILE) as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            raise ValueError("expected a JSON list of tool objects")
+        for entry in data:
+            if not isinstance(entry, dict) or not entry.get("id"):
+                raise ValueError('every entry needs an "id"')
+            tid = entry["id"]
+            if tid in by_id:
+                by_id[tid].update(entry)
+            else:
+                t = dict(entry)
+                t.setdefault("label", tid)
+                t.setdefault("bin", tid)
+                by_id[tid] = t
+                tools.append(t)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        error = f"Ignoring {TOOLS_FILE}: {e}"
+        sys.stderr.write(error + "\n")
+
+    tools = [t for t in tools if not t.get("hidden")]
+    want = os.environ.get("SERVERJACK_TOOLS", "").strip()
+    if want:
+        # Tolerate the old "claude=Claude Code,codex=Codex" spelling.
+        ids = [x.split("=")[0].strip() for x in want.split(",")]
+        by_id = {t["id"]: t for t in tools}
+        tools = [by_id[i] for i in ids if i in by_id]
+    return tools, error
+
+
+def _tool_path():
+    """PATH_ENV plus every existing directory a tool declares in "paths".
+    Coding CLIs like to install into a private bin dir that only .bashrc adds
+    to PATH; serverjack runs from a systemd unit and never sees that."""
+    out = PATH_ENV.split(":")
+    for t in load_tools()[0]:
+        for d in t.get("paths") or []:
+            d = os.path.expanduser(str(d))
+            if d and d not in out and os.path.isdir(d):
+                out.append(d)
+    return ":".join(out)
+
+
+# tools.json is read once at startup, so this is computed once too.
+TOOL_PATH = _tool_path()
+
+
+def find_tool(tid):
+    for t in load_tools()[0]:
+        if t["id"] == tid:
+            return t
+    return None
+
+
+def tool_kinds():
+    """Session kinds for the "new session" forms: a plain shell, plus every
+    installed tool that has a `run` command. kind -> (command, label)."""
+    kinds = {"shell": (None, "Shell")}
+    for t in load_tools()[0]:
+        if t.get("run") and shutil.which(t.get("bin") or t["id"], path=TOOL_PATH):
+            kinds[t["id"]] = (t["run"], t.get("label") or t["id"])
+    return kinds
+
+
+def run_check(cmd, timeout=15):
+    """True/False from a command's exit status, None if it wouldn't answer."""
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, timeout=timeout,
+                           cwd=HOME, env={**os.environ, "PATH": TOOL_PATH})
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def daemon_pid(daemon):
+    """The daemon's pid if its pidfile names a live process, else None."""
+    path = os.path.expanduser(daemon.get("pidfile") or "")
+    if not path:
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        pid = int(data["pid"] if isinstance(data, dict) else data)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    try:
+        os.kill(pid, 0)
+    except PermissionError:          # someone else's process: still running
+        return pid
+    except OSError:
+        return None
+    return pid
+
+
+# Installed/logged-in are the slow bits (a login check shells out), so they are
+# cached briefly and refreshed the moment a button touches that tool.
+_STATE_CACHE = {}
+STATE_TTL = 60
+
+
+def clear_tool_cache(tid=None):
+    if tid is None:
+        _STATE_CACHE.clear()
+    else:
+        _STATE_CACHE.pop(tid, None)
+
+
+def tool_state(tool, names=None):
+    """Everything the page needs to decide which one button to show."""
+    tid = tool["id"]
+    hit = _STATE_CACHE.get(tid)
+    if hit and hit[0] > time.time():
+        installed, logged_in = hit[1]
+    else:
+        installed = shutil.which(tool.get("bin") or tid, path=TOOL_PATH) is not None
+        logged_in = None
+        if installed and tool.get("login_check"):
+            logged_in = run_check(tool["login_check"])
+        _STATE_CACHE[tid] = (time.time() + STATE_TTL, (installed, logged_in))
+
+    needs = tool.get("needs")
+    needs_ok = True
+    if needs == "node":
+        needs_ok = bool(shutil.which("node", path=TOOL_PATH) and shutil.which("npm", path=TOOL_PATH))
+
+    server = tool.get("server") or {}
+    sess = server.get("session") or ""
+    if names is None:
+        exists = bool(sess) and session_exists(sess)
+    else:
+        exists = bool(sess) and sess in names
+    # "exited": the session is there but the command has died into the
+    # fallback shell (e.g. Claude refusing an untrusted directory); the error
+    # is on screen and the server can be started again.
+    state = "off" if not exists else ("exited" if session_idle(sess) else "on")
+    return {
+        "id": tid, "label": tool.get("label") or tid,
+        "installed": installed, "logged_in": logged_in, "needs_ok": needs_ok,
+        "daemon_running": daemon_pid(tool["daemon"]) is not None if tool.get("daemon") else False,
+        "server_running": state == "on", "server_state": state, "server_session": sess,
+    }
+
+
+def tool_states(tools):
+    """States for a whole list, checked in parallel: the page then costs about
+    one login check, not one per tool."""
+    if not tools:
+        return []
+    names = {s["name"] for s in sessions()}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(tools)) as ex:
+        return list(ex.map(lambda t: tool_state(t, names), tools))
+
+
+# ----------------------------------------------------------------- tmux ----
+
+def tmux(*args, check=False):
+    return subprocess.run(
+        ["tmux", *args], capture_output=True, text=True, check=check,
+        env={**os.environ, "PATH": PATH_ENV},
+    )
+
+
+def sessions():
+    fmt = "\t".join([
+        "#{session_name}", "#{session_windows}", "#{session_attached}",
+        "#{session_created}", "#{pane_current_command}", "#{pane_current_path}",
+    ])
+    r = tmux("list-sessions", "-F", fmt)
+    out = []
+    if r.returncode != 0:
+        return out                       # no server running: no sessions
+    for line in r.stdout.splitlines():
+        name, windows, attached, created, cmd, path = (line.split("\t") + [""] * 6)[:6]
+        out.append({
+            "name": name, "windows": int(windows or 0),
+            "attached": attached not in ("", "0"),
+            "created": int(created or 0), "cmd": cmd,
+            "path": path.replace(HOME, "~", 1),
+        })
+    return out
+
+
+def screen_text(name, lines=300):
+    """Plain text of the session's active pane, last <lines> lines, wrapped
+    lines joined. Used by the phone 'Copy' view where native selection works."""
+    r = tmux("capture-pane", "-p", "-J", "-t", f"={name}:", "-S", f"-{int(lines)}")  # "=name:" = exact session, its current pane
+    return r.stdout if r.returncode == 0 else ""
+
+
+def session_exists(name):
+    return tmux("has-session", "-t", f"={name}").returncode == 0
+
+
+def session_idle(name):
+    """True when the session's pane is sitting at a plain shell, i.e. the
+    command a server/tool session was started for has exited."""
+    r = tmux("display-message", "-p", "-t", f"={name}:", "#{pane_current_command}")
+    return r.returncode == 0 and r.stdout.strip() in ("bash", "sh", "zsh", "fish", "dash")
+
+
+def auto_name(base="shell"):
+    """First free name: base, base-2, base-3 ..."""
+    base = re.sub(r"[^A-Za-z0-9_-]+", "-", base).strip("-") or "shell"
+    if not session_exists(base):
+        return base
+    n = 2
+    while session_exists(f"{base}-{n}"):
+        n += 1
+    return f"{base}-{n}"
+
+
+def validate_name(name, required=True, base="shell"):
+    name = name.strip()
+    if not name:
+        if required:
+            return None, "Give the session a name."
+        return auto_name(base), None
+    if any(c in name for c in ":.\t\n") or len(name) > 60:
+        return None, "Session names can't contain ':' or '.' (tmux rule) or be longer than 60 chars."
+    if session_exists(name):
+        return None, f"A session called “{name}” already exists. Open it instead."
+    return name, None
+
+
+def resolve_dir(dir_choice, dir_custom):
+    """The directory a session starts in. A typed path that doesn't exist yet
+    is created (the user typed it on purpose: "start a shell/agent in a new
+    project dir"); picker choices always exist already."""
+    typed = (dir_custom or "").strip()
+    d = typed or (dir_choice or "").strip() or HOME
+    d = os.path.expanduser(d)
+    if not os.path.isabs(d):
+        d = os.path.join(HOME, d)
+    d = os.path.realpath(d)
+    if not os.path.isdir(d):
+        if not typed:
+            return None, f"No such directory: {d}"
+        if os.path.exists(d):
+            return None, f"Not a directory: {d}"
+        try:
+            os.makedirs(d)
+        except OSError as e:
+            return None, f"Couldn't create {d}: {e.strerror or e}"
+    return d, None
+
+
+def command_args(cmd):
+    """tmux arguments that run one command line in front of a login shell.
+
+    The command goes in through the environment, never interpolated into the
+    script, so there are no quoting games. The login shell afterwards is the
+    point of the whole thing: a sudo prompt can ask for a password, and
+    whatever the command printed last -- an error, a login URL, a QR code --
+    is still on screen when it exits, instead of the session vanishing."""
+    cmd = cmd.strip()
+    # set -m: the command gets its own process group, so tmux reports it (not
+    # this wrapper) as the pane's command, and a ^C reaches only the command.
+    return ["-n", (cmd.split() or ["cmd"])[0], "-e", "SERVERJACK_CMD=" + cmd,
+            'set -m; printf "\\$ %s\\n" "$SERVERJACK_CMD"; bash -lc "$SERVERJACK_CMD"; '
+            'rc=$?; echo; echo "[exited with status $rc]"; exec bash -l']
+
+
+def create_command_session(name, cwd, cmd):
+    """A session that runs one command in front of a login shell."""
+    r = tmux("new-session", "-d", "-s", name, "-c", cwd, "-e", f"PATH={TOOL_PATH}",
+             *command_args(cmd))
+    if r.returncode != 0:
+        return (r.stderr or r.stdout).strip() or "tmux new-session failed"
+    return None
+
+
+def create_session(kind, name, cwd, command=None):
+    """kind: 'shell' or a tool id from tool_kinds(). command: for shells, a
+    command line to run first (the user typed it; it IS meant to be run)."""
+    kinds = tool_kinds()
+    if kind not in kinds:
+        return "Unknown session type."
+    cmd, _label = kinds[kind]
+    args = ["new-session", "-d", "-s", name, "-c", cwd, "-e", f"PATH={TOOL_PATH}"]
+    if cmd or (command and command.strip()):
+        args += command_args(cmd or command)
+    r = tmux(*args)
+    if r.returncode != 0:
+        return (r.stderr or r.stdout).strip() or "tmux new-session failed"
+    return None
+
+
+# ---------- shortcuts: user-defined one-click commands, stored as JSON
+
+def load_shortcuts():
+    try:
+        with open(SHORTCUTS_FILE) as f:
+            data = json.load(f)
+        return [x for x in data if isinstance(x, dict) and x.get("id") and x.get("cmd")]
+    except (OSError, ValueError):
+        return []
+
+
+def save_shortcuts(items):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    tmp = SHORTCUTS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(items, f, indent=2)
+    os.replace(tmp, SHORTCUTS_FILE)
+
+
+def add_shortcut(label, cmd, cwd):
+    label = label.strip() or cmd.strip().split()[0]
+    items = load_shortcuts()
+    sid = f"{int(time.time())}-{len(items)}"
+    items.append({"id": sid, "label": label[:60], "cmd": cmd.strip(), "dir": cwd})
+    save_shortcuts(items)
+
+
+def dir_choices():
+    seen = []
+    for root in DIR_ROOTS:
+        if os.path.isdir(root) and root not in seen:
+            seen.append(root)
+        try:
+            for e in sorted(os.scandir(root), key=lambda e: e.name.lower()):
+                if e.is_dir() and not e.name.startswith(".") and e.path not in seen:
+                    seen.append(e.path)
+        except OSError:
+            pass
+    return seen
+
+
+def ago(ts):
+    if not ts:
+        return ""
+    s = int(time.time()) - ts
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if s >= n:
+            return f"{s // n}{unit} ago"
+    return "just now"
+
+
+# ----------------------------------------------------------------- html ----
+
+# ---------------------------------------------------------------- theme ----
+#
+# One token block, shared by the landing page and the terminal wrapper. Colours,
+# spacing, radii and focus come from docs/design/DESIGN.md; system fonts only, no
+# webfonts, no external assets -- the page has to work offline and anywhere.
+
+TOKENS = """
+:root{
+  --bg-primary:#080f0e; --bg-secondary:#111815; --surface:#1a2420; --surface-alt:#232e28;
+  --border:#2f3f36; --border-soft:#1f2a25;
+  --text-primary:#e6f7e9; --text-secondary:#9fb3a8; --text-muted:#93a79d;
+  --accent:#39ff88; --accent-dim:#1ed06a; --on-accent:#04140c;
+  --warning:#ffc857; --danger:#ff5f56; --info:#58a6ff; --agent-purple:#c678ff;
+  --accent-wash:rgb(57 255 136 / .10); --danger-wash:rgb(255 95 86 / .12);
+  --space-1:4px; --space-2:8px; --space-3:16px; --space-4:24px; --space-5:32px; --space-6:48px;
+  --radius-xs:4px; --radius-sm:8px; --radius-md:12px; --radius-lg:16px; --radius-xl:24px;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --font-ui:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --glass-bg:rgb(17 24 21 / .82); --glass-border:rgb(159 179 168 / .18); --glass-blur:18px;
+  --focus-ring:0 0 0 3px rgb(57 255 136 / .24);
+}
+"""
+
+# Outline icons, 1.5px stroke, currentColor. Inline SVG only -- no icon font.
+def _svg(body, size=16, cls="i"):
+    return (f'<svg class="{cls}" viewBox="0 0 24 24" width="{size}" height="{size}" fill="none" '
+            'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" '
+            f'stroke-linejoin="round" aria-hidden="true">{body}</svg>')
+
+
+I_PROMPT = _svg('<path d="M4 6l6 6-6 6"/><path d="M13 18h7"/>', 20, "glyph")
+I_HERE = _svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 10l2.5 2.5L7 15"/>')
+I_POPOUT = _svg('<path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/>'
+                '<path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>')
+I_COPY = _svg('<rect x="9" y="9" width="11" height="11" rx="2"/>'
+              '<path d="M5 15V5a2 2 0 0 1 2-2h8"/>')
+I_LINK = _svg('<path d="M10.5 13.5a4 4 0 0 0 5.7 0l2.8-2.8a4 4 0 0 0-5.7-5.7l-1.4 1.4"/>'
+              '<path d="M13.5 10.5a4 4 0 0 0-5.7 0L5 13.3a4 4 0 0 0 5.7 5.7l1.4-1.4"/>')
+I_TRASH = _svg('<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/>'
+               '<path d="M6.5 7l.9 12.1A1 1 0 0 0 8.4 20h7.2a1 1 0 0 0 1-.9L17.5 7"/>'
+               '<path d="M9.5 7V4.5h5V7"/>')
+I_LIST = _svg('<path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/>', 18)
+I_PLUS = _svg('<path d="M12 5.5v13"/><path d="M5.5 12h13"/>', 18)
+I_KEYBOARD = _svg('<rect x="2.5" y="6" width="19" height="12" rx="2"/>'
+                  '<path d="M7 10h.01M11 10h.01M15 10h.01M17.5 10h.01M7.5 14h9"/>', 18)
+I_CLOSE = _svg('<path d="M6.5 6.5l11 11"/><path d="M17.5 6.5l-11 11"/>', 18)
+I_REFRESH = _svg('<path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 4v4.5h-4.5"/>', 18)
+I_SEND = _svg('<path d="M5 12h12.5"/><path d="M12 5.5l6.5 6.5-6.5 6.5"/>', 18)
+I_CHEV = _svg('<path d="M6 9.5l6 6 6-6"/>', 18, "i chev")
+I_DOTS = ('<svg class="i" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" '
+          'aria-hidden="true"><circle cx="5.5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/>'
+          '<circle cx="18.5" cy="12" r="1.6"/></svg>')
+
+CSS = TOKENS + """
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg-primary);color:var(--text-primary);
+  font:14px/1.5 var(--font-ui);overflow-x:hidden;
+  background-image:repeating-linear-gradient(180deg,rgb(57 255 136 / .012) 0 1px,transparent 1px 3px)}
+main{max-width:760px;margin:0 auto;padding:var(--space-4) var(--space-3) var(--space-6)}
+h1{margin:0;font:600 20px/28px var(--font-mono);letter-spacing:-.01em;
+  display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
+h1 .glyph{color:var(--accent);flex:none}
+h1 small{color:var(--text-secondary);font:400 13px/20px var(--font-mono);letter-spacing:0}
+.tagline{margin:var(--space-1) 0 var(--space-4) 30px;color:var(--text-muted);font-size:12px}
+h2{margin:var(--space-5) 0 var(--space-2);color:var(--text-muted);
+  font:600 11px/16px var(--font-mono);letter-spacing:.14em;text-transform:uppercase}
+h2:first-of-type{margin-top:var(--space-4)}
+
+/* surfaces */
+.card{background:var(--bg-secondary);border:1px solid var(--border-soft);
+  border-radius:var(--radius-md);padding:var(--space-3);margin-bottom:var(--space-2)}
+.card form{margin:0}
+/* sessions + shortcuts read as one list with dividers, not a stack of cards */
+.sess{display:flex;align-items:center;gap:var(--space-2);border-radius:0;margin:0;
+  padding:10px var(--space-3);border-color:var(--border-soft)}
+.sess + .sess{border-top:0}
+h2 + .sess{border-radius:var(--radius-md) var(--radius-md) 0 0}
+.sess:has(+ :not(.sess)){border-radius:0 0 var(--radius-md) var(--radius-md);
+  margin-bottom:var(--space-2)}
+h2 + .sess:has(+ :not(.sess)){border-radius:var(--radius-md)}
+.sess .info{flex:1;min-width:0}
+.sess .name{font:600 15px/22px var(--font-mono);display:flex;align-items:center;gap:var(--space-2);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sess .meta{color:var(--text-muted);font:400 12px/18px var(--font-mono);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meta code{font:inherit;color:var(--text-secondary)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--text-muted);flex:none}
+.dot.on{background:var(--accent);box-shadow:0 0 0 3px rgb(57 255 136 / .15)}
+.empty{color:var(--text-muted);padding:var(--space-3);border:1px dashed var(--border);
+  border-radius:var(--radius-md);margin-bottom:var(--space-2)}
+
+/* controls */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid transparent;
+  border-radius:var(--radius-sm);padding:9px 14px;min-height:36px;
+  font:600 13px/18px var(--font-mono);letter-spacing:.01em;cursor:pointer;text-decoration:none;
+  color:var(--on-accent);background:var(--accent);white-space:nowrap;
+  transition:background 140ms ease,border-color 140ms ease,color 140ms ease}
+.btn:hover{background:#5cffa0}
+.btn.sec{background:var(--surface);color:var(--text-primary);border-color:var(--border)}
+.btn.sec:hover{background:var(--surface-alt);border-color:var(--accent-dim);color:var(--accent)}
+.btn.ghost{background:transparent;color:var(--text-muted);border-color:transparent;font-weight:500;padding:9px 10px}
+.btn.ghost:hover{background:var(--surface);color:var(--text-primary)}
+.btn.icon{padding:0;width:38px;min-height:38px}
+.btn.icon.del:hover{color:var(--danger);background:var(--danger-wash)}
+.btn.wide{width:100%;padding:12px;min-height:44px;font-size:14px}
+.btn.sm{padding:7px 11px;min-height:32px;font-size:12px}
+.btns{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center}
+form.row{display:flex;flex-direction:column;gap:10px}
+label{font:500 12px/16px var(--font-mono);color:var(--text-secondary);letter-spacing:.02em}
+input,select,textarea{width:100%;padding:11px 12px;border-radius:var(--radius-sm);
+  border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);
+  font:16px/1.35 var(--font-ui);appearance:none;-webkit-appearance:none}
+input,select,#cmd,#sc_cmd{font-family:var(--font-mono)}
+textarea{resize:vertical}
+input::placeholder,textarea::placeholder{color:#6d7f76}
+select{background:var(--bg-primary) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%2393a79d' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;padding-right:32px}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent-dim);box-shadow:var(--focus-ring)}
+a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible,
+select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.err{background:var(--danger-wash);border:1px solid var(--danger);color:#ffc6c1;
+  padding:10px 14px;border-radius:var(--radius-sm);margin-bottom:var(--space-3);
+  font:500 13px/18px var(--font-mono)}
+.opt{color:var(--text-muted);font-weight:400}
+.hint,.note,.foot{color:var(--text-muted);font-size:12px;line-height:18px}
+.hint{margin:0}
+.note{margin:6px 0 8px}
+.note code,.hint code{font:12px/18px var(--font-mono);color:var(--text-secondary);word-break:break-all}
+.foot{margin-top:var(--space-5);padding-top:var(--space-3);border-top:1px solid var(--border-soft)}
+
+/* disclosure ("+ Save as a shortcut", "+ New shell") */
+details.card summary,details.inline summary{cursor:pointer;color:var(--text-secondary);
+  font:500 13px/20px var(--font-mono);list-style:none;display:flex;align-items:center;gap:8px;
+  min-height:24px}
+details.card summary::-webkit-details-marker,details.inline summary::-webkit-details-marker{display:none}
+details.card summary::before,details.inline summary::before{content:"+";color:var(--accent);
+  font-weight:600;width:12px;text-align:center}
+details.card[open] summary,details.inline[open] summary{color:var(--text-primary)}
+details.card[open] summary{margin-bottom:var(--space-3)}
+details.card[open] summary::before,details.inline[open] summary::before{content:"\\2212"}
+.save{display:flex;align-items:center;gap:var(--space-2);margin-top:var(--space-2)}
+.save input[type=checkbox]{width:18px;height:18px;flex:none;appearance:auto;-webkit-appearance:auto;
+  accent-color:var(--accent)}
+.save label{font-family:var(--font-ui);color:var(--text-secondary)}
+.dirline{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.dirline select,.dirline input{flex:1 1 180px;width:auto;min-width:0}
+
+/* overflow menu (glass) */
+[hidden]{display:none!important}
+.menu{position:relative;flex:none}
+.menu summary{list-style:none;display:flex;align-items:center;justify-content:center}
+.menu summary::-webkit-details-marker{display:none}
+.menu-list{position:absolute;right:0;top:calc(100% + 4px);z-index:5;min-width:220px;
+  background:var(--glass-bg);-webkit-backdrop-filter:blur(var(--glass-blur));
+  backdrop-filter:blur(var(--glass-blur));border:1px solid var(--glass-border);
+  border-radius:var(--radius-md);padding:6px;box-shadow:0 16px 40px rgb(0 0 0 / .45);
+  display:flex;flex-direction:column;animation:sj-in 140ms ease}
+.menu-list a,.menu-list button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  padding:10px 12px;min-height:40px;border:0;border-radius:var(--radius-sm);background:transparent;
+  color:var(--text-primary);font:500 13px/18px var(--font-mono);text-decoration:none;cursor:pointer}
+.menu-list a:hover,.menu-list button:hover{background:rgb(57 255 136 / .10);color:var(--accent)}
+.menu-list .i{flex:none;color:var(--text-muted)}
+.menu-list a:hover .i,.menu-list button:hover .i{color:var(--accent)}
+.menu-list button.danger{color:var(--danger)}
+.menu-list button.danger:hover{background:var(--danger-wash);color:var(--danger)}
+.menu-list button.danger:hover .i{color:var(--danger)}
+.menu-list form{margin:0;border-top:1px solid var(--glass-border);margin-top:4px;padding-top:4px}
+@keyframes sj-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+body.touch .desktop-only{display:none}
+
+/* agents: one exclusive accordion, one collapsed row per tool */
+details.tool{background:var(--bg-secondary);border:1px solid var(--border-soft);
+  border-radius:0;margin:0}
+details.tool + details.tool{border-top:0}
+h2 + details.tool{border-radius:var(--radius-md) var(--radius-md) 0 0}
+details.tool:has(+ :not(details.tool)){border-radius:0 0 var(--radius-md) var(--radius-md);
+  margin-bottom:var(--space-2)}
+h2 + details.tool:has(+ :not(details.tool)){border-radius:var(--radius-md)}
+details.tool > summary{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;
+  gap:var(--space-2);padding:11px var(--space-3);min-height:44px;cursor:pointer;list-style:none}
+.tool .sumline{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);min-width:0}
+details.tool > summary::-webkit-details-marker{display:none}
+details.tool > summary:hover .name{color:var(--accent)}
+details.tool[open]{background:var(--surface)}
+.tool .name{font:600 14px/20px var(--font-mono);flex:none}
+.tool .chev{color:var(--text-muted);flex:none;transition:transform 140ms ease}
+details.tool[open] .chev{transform:rotate(180deg)}
+.tool .tbody{padding:0 var(--space-3) var(--space-3)}
+.tool .tbody > form{margin:0}
+/* option rows: what this option is + its one-line difference, then the button */
+.orow{display:flex;align-items:center;gap:var(--space-2);padding:10px 0;
+  border-top:1px solid var(--border-soft)}
+.orow .ol{flex:1 1 auto;min-width:0}
+.orow .olabel{font:600 13px/18px var(--font-mono)}
+.orow .onote{margin:2px 0 0;color:var(--text-secondary);font:400 12px/17px var(--font-ui)}
+.orow .ob{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;flex:none}
+.orow .hint{flex:1 1 100%}
+.orow.end{justify-content:flex-end}
+@media (max-width:560px){
+  .orow{flex-direction:column;align-items:stretch}
+  .orow .ob{justify-content:flex-end}
+}
+.docs{color:var(--text-muted);font:500 12px/18px var(--font-mono);text-decoration:none;
+  white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
+.docs:hover{color:var(--accent)}
+.state{display:flex;flex-wrap:wrap;align-items:center;gap:6px;color:var(--text-secondary);
+  font:500 12px/18px var(--font-mono);margin:0;min-width:0}
+.state b{color:var(--accent);font-weight:600;display:inline-flex;align-items:center;gap:6px}
+.state b::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.state.off{color:var(--text-muted)}
+.state.warn{color:var(--warning)}
+.pill{font-style:normal;display:inline-flex;align-items:center;gap:5px;padding:2px 8px;
+  border:1px solid var(--border);border-radius:999px;color:var(--text-muted);
+  font:500 11px/16px var(--font-mono)}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.on{color:var(--accent);border-color:rgb(57 255 136 / .35);background:var(--accent-wash)}
+.pill.warn{color:var(--warning);border-color:rgb(255 200 87 / .35);background:rgb(255 200 87 / .08)}
+.tool .dirline{margin:var(--space-2) 0 0}
+.tool .tbody .note:first-child{margin-top:var(--space-2)}
+.tool .docs{display:inline-block;margin-top:var(--space-2)}
+
+@media (min-width:560px){
+  h1{font-size:22px}
+}
+@media (pointer:coarse){
+  .btn{min-height:44px;padding:11px 16px}
+  .btn.sm{min-height:40px}
+  .btn.icon{width:44px;min-height:44px}
+  .menu-list a,.menu-list button{min-height:44px}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;
+    transition-duration:.01ms!important}
+}
+"""
+
+PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>{title}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#080f0e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<style>{css}</style></head><body><main>
+<h1>{glyph}serverjack <small>{title}</small></h1>
+<p class="tagline">Jack into your server.</p>
+{error}
+{body}
+<p class="foot">Opening a session puts you in a terminal attached to that tmux session. Use the browser's back button to return here (the session keeps running).</p>
+<script>
+(function(){{
+  // Desktop: "Open" pops the session out in its own window and this page
+  // stays put. Phones: same tab (a pile of browser tabs is worse there).
+  var touch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+  if (touch) document.body.classList.add('touch');
+  function popout(href, name) {{
+    var w = window.open(href, 'serverjack-' + name, 'popup=yes,width=1000,height=650');
+    if (w) {{ w.focus(); return true; }} return false;   // blocked => caller falls back to navigating
+  }}
+  document.addEventListener('click', function (e) {{
+    var a = e.target.closest('a.open, a[data-open=popout]'); var menu = e.target.closest('details.menu');
+    if (a) {{
+      var name = a.dataset.name || a.closest('.sess').querySelector('a.open').dataset.name;
+      var wantPop = a.dataset.open === 'popout' || (!touch && !a.dataset.open);
+      if (wantPop && popout('/s/' + encodeURIComponent(name) + '?popout=1', name)) e.preventDefault();
+      if (menu) menu.removeAttribute('open');
+      return;
+    }}
+    var c = e.target.closest('[data-copy]');
+    if (c) {{
+      var t = c.dataset.copy, l = c.querySelector('.lbl') || c, old = l.textContent;
+      var done = function () {{ l.textContent = 'Copied'; setTimeout(function () {{ l.textContent = old; }}, 1200); }};
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, function () {{ prompt('Copy this:', t); }});
+      else prompt('Copy this:', t);
+      return;
+    }}
+    if (!menu) document.querySelectorAll('details.menu[open]').forEach(function (d) {{ d.removeAttribute('open'); }});
+  }});
+}})();
+</script>
+</main></body></html>
+"""
+
+RUN_CARD = """<h2>Run a command</h2>
+<div class="card"><form class="row" method="post" action="/run">
+  <div><textarea id="cmd" name="cmd" rows="2" required autocapitalize="off" spellcheck="false"
+    placeholder="Paste the command here, e.g. sudo apt install ffmpeg">{cmd}</textarea></div>
+  <div class="dirline">
+    <select id="dir" name="dir">{dirs}</select>
+    <input name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="…or type a path (created if new)"></div>
+  <button class="btn wide" type="submit">Run</button>
+  <p class="hint">Runs in a new terminal session, so password prompts (sudo) work. The session stays open afterwards.</p>
+  <details class="inline"{save_open}><summary>Save as a shortcut</summary>
+    <div class="save"><input type="checkbox" id="save" name="save" value="1"><label for="save">Keep this command in Shortcuts</label></div>
+    <input name="label" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Name it, e.g. Update packages" value="{label}">
+  </details>
+</form></div>"""
+
+ADD_SHORTCUT_CARD = """<details class="card" id="addsc"{addsc_open}><summary>Add a shortcut</summary>
+<form class="row" method="post" action="/shortcuts/add">
+  <div><label for="sc_label">Name</label>
+  <input id="sc_label" name="label" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. Deploy" value="{sc_label}"></div>
+  <div><label for="sc_cmd">Command to run</label>
+  <textarea id="sc_cmd" name="cmd" rows="2" required autocapitalize="off" spellcheck="false" placeholder="e.g. ./deploy.sh &amp;&amp; docker compose logs -f">{sc_cmd}</textarea></div>
+  <div><label for="sc_dir">Directory</label>
+  <select id="sc_dir" name="dir">{dirs}</select></div>
+  <div><label for="sc_dir_custom">…or type a path (created if new)</label>
+  <input id="sc_dir_custom" name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="~/new-or-existing/dir"></div>
+  <button class="btn wide" type="submit">Save shortcut</button>
+</form></details>"""
+
+NEW_SHELL_CARD = """<details class="card" id="newshell"><summary>New shell</summary>
+<form class="row" method="post" action="/new" id="newform">
+  <input type="hidden" name="kind" value="shell">
+  <div><label for="ns_name">Name <span class="opt">(optional)</span></label>
+  <input id="ns_name" name="name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="auto (shell, shell-2, …)" value="{name}"></div>
+  <div><label for="ns_dir">Directory</label>
+  <select id="ns_dir" name="dir">{dirs}</select></div>
+  <div><label for="ns_dir_custom">…or type a path (created if new)</label>
+  <input id="ns_dir_custom" name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="~/new-or-existing/dir" value="{dir_custom}"></div>
+  <button class="btn wide" type="submit">Start &amp; open</button>
+</form></details>"""
+
+SHORTCUT_CARD = """<div class="card sess">
+  <div class="info">
+    <div class="name">{label}</div>
+    <div class="meta"><code>{cmd}</code> &middot; {dir}</div>
+  </div>
+  <form method="post" action="/shortcuts/del" onsubmit="return confirm('Remove shortcut “{label}”?')">
+    <input type="hidden" name="id" value="{id}"><button class="btn ghost icon del" type="submit" title="Remove shortcut" aria-label="Remove shortcut">{trash}</button>
+  </form>
+  <form method="post" action="/shortcuts/run">
+    <input type="hidden" name="id" value="{id}"><button class="btn" type="submit">Run</button>
+  </form>
+</div>"""
+
+SESSION_CARD = """<div class="card sess">
+  <div class="info">
+    <div class="name"><span class="dot{on}"></span>{name}</div>
+    <div class="meta">{cmd} &middot; {path} &middot; {windows} &middot; {ago}{attached}</div>
+  </div>
+  <details class="menu">
+    <summary class="btn ghost icon" title="More" aria-label="More">{dots}</summary>
+    <div class="menu-list">
+      <a href="{href}" data-open="here">{i_here}<span>Open here</span></a>
+      <a href="{href}?popout=1" data-open="popout" class="desktop-only">{i_popout}<span>Pop out</span></a>
+      {ssh_items}
+      <form method="post" action="/kill" onsubmit="return confirm('Kill session “{name}”? Anything running in it is lost.')">
+        <input type="hidden" name="name" value="{name}"><button type="submit" class="danger">{i_trash}<span>Kill session</span></button>
+      </form>
+    </div>
+  </details>
+  <a class="btn sec open" href="{href}" data-name="{name}">Open</a>
+</div>"""
+
+SSH_ITEMS = """<button type="button" data-copy="{cmd}">{i_copy}<span class="lbl">Copy SSH command</span></button>
+      <a href="{url}" data-open="ssh">{i_link}<span>Open in SSH app</span></a>"""
+
+TERM_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>{name} &middot; {title}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<meta name="theme-color" content="#080f0e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<style>{tokens}
+*{{box-sizing:border-box}}
+html,body{{margin:0;height:100%;background:#000;color:var(--text-primary);
+  font:14px/1.4 var(--font-ui);overflow:hidden;overscroll-behavior:none;-webkit-text-size-adjust:100%}}
+body{{display:flex;flex-direction:column;height:100vh;height:100dvh;position:relative}}
+/* ---- top bar */
+#bar{{flex:none;min-height:44px;display:flex;align-items:stretch;background:var(--bg-secondary);
+  border-bottom:1px solid var(--border-soft);padding-top:env(safe-area-inset-top)}}
+#bar>*{{flex:none}}
+.ib{{border:0;background:transparent;color:var(--text-muted);font:500 13px/18px var(--font-mono);
+  padding:0 12px;min-width:44px;cursor:pointer;text-decoration:none;display:flex;align-items:center;
+  justify-content:center;gap:6px;white-space:nowrap;-webkit-tap-highlight-color:transparent;
+  transition:color 140ms ease,background 140ms ease}}
+.ib:hover{{color:var(--text-primary);background:var(--surface)}}
+.ib:focus-visible{{outline:2px solid var(--accent);outline-offset:-2px}}
+.ib.x:hover{{color:var(--danger);background:var(--danger-wash)}}
+.ib.on{{color:var(--accent)}}
+#tabs{{flex:1 1 auto;display:flex;overflow-x:auto;scrollbar-width:none;min-width:0}}
+#tabs::-webkit-scrollbar{{display:none}}
+.tab{{border:0;border-bottom:2px solid transparent;background:transparent;color:var(--text-muted);
+  font:500 13px/18px var(--font-mono);padding:0 14px;min-height:44px;cursor:pointer;white-space:nowrap;
+  -webkit-tap-highlight-color:transparent;transition:color 140ms ease}}
+.tab:hover{{color:var(--text-primary)}}
+.tab:focus-visible{{outline:2px solid var(--accent);outline-offset:-2px}}
+.tab.on{{color:var(--accent);border-bottom-color:var(--accent);background:var(--accent-wash)}}
+#frame-wrap{{flex:1 1 auto;position:relative;min-height:0}}
+#frame{{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000}}
+/* ---- touch key row (phones/tablets): Esc, Tab, arrows, Ctrl... */
+#keys{{flex:none;display:none;background:var(--bg-secondary);border-top:1px solid var(--border-soft);
+  padding:6px 6px calc(6px + env(safe-area-inset-bottom));gap:6px;overflow-x:auto;scrollbar-width:none}}
+#keys::-webkit-scrollbar{{display:none}}
+body.keys #keys{{display:flex}}
+.k{{flex:1 0 auto;min-width:44px;height:40px;border:1px solid var(--border);border-radius:var(--radius-sm);
+  background:var(--surface);color:var(--text-secondary);font:500 12px/16px var(--font-mono);
+  cursor:pointer;touch-action:manipulation;user-select:none;-webkit-user-select:none;
+  -webkit-tap-highlight-color:transparent;transition:color 120ms ease,border-color 120ms ease,background 120ms ease}}
+.k:hover{{color:var(--text-primary);border-color:var(--text-muted)}}
+.k:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
+.k:active,.k.armed{{background:var(--accent-wash);border-color:var(--accent);color:var(--accent)}}
+.k.act{{color:var(--accent);border-color:rgb(57 255 136 / .32)}}
+/* ---- chat-style compose bar: real textarea => autocorrect, dictation, native paste */
+#compose{{flex:none;display:none;gap:8px;align-items:flex-end;background:var(--bg-secondary);
+  border-top:1px solid var(--border-soft);padding:8px 8px calc(8px + env(safe-area-inset-bottom))}}
+body.keys #compose{{display:flex}}
+body.keys #keys{{padding-bottom:6px}}
+#msg{{flex:1 1 auto;min-height:42px;max-height:120px;resize:none;padding:11px 12px;
+  border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-primary);
+  color:var(--text-primary);font:16px/1.3 var(--font-mono)}}
+#msg::placeholder{{color:#6d7f76;font:13px/1.3 var(--font-ui)}}
+#msg:focus{{outline:none;border-color:var(--accent-dim);box-shadow:var(--focus-ring)}}
+.send{{flex:none;width:48px;height:42px;border:0;border-radius:var(--radius-sm);background:var(--accent);
+  color:var(--on-accent);display:flex;align-items:center;justify-content:center;cursor:pointer}}
+.send:hover{{background:#5cffa0}}
+.send:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
+/* ---- screen-text view (glass over the terminal) */
+#screen{{position:absolute;inset:0;z-index:30;background:var(--glass-bg);
+  -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));
+  display:flex;flex-direction:column}}
+#screen[hidden]{{display:none}}
+.sbar{{flex:none;min-height:44px;display:flex;align-items:stretch;gap:2px;
+  border-bottom:1px solid var(--glass-border);padding-top:env(safe-area-inset-top)}}
+.sbar span{{flex:1 1 auto;display:flex;align-items:center;padding:0 14px;color:var(--text-muted);
+  font:500 12px/16px var(--font-mono);min-width:0}}
+#screen-text{{flex:1 1 auto;margin:0;padding:12px;overflow:auto;
+  font:13px/1.45 var(--font-mono);white-space:pre-wrap;word-break:break-all;
+  user-select:text;-webkit-user-select:text;color:var(--text-primary)}}
+#screen-text .ln{{padding:1px 6px;border-radius:var(--radius-xs);cursor:pointer;min-height:1.4em}}
+#screen-text .ln:active{{background:var(--surface-alt)}}
+#screen-text .ln.copied{{background:var(--accent-wash);color:var(--accent)}}
+/* ---- new-session panel (glass card; a bottom sheet on touch) */
+#pop{{position:absolute;top:calc(48px + env(safe-area-inset-top));right:8px;z-index:9;
+  width:min(360px,calc(100vw - 16px));background:var(--glass-bg);
+  -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));
+  border:1px solid var(--glass-border);border-radius:var(--radius-lg);padding:var(--space-3);
+  box-shadow:0 18px 48px rgb(0 0 0 / .5);display:none;flex-direction:column;gap:10px}}
+#pop.open{{display:flex;animation:sj-in 150ms ease}}
+@keyframes sj-in{{from{{opacity:0;transform:translateY(-6px)}}to{{opacity:1;transform:none}}}}
+@keyframes sj-up{{from{{opacity:0;transform:translateY(14px)}}to{{opacity:1;transform:none}}}}
+body.touch #pop{{top:auto;bottom:0;left:0;right:0;width:auto;
+  border-radius:var(--radius-lg) var(--radius-lg) 0 0;border-bottom:0;
+  padding:var(--space-3) var(--space-3) calc(var(--space-3) + env(safe-area-inset-bottom))}}
+body.touch #pop.open{{animation:sj-up 150ms ease}}
+label{{font:500 12px/16px var(--font-mono);color:var(--text-secondary);letter-spacing:.02em}}
+input,select{{width:100%;padding:11px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);
+  background:var(--bg-primary);color:var(--text-primary);font:16px/1.3 var(--font-mono);
+  appearance:none;-webkit-appearance:none}}
+input::placeholder{{color:#6d7f76}}
+select{{background:var(--bg-primary) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%2393a79d' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;padding-right:32px}}
+input:focus,select:focus{{outline:none;border-color:var(--accent-dim);box-shadow:var(--focus-ring)}}
+.kinds{{display:grid;grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:6px}}
+.kinds label{{display:flex;align-items:center;justify-content:center;text-align:center;min-height:40px;
+  padding:8px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);
+  color:var(--text-secondary);cursor:pointer;font:500 12px/16px var(--font-mono)}}
+.kinds label:hover{{border-color:var(--text-muted);color:var(--text-primary)}}
+.kinds input{{position:absolute;opacity:0;width:0;height:0}}
+.kinds label:has(input:checked){{border-color:var(--accent);background:var(--accent-wash);
+  color:var(--accent);font-weight:600}}
+.kinds label:has(input:focus-visible){{outline:2px solid var(--accent);outline-offset:2px}}
+.btn{{border:0;border-radius:var(--radius-sm);padding:12px;min-height:44px;
+  font:600 13px/18px var(--font-mono);color:var(--on-accent);background:var(--accent);cursor:pointer}}
+.btn:hover{{background:#5cffa0}}
+.btn:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
+.err{{color:#ffc6c1;background:var(--danger-wash);border:1px solid var(--danger);
+  border-radius:var(--radius-sm);padding:8px 10px;font:500 12px/16px var(--font-mono);display:none}}
+.err.on{{display:block}}
+/* ---- pop-out mode: bar hidden behind a corner handle */
+#handle{{display:none;position:absolute;top:8px;right:8px;z-index:10;width:34px;height:26px;
+  border:1px solid var(--glass-border);border-radius:999px;background:var(--glass-bg);
+  -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));
+  color:var(--text-muted);align-items:center;justify-content:center;cursor:pointer}}
+#handle:hover{{color:var(--accent);border-color:rgb(57 255 136 / .35)}}
+#handle:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
+body.popout #bar,body.popout #pop{{display:none}}
+body.popout #handle{{display:flex}}
+body.popout.showbar #bar{{display:flex}}
+body.popout.showbar #pop.open{{display:flex}}
+body.popout #popout,body.touch #popout{{display:none}}
+@media (prefers-reduced-motion:reduce){{
+  *,*::before,*::after{{animation-duration:.01ms!important;animation-iteration-count:1!important;
+    transition-duration:.01ms!important}}
+}}
+</style></head><body{body_class}>
+<button id="handle" title="Show menu" aria-label="Show menu">{i_dots}</button>
+<div id="bar">
+  <a class="ib" href="/" title="All sessions" aria-label="All sessions">{i_list}</a>
+  <div id="tabs"></div>
+  <button class="ib" id="add" title="New session" aria-label="New session">{i_plus}</button>
+  <button class="ib" id="keysbtn" title="Show/hide extra keys" aria-label="Show/hide extra keys">{i_keys}</button>
+  <button class="ib" id="popout" title="Pop out into a small window" aria-label="Pop out">{i_popout}</button>
+  <button class="ib x" id="kill" title="Kill this session" aria-label="Kill this session">{i_close}</button>
+</div>
+<form id="pop" autocomplete="off">
+  <div class="kinds">{kinds}</div>
+  <div><label>Name</label><input name="name" autocapitalize="off" spellcheck="false" placeholder="e.g. fit-app"></div>
+  <div><label>Directory</label><select name="dir">{dirs}</select></div>
+  <div><label>…or type a path (created if new)</label><input name="dir_custom" autocapitalize="off" spellcheck="false" placeholder="~/new-or-existing/dir"></div>
+  <div class="err" id="err"></div>
+  <button class="btn" type="submit">Start &amp; open</button>
+</form>
+<div id="frame-wrap"><iframe id="frame" src="{src}" allow="clipboard-read; clipboard-write"></iframe></div>
+<div id="keys">
+  <button class="k" data-k="Escape">Esc</button>
+  <button class="k" data-k="Tab">Tab</button>
+  <button class="k" data-k="Tab" data-shift="1">&#8679;Tab</button>
+  <button class="k" id="ctrl">Ctrl</button>
+  <button class="k" data-k="ArrowUp">&#8593;</button>
+  <button class="k" data-k="ArrowDown">&#8595;</button>
+  <button class="k" data-k="ArrowLeft">&#8592;</button>
+  <button class="k" data-k="ArrowRight">&#8594;</button>
+  <button class="k" data-k="c" data-ctrl="1">^C</button>
+  <button class="k" data-k="PageUp">PgUp</button>
+  <button class="k" data-k="PageDown">PgDn</button>
+  <button class="k act" id="paste" title="Paste clipboard into the terminal">Paste</button>
+  <button class="k act" id="copy" title="Show the screen as selectable text">Copy</button>
+</div>
+<form id="compose" autocomplete="off">
+  <textarea id="msg" rows="1" placeholder="Message the agent… (Send = paste + Enter)" enterkeyhint="send" autocapitalize="sentences"></textarea>
+  <button type="submit" class="send" title="Send" aria-label="Send">{i_send}</button>
+</form>
+<div id="screen" hidden>
+  <div class="sbar"><span>Screen text &middot; tap a line to copy it, or select</span>
+    <button class="ib" id="screen-copy">Copy all</button>
+    <button class="ib" id="screen-refresh" title="Refresh" aria-label="Refresh">{i_refresh}</button>
+    <button class="ib" id="screen-close" title="Close" aria-label="Close">{i_close}</button></div>
+  <pre id="screen-text"></pre>
+</div>
+<script>window.SJ = {{term: {term_path_json}, name: {name_json}, title: {title_json}}};</script>
+<script src="/app.js"></script>
+</body></html>
+"""
+
+APP_JS = r"""
+(function () {
+  'use strict';
+  var TERM = window.SJ.term, cur = window.SJ.name, TITLE = window.SJ.title;
+  var body = document.body, POP = body.classList.contains('popout');
+  var frame = document.getElementById('frame'), tabs = document.getElementById('tabs');
+  var pop = document.getElementById('pop'), err = document.getElementById('err');
+  var isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '') || /Mac OS X/.test(navigator.userAgent);
+  var touch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+
+  // ---- terminal helpers (same-origin frame, so we can reach into ttyd's page)
+  function tdoc() { try { return frame.contentDocument; } catch (e) { return null; } }
+  function textarea() { var d = tdoc(); return d && d.querySelector('.xterm-helper-textarea'); }
+  function focusTerm() {
+    var tries = 0;
+    (function f() { var ta = textarea(); if (ta) { ta.focus(); } else if (tries++ < 40) setTimeout(f, 100); })();
+  }
+  var KEYS = { Escape: 27, Tab: 9, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
+               PageUp: 33, PageDown: 34, Enter: 13, Backspace: 8, Delete: 46, Home: 36, End: 35 };
+  function sendKey(key, mods) {
+    var ta = textarea(); if (!ta) return;
+    mods = mods || {};
+    var code = KEYS[key] || key.toUpperCase().charCodeAt(0);
+    var init = { key: key, keyCode: code, which: code, bubbles: true, cancelable: true,
+                 ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift, altKey: !!mods.alt };
+    var ev = new frame.contentWindow.KeyboardEvent('keydown', init);
+    if (ev.keyCode !== code) {           // Safari ignores keyCode in the init dict
+      Object.defineProperty(ev, 'keyCode', { get: function () { return code; } });
+      Object.defineProperty(ev, 'which', { get: function () { return code; } });
+    }
+    ta.dispatchEvent(ev);
+  }
+
+  // ---- inside the frame: clipboard shortcuts + Ctrl-armed soft keys
+  var ctrlArmed = false, swallowInput = false;
+  function hook() {
+    var d = tdoc(); if (!d || d.__sj) return; d.__sj = true;
+    d.addEventListener('keydown', function (e) {
+      if (!e.isTrusted) return;
+      // Ctrl armed from the soft key row: next character goes as Ctrl+<char>
+      if (ctrlArmed && e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault(); e.stopPropagation(); swallowInput = true;
+        disarm(); sendKey(e.key.toLowerCase(), { ctrl: true }); return;
+      }
+      if (isMac || !e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+      // Windows/Linux: xterm.js only offers Ctrl+Shift+C/V. Make Ctrl+V paste
+      // (stop xterm seeing it, so the browser's native paste fires xterm's
+      // paste handler) and Ctrl+C copy when there is a selection, else SIGINT.
+      if (e.key === 'v' || e.key === 'V') { e.stopPropagation(); return; }
+      if (e.key === 'c' || e.key === 'C') {
+        var copied = false;
+        function seen(ev) { copied = ev.defaultPrevented; }   // xterm preventDefaults only when it copied a selection
+        d.addEventListener('copy', seen);
+        try { d.execCommand('copy'); } catch (_) {}
+        d.removeEventListener('copy', seen);
+        if (copied) { e.preventDefault(); e.stopPropagation(); }
+      }
+    }, true);
+    // WebKit also fires keypress for Ctrl+V; xterm would turn it into ^V.
+    d.addEventListener('keypress', function (e) {
+      if (!isMac && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && (e.key === 'v' || e.key === 'V')) e.stopPropagation();
+    }, true);
+    d.addEventListener('beforeinput', function (e) {
+      if (swallowInput) { e.preventDefault(); swallowInput = false; return; }
+      if (ctrlArmed && e.inputType === 'insertText' && e.data && e.data.length === 1) {
+        e.preventDefault(); disarm(); sendKey(e.data.toLowerCase(), { ctrl: true });
+      }
+    }, true);
+  }
+  // Feed text to the terminal exactly as a paste (xterm applies bracketed
+  // paste when the app asked for it, so multi-line text is safe).
+  function sendText(text) {
+    var ta = textarea(), w = frame.contentWindow; if (!ta || !text) return false;
+    try {
+      var dt = new w.DataTransfer(); dt.setData('text/plain', text);
+      var ev = new w.ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+      if (!ev.clipboardData) throw new Error('no clipboardData');
+      ta.dispatchEvent(ev); return true;
+    } catch (e) {
+      // Older WebKit: InputEvent path (no bracketed paste, but text arrives)
+      try { ta.dispatchEvent(new w.InputEvent('input', { data: text, inputType: 'insertText', bubbles: true })); return true; }
+      catch (e2) { return false; }
+    }
+  }
+  // Touch devices: stretch xterm's invisible textarea over the whole terminal
+  // so touch-and-hold brings up the native Paste callout, and taps focus it.
+  function touchCss() {
+    var d = tdoc(); if (!d || !touch || d.getElementById('sj-touch')) return;
+    var st = d.createElement('style'); st.id = 'sj-touch';
+    // fixed + viewport units: the textarea's parent (.xterm-helpers) has no size, so % would collapse to 0
+    st.textContent = '.xterm-helper-textarea{position:fixed!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;opacity:0!important;z-index:20!important;-webkit-user-select:text!important;user-select:text!important;caret-color:transparent}';
+    (d.head || d.documentElement).appendChild(st);
+  }
+  frame.addEventListener('load', function () { hook(); touchCss(); focusTerm(); });
+
+  // ---- soft key row
+  var ctrlBtn = document.getElementById('ctrl');
+  function disarm() { ctrlArmed = false; ctrlBtn.classList.remove('armed'); }
+  function setKeys(on) { body.classList.toggle('keys', on); document.getElementById('keysbtn').classList.toggle('on', on);
+    try { localStorage.setItem('sj-keys', on ? '1' : '0'); } catch (_) {} }
+  var saved = null; try { saved = localStorage.getItem('sj-keys'); } catch (_) {}
+  setKeys(saved === null ? touch : saved === '1');
+  document.getElementById('keysbtn').onclick = function () { setKeys(!body.classList.contains('keys')); focusTerm(); };
+  Array.prototype.forEach.call(document.querySelectorAll('#keys .k[data-k], #ctrl'), function (b) {
+    b.addEventListener('pointerdown', function (e) {
+      e.preventDefault();                       // keep focus (and the soft keyboard) on the terminal
+      if (b.id === 'ctrl') { ctrlArmed = !ctrlArmed; ctrlBtn.classList.toggle('armed', ctrlArmed); return; }
+      var mods = { ctrl: !!b.dataset.ctrl || ctrlArmed, shift: !!b.dataset.shift };
+      if (ctrlArmed) disarm();
+      sendKey(b.dataset.k, mods);
+    });
+  });
+
+  // ---- Paste / Copy buttons and the compose bar
+  var msg = document.getElementById('msg'), compose = document.getElementById('compose');
+  function flash(btn, text) { var old = btn.textContent; btn.textContent = text; setTimeout(function () { btn.textContent = old; }, 1200); }
+  document.getElementById('paste').addEventListener('pointerdown', function (e) { e.preventDefault(); });
+  document.getElementById('paste').addEventListener('click', function () {
+    var btn = this;
+    if (!navigator.clipboard || !navigator.clipboard.readText) { msg.focus(); flash(btn, 'use box ↓'); return; }
+    navigator.clipboard.readText().then(function (t) {
+      if (!t) { flash(btn, 'empty'); return; }
+      sendText(t); focusTerm();
+    }).catch(function () { msg.focus(); flash(btn, 'use box ↓'); });   // denied: paste into the compose box instead
+  });
+  var screen = document.getElementById('screen'), screenText = document.getElementById('screen-text');
+  function loadScreen() {
+    return fetch('/api/screen?name=' + encodeURIComponent(cur) + '&lines=400', { cache: 'no-store' })
+      .then(function (r) { return r.text(); })
+      .then(function (t) {
+        screenText.innerHTML = '';
+        t.split('\n').forEach(function (line) {
+          var d = document.createElement('div'); d.className = 'ln'; d.textContent = line || ' ';
+          d.title = 'tap to copy this line';
+          d.onclick = function () {
+            var txt = line.trim(); if (!txt) return;
+            var done = function () { d.classList.add('copied'); setTimeout(function () { d.classList.remove('copied'); }, 900); };
+            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done, function () {});
+            else { var r = document.createRange(); r.selectNodeContents(d); var sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); try { document.execCommand('copy'); done(); } catch (e) {} }
+          };
+          screenText.appendChild(d);
+        });
+        screenText.scrollTop = screenText.scrollHeight;
+      });
+  }
+  document.getElementById('copy').addEventListener('pointerdown', function (e) { e.preventDefault(); });
+  document.getElementById('copy').addEventListener('click', function () { screen.hidden = false; loadScreen(); });
+  document.getElementById('screen-refresh').onclick = loadScreen;
+  document.getElementById('screen-close').onclick = function () { screen.hidden = true; focusTerm(); };
+  document.getElementById('screen-copy').onclick = function () {
+    var btn = this;
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(screenText.textContent).then(function () { flash(btn, 'Copied'); }, function () { flash(btn, 'select text'); });
+    else flash(btn, 'select text');
+  };
+  compose.onsubmit = function (e) {
+    e.preventDefault();
+    var t = msg.value;
+    if (t) sendText(t);
+    setTimeout(function () { sendKey('Enter'); }, t ? 60 : 0);   // let the paste land first
+    msg.value = ''; msg.style.height = '';
+    msg.focus();                                                 // keep chatting
+  };
+  msg.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); compose.requestSubmit ? compose.requestSubmit() : compose.onsubmit(e); }
+  });
+  msg.addEventListener('input', function () { msg.style.height = ''; msg.style.height = Math.min(msg.scrollHeight, 120) + 'px'; });
+
+  // ---- iOS: the soft keyboard doesn't shrink the layout viewport, so track
+  // the visual viewport and size the page to it (keeps the key row visible).
+  if (window.visualViewport) {
+    var vv = window.visualViewport;
+    function fit() {
+      if (Math.abs(window.innerHeight - vv.height) < 2 && vv.offsetTop === 0) { body.style.height = ''; body.style.top = ''; return; }
+      body.style.height = vv.height + 'px'; body.style.top = vv.offsetTop + 'px';
+    }
+    vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit);
+  }
+
+  // ---- session tabs
+  function pageUrl(name) { return '/s/' + encodeURIComponent(name) + (POP ? '?popout=1' : ''); }
+  function setUrl(name) { history.replaceState(null, '', pageUrl(name)); document.title = name + ' · ' + TITLE; }
+  function switchTo(name) {
+    if (name === cur) { focusTerm(); return; }
+    cur = name;
+    frame.src = TERM + '?arg=' + encodeURIComponent(name);
+    setUrl(name); refresh();
+  }
+  function render(list) {
+    tabs.innerHTML = '';
+    var present = false;
+    list.forEach(function (s) {
+      if (s.name === cur) present = true;
+      var b = document.createElement('button');
+      b.className = 'tab' + (s.name === cur ? ' on' : '');
+      b.textContent = s.name;
+      b.title = s.cmd + ' · ' + s.path;
+      b.onclick = function () { switchTo(s.name); };
+      tabs.appendChild(b);
+    });
+    var on = tabs.querySelector('.on'); if (on) on.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+    // current session gone (exited / killed elsewhere): move on instead of
+    // sitting on a dead terminal
+    if (!present && cur !== null) { if (list.length) { cur = null; switchTo(list[0].name); } else location.href = '/'; }
+  }
+  function refresh() {
+    return fetch('/api/sessions', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(render).catch(function () {});
+  }
+  function syncKind() {
+    var k = (pop.querySelector('input[name=kind]:checked') || {}).value || 'shell';
+    pop.elements.name.required = (k !== 'shell');
+    pop.elements.name.placeholder = (k === 'shell') ? 'auto (shell, shell-2, …)' : 'e.g. fit-app';
+  }
+  pop.addEventListener('change', syncKind); syncKind();
+  document.getElementById('add').onclick = function () {
+    pop.classList.toggle('open'); err.classList.remove('on');
+    if (pop.classList.contains('open')) pop.elements.name.focus();
+  };
+  document.getElementById('kill').onclick = function () {
+    if (!confirm('Kill session “' + cur + '”? Anything running in it is lost.')) return;
+    var dead = cur; cur = null;
+    fetch('/api/kill', { method: 'POST', body: new URLSearchParams({ name: dead }) })
+      .then(function () { return fetch('/api/sessions', { cache: 'no-store' }); })
+      .then(function (r) { return r.json(); })
+      .then(function (list) { if (!list.length) { location.href = '/'; return; } switchTo(list[0].name); });
+  };
+  pop.onsubmit = function (e) {
+    e.preventDefault(); err.classList.remove('on');
+    fetch('/api/new', { method: 'POST', body: new URLSearchParams(new FormData(pop)) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.error) { err.textContent = j.error; err.classList.add('on'); return; }
+        pop.classList.remove('open'); pop.reset(); switchTo(j.name);
+      })
+      .catch(function () { err.textContent = 'request failed'; err.classList.add('on'); });
+  };
+  document.getElementById('popout').onclick = function () {
+    // "popup" asks for a window without tabs/address bar. Named per session
+    // so a second pop-out refocuses instead of attaching twice; this tab then
+    // goes back to the list so it isn't attached too.
+    var w = window.open('/s/' + encodeURIComponent(cur) + '?popout=1', 'serverjack-' + cur, 'popup=yes,width=1000,height=650');
+    if (w) { w.focus(); location.href = '/'; }
+  };
+  if (touch) body.classList.add('touch');
+  document.querySelector('#bar a.ib').onclick = function (e) {
+    if (!POP) return;                 // normal tab: just go to the list
+    e.preventDefault(); window.close();
+    setTimeout(function () { location.href = '/'; }, 150);   // couldn't close (not script-opened): navigate
+  };
+  document.getElementById('handle').onclick = function () {
+    body.classList.toggle('showbar');
+    if (!body.classList.contains('showbar')) { pop.classList.remove('open'); focusTerm(); }
+  };
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') pop.classList.remove('open'); });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
+  setInterval(refresh, 15000);
+  refresh(); hook(); touchCss(); focusTerm();
+})();
+"""
+
+
+def esc(s):
+    return html.escape(str(s), quote=True)
+
+
+def term_href(name):                 # the wrapper page with the menu bar
+    return f"/s/{quote(name, safe='')}"
+
+
+def ttyd_src(name):                  # what the wrapper's frame loads
+    return f"{TERM_PATH}?arg={quote(name, safe='')}"
+
+
+def kind_options():
+    return "\n".join(
+        f'<label><input type="radio" name="kind" value="{esc(k)}"{" checked" if i == 0 else ""}><span>{esc(label)}</span></label>'
+        for i, (k, (_, label)) in enumerate(tool_kinds().items()))
+
+
+def dir_options():
+    return "\n".join(
+        f'<option value="{esc(d)}">{esc(d.replace(HOME, "~", 1))}</option>'
+        for d in dir_choices())
+
+
+def note(text):
+    return f'<p class="note">{text}</p>' if text else ""
+
+
+CONFIRM = ' onsubmit="return confirm(\'Stop {}?\')"'
+
+
+def orow(label, note_text, buttons, hint="", cls=""):
+    """One option row: what it is + the one-line difference, then the button."""
+    left = ""
+    if label or note_text:
+        left = ('<div class="ol"><div class="olabel">' + label + "</div>"
+                + (f'<p class="onote">{note_text}</p>' if note_text else "")
+                + "</div>")
+    return (f'<div class="orow{cls}">' + left + '<div class="ob">' + buttons + "</div>"
+            + (f'<span class="hint">{hint}</span>' if hint else "") + "</div>")
+
+
+def tool_card(t, st, dirs, open_=False):
+    """One row of the agents accordion: a summary that is readable while
+    collapsed, and a body with one option row per way of starting the tool."""
+    tid = t["id"]
+    hid = f'<input type="hidden" name="id" value="{esc(tid)}">'
+    docs = (f'<a class="docs" href="{esc(t["docs"])}" target="_blank" rel="noopener">Docs &#8599;</a>'
+            if t.get("docs") else "")
+    daemon, server = t.get("daemon") or {}, t.get("server") or {}
+    sstate = st.get("server_state", "off")
+    ready = st["installed"] and st["logged_in"] is not False
+
+    # ---- summary: label, state, and any server/daemon pills, all inline ----
+    if not st["installed"]:
+        state = '<span class="state off">Not installed</span>'
+    elif not ready:
+        state = '<span class="state warn">Installed &middot; not logged in</span>'
+    else:
+        bits = ["<b>Ready</b>"]
+        if daemon:
+            on = st["daemon_running"]
+            bits.append(f'<i class="pill{" on" if on else ""}">'
+                        f'{esc(daemon.get("label") or "Daemon")}: '
+                        f'{"running" if on else "stopped"}</i>')
+        if server:
+            word = {"on": "running", "exited": "exited", "off": "stopped"}[sstate]
+            cls = {"on": " on", "exited": " warn", "off": ""}[sstate]
+            bits.append(f'<i class="pill{cls}">{esc(server.get("label") or "Server")}: '
+                        f'{word}</i>')
+        state = '<span class="state">' + "".join(bits) + "</span>"
+
+    out = [f'<details class="tool" id="tool-{esc(tid)}" name="agent"{" open" if open_ else ""}>',
+           '<summary><span class="sumline">'
+           f'<span class="name">{esc(st["label"])}</span>{state}</span>{I_CHEV}</summary>',
+           '<div class="tbody">']
+
+    # One form per tool: every button in it shares the directory picker and
+    # says in its value which route it wants (see the module docstring). The
+    # daemon and the server's Stop keep their own forms (no directory, and a
+    # confirm of their own); their buttons sit in the option rows via form=.
+    dirline = (f'<div class="dirline"><select name="dir">{dirs}</select>'
+               '<input name="dir_custom" autocomplete="off" autocapitalize="off"'
+               ' spellcheck="false" placeholder="\u2026or type a path (created if new)"></div>')
+
+    def main_form(inner, with_dir=True):
+        return ('<form method="post" action="/tools">' + hid
+                + (dirline if with_dir else "") + inner + "</form>")
+
+    open_btn = '<button class="btn sec" type="submit" name="do" value="/tools/open">Open</button>'
+
+    if not st["installed"]:
+        if not st["needs_ok"]:
+            out.append(note("Needs Node.js (node + npm), which isn\u2019t installed on this server."))
+        elif t.get("install"):
+            out.append('<form method="post" action="/tools/install">' + hid
+                       + '<button class="btn sec wide" type="submit">Install</button></form>')
+            out.append(note("Runs in a terminal so you can watch it: "
+                            f'<code>{esc(t["install"])}</code>'))
+            out.append(note(esc(t.get("install_note", ""))))
+        else:
+            out.append(note("No install command is configured for this tool."))
+
+    elif not ready:
+        out.append('<form method="post" action="/tools/login">' + hid
+                   + '<button class="btn sec wide" type="submit">Log in</button></form>')
+        out.append(note(esc(t.get("login_note", ""))))
+        if t.get("run"):
+            out.append('<details class="inline"><summary>Open anyway</summary>'
+                       + main_form('<div class="btns">' + open_btn + "</div>") + "</details>")
+
+    else:
+        rows, aux = [], []
+        if t.get("run"):
+            rows.append(orow("Open", esc(t.get("run_note", "")), open_btn))
+
+        for i, a in enumerate(t.get("actions") or []):
+            label = esc(a.get("label") or a.get("cmd", ""))
+            word = "Open" if a.get("dir") else "Run"
+            rows.append(orow(label, esc(a.get("note", "")),
+                             '<button class="btn sm sec" type="submit" name="do" '
+                             f'value="/tools/action:{i}">{word}</button>'))
+
+        if server:
+            label = server.get("label") or "server"
+            href = esc(term_href(st["server_session"]))
+            if sstate == "on":
+                fid = f"f-{esc(tid)}-server"
+                aux.append(f'<form method="post" action="/tools/server" id="{fid}" hidden'
+                           + CONFIRM.format(esc(label)) + ">" + hid
+                           + '<input type="hidden" name="action" value="stop"></form>')
+                btns = (f'<button class="btn sm sec" type="submit" form="{fid}">Stop</button>'
+                        f'<a class="btn sm sec" href="{href}">Open</a>')
+                rows.append(orow(esc(label), esc(server.get("note", "")), btns))
+            else:
+                btns = ('<button class="btn sm sec" type="submit" name="do" '
+                        'value="/tools/server">Start</button>')
+                if sstate == "exited":
+                    btns = f'<a class="btn sm sec" href="{href}">Open</a>' + btns
+                rows.append(orow(esc(label), esc(server.get("note", "")), btns,
+                                 hint=("It exited; Open shows why. Start replaces it."
+                                       if sstate == "exited" else "")))
+
+        if daemon:
+            label = daemon.get("label") or "daemon"
+            running = st["daemon_running"]
+            act, word = ("stop", "Stop") if running else ("start", "Start")
+            fid = f"f-{esc(tid)}-daemon"
+            aux.append(f'<form method="post" action="/tools/daemon" id="{fid}" hidden'
+                       + (CONFIRM.format(esc(label)) if running else "") + ">" + hid
+                       + f'<input type="hidden" name="action" value="{act}"></form>')
+            rows.append(orow(esc(label), esc(daemon.get("note", "")),
+                             f'<button class="btn sm sec" type="submit" form="{fid}">'
+                             f'{word}</button>'))
+
+        if t.get("login"):
+            rows.append(orow("", "", '<button class="btn ghost" type="submit" name="do" '
+                                     'value="/tools/login">Log in / switch account</button>',
+                             cls=" end"))
+        if rows:
+            out.append(main_form('<div class="opts">' + "".join(rows) + "</div>"))
+        out.extend(aux)
+
+    out.append(docs)
+    out.append("</div></details>")
+    return "\n".join(x for x in out if x)
+
+
+def render(error=None, name="", dir_custom="", cmd="", label="", sc_label="", sc_cmd="",
+           addsc_open=False, save_open=False, open_tool=""):
+    dirs = dir_options()
+    sess = sessions()
+    if sess:
+        cards = "\n".join(SESSION_CARD.format(
+            on=" on" if s["attached"] else "", name=esc(s["name"]), cmd=esc(s["cmd"]),
+            path=esc(s["path"]),
+            windows=f"{s['windows']} window{'s' if s['windows'] != 1 else ''}",
+            ago=ago(s["created"]),
+            attached=" &middot; attached" if s["attached"] else "",
+            href=esc(term_href(s["name"])),
+            dots=I_DOTS, i_here=I_HERE, i_popout=I_POPOUT, i_trash=I_TRASH,
+            ssh_items=SSH_ITEMS.format(cmd=esc(ssh_cmd(s["name"])), url=esc("ssh://" + SSH_TARGET),
+                                       i_copy=I_COPY, i_link=I_LINK) if SSH_TARGET else "",
+        ) for s in sess)
+    else:
+        cards = '<div class="empty">No sessions running. Run a command above, or start a shell below.</div>'
+    scs = load_shortcuts()
+    if scs:
+        shortcuts = "\n".join(SHORTCUT_CARD.format(
+            id=esc(x["id"]), label=esc(x.get("label") or x["cmd"]), cmd=esc(x["cmd"]),
+            trash=I_TRASH,
+            dir=esc((x.get("dir") or HOME).replace(HOME, "~", 1))) for x in scs)
+    else:
+        shortcuts = '<div class="empty">None yet. Tick “Save as a shortcut” above to keep a command here.</div>'
+
+    tools, tools_error = load_tools()
+    if tools:
+        # All rows collapsed, except the one whose button produced this error.
+        agents = "\n".join(tool_card(t, st, dirs, open_=(t["id"] == open_tool))
+                           for t, st in zip(tools, tool_states(tools)))
+    else:
+        agents = '<div class="empty">No agents configured.</div>'
+
+    body = "\n".join([
+        RUN_CARD.format(dirs=dirs, cmd=esc(cmd), label=esc(label),
+                        save_open=" open" if save_open else ""),
+        "<h2>Shortcuts</h2>", shortcuts,
+        ADD_SHORTCUT_CARD.format(dirs=dirs, sc_label=esc(sc_label), sc_cmd=esc(sc_cmd),
+                                 addsc_open=" open" if addsc_open else ""),
+        "<h2>Sessions</h2>", cards,
+        NEW_SHELL_CARD.format(dirs=dirs, name=esc(name), dir_custom=esc(dir_custom)),
+        "<h2>Agents</h2>", agents,
+    ])
+    err = "".join(f'<div class="err">{esc(e)}</div>' for e in (error, tools_error) if e)
+    return PAGE.format(css=CSS, error=err, body=body, title=esc(TITLE), glyph=I_PROMPT)
+
+
+def render_term(name, popout=False):
+    return TERM_PAGE.format(
+        name=esc(name), src=esc(ttyd_src(name)), dirs=dir_options(), kinds=kind_options(),
+        title=esc(TITLE), tokens=TOKENS,
+        i_dots=I_DOTS, i_list=I_LIST, i_plus=I_PLUS, i_keys=I_KEYBOARD, i_popout=I_POPOUT,
+        i_close=I_CLOSE, i_send=I_SEND, i_refresh=I_REFRESH,
+        term_path_json=json.dumps(TERM_PATH), name_json=json.dumps(name), title_json=json.dumps(TITLE),
+        body_class=' class="popout"' if popout else "")
+
+
+# --- PWA bits: manifest + icons (so "Add to Home Screen" on iOS / "Install"
+# on desktop opens it standalone, with no browser chrome at all).
+
+MANIFEST = {
+    "name": f"{TITLE} terminal", "short_name": TITLE,
+    "start_url": "/", "scope": "/", "display": "standalone",
+    "background_color": "#080f0e", "theme_color": "#080f0e",
+    "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"},
+              {"src": "/icon-180.png", "sizes": "180x180", "type": "image/png"}],
+}
+
+ICON_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+            '<rect width="64" height="64" rx="14" fill="#080f0e"/>'
+            '<path d="M16 20l14 12-14 12" fill="none" stroke="#39ff88" stroke-width="6" '
+            'stroke-linecap="round" stroke-linejoin="round"/>'
+            '<rect x="34" y="40" width="16" height="6" rx="3" fill="#e6f7e9"/></svg>')
+
+
+def icon_png(size=180):
+    """Same glyph as ICON_SVG, rasterised with stdlib only (iOS wants PNG)."""
+    import struct, zlib
+    bg, green, white = (8, 15, 14), (57, 255, 136), (230, 247, 233)
+    px = [[bg] * size for _ in range(size)]
+    u = size / 64.0
+    # chevron: two thick strokes from (16,20)->(30,32)->(16,44), width ~6
+    def seg(x0, y0, x1, y1, w, col):
+        w *= u
+        for y in range(size):
+            for x in range(size):
+                X, Y = x / u, y / u
+                dx, dy = x1 - x0, y1 - y0
+                t = max(0.0, min(1.0, ((X - x0) * dx + (Y - y0) * dy) / (dx * dx + dy * dy)))
+                d = ((X - (x0 + t * dx)) ** 2 + (Y - (y0 + t * dy)) ** 2) ** 0.5
+                if d * u <= w / 2:
+                    px[y][x] = col
+    seg(16, 20, 30, 32, 6, green)
+    seg(30, 32, 16, 44, 6, green)
+    for y in range(int(40 * u), int(46 * u)):
+        for x in range(int(34 * u), int(50 * u)):
+            px[y][x] = white
+    raw = b"".join(b"\x00" + bytes(c for p in row for c in p) for row in px)
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+ICON_PNG = icon_png()
+
+
+# --------------------------------------------------------------- server ----
+
+TOOL_ROUTES = ("/tools/install", "/tools/login", "/tools/open",
+               "/tools/action", "/tools/server", "/tools/daemon")
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "serverjack/1"
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+
+    def send_html(self, body, status=200):
+        data = body.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "DENY")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def redirect(self, location):
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def send_bytes(self, data, ctype, status=200, cache=True):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400" if cache else "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_json(self, obj, status=200):
+        data = json.dumps(obj).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path == "/":
+            return self.send_html(render())
+        if path.startswith("/s/"):
+            name = unquote(path[3:])
+            if not session_exists(name):
+                return self.send_html(render(f"No session called “{name}” (it may have exited)."), 404)
+            popout = "popout" in parse_qs(urlparse(self.path).query)
+            return self.send_html(render_term(name, popout))
+        if path == "/app.js":
+            return self.send_bytes(APP_JS.encode(), "application/javascript; charset=utf-8", cache=False)
+        if path == "/manifest.webmanifest":
+            return self.send_bytes(json.dumps(MANIFEST).encode(), "application/manifest+json")
+        if path == "/icon.svg":
+            return self.send_bytes(ICON_SVG.encode(), "image/svg+xml")
+        if path == "/icon-180.png":
+            return self.send_bytes(ICON_PNG, "image/png")
+        if path == "/api/sessions":
+            return self.send_json(sessions())
+        if path == "/api/tools":
+            return self.send_json(tool_states(load_tools()[0]))
+        if path == "/api/screen":
+            q = parse_qs(urlparse(self.path).query)
+            name = (q.get("name") or [""])[0]
+            if not session_exists(name):
+                return self.send_bytes(b"", "text/plain; charset=utf-8", 404, cache=False)
+            text = screen_text(name, min(int((q.get("lines") or ["300"])[0]), 5000))
+            return self.send_bytes(text.rstrip("\n").encode(), "text/plain; charset=utf-8", cache=False)
+        if path == "/healthz":
+            return self.send_html("ok")
+        self.send_html("<h1>404</h1>", 404)
+
+    def same_site(self):
+        # Cross-site form posts (from a page you happened to open elsewhere)
+        # must not be able to create or kill sessions.
+        sfs = self.headers.get("Sec-Fetch-Site")
+        if sfs:                                   # every current browser sends it
+            return sfs in ("same-origin", "none")
+        origin = self.headers.get("Origin")       # older browsers: compare hosts
+        if origin:
+            host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host", "")
+            return urlparse(origin).netloc.lower() == host.lower()
+        return True
+
+    def form(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(min(n, 65536)).decode(errors="replace")
+        return {k: v[0] for k, v in parse_qs(raw).items()}
+
+    def new_from_form(self, f):
+        """Validate + create. Returns (name, error)."""
+        kind = f.get("kind", "shell")
+        if kind not in tool_kinds():
+            return None, "Unknown session type."
+        name, err = validate_name(f.get("name", ""), required=(kind != "shell"), base="shell")
+        if err:
+            return None, err
+        cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
+        if err:
+            return name, err
+        err = create_session(kind, name, cwd, command=f.get("cmd") if kind == "shell" else None)
+        return name, err
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if not self.same_site():
+            if path.startswith("/api/"):
+                return self.send_json({"error": "cross-site request refused"}, 403)
+            return self.send_html("<h1>403</h1>cross-site request refused", 403)
+        f = self.form()
+
+        # An agent card is one form with several submit buttons, so the button
+        # carries the route it wants ("/tools/action:0" -> /tools/action, i=0).
+        if path == "/tools":
+            do, _, arg = f.get("do", "").partition(":")
+            if do not in TOOL_ROUTES:
+                return self.send_html(render("Unknown action."), 400)
+            if arg:
+                f["i"] = arg
+            path = do
+
+        if path == "/new":                       # landing-page form
+            name, err = self.new_from_form(f)
+            if err:
+                return self.send_html(render(err, f.get("name", ""), f.get("dir_custom", ""), f.get("cmd", "")), 400)
+            return self.redirect(term_href(name))
+
+        if path == "/api/new":                   # menu bar
+            name, err = self.new_from_form(f)
+            if err:
+                return self.send_json({"error": err}, 400)
+            return self.send_json({"ok": True, "name": name})
+
+        if path in ("/kill", "/api/kill"):
+            name = f.get("name", "")
+            if name and session_exists(name):
+                tmux("kill-session", "-t", f"={name}")
+            if path == "/api/kill":
+                return self.send_json({"ok": True})
+            return self.redirect("/")
+
+        if path == "/shortcuts/add":
+            cmd = f.get("cmd", "").strip()
+            if not cmd:
+                return self.send_html(render("A shortcut needs a command.", sc_label=f.get("label", ""), addsc_open=True), 400)
+            cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
+            if err:
+                return self.send_html(render(err, sc_label=f.get("label", ""), sc_cmd=cmd, addsc_open=True), 400)
+            add_shortcut(f.get("label", ""), cmd, cwd)
+            return self.redirect("/")
+
+        if path == "/shortcuts/del":
+            sid = f.get("id", "")
+            save_shortcuts([x for x in load_shortcuts() if x["id"] != sid])
+            return self.redirect("/")
+
+        if path == "/shortcuts/run":
+            sid = f.get("id", "")
+            sc = next((x for x in load_shortcuts() if x["id"] == sid), None)
+            if not sc:
+                return self.send_html(render("That shortcut no longer exists."), 404)
+            cwd = sc.get("dir") or HOME
+            if not os.path.isdir(cwd):
+                return self.send_html(render(f"Shortcut directory is gone: {cwd}"), 400)
+            name = auto_name(sc.get("label") or "shortcut")
+            err = create_session("shell", name, cwd, command=sc["cmd"])
+            if err:
+                return self.send_html(render(err), 500)
+            return self.redirect(term_href(name))
+
+        if path == "/run":                       # the paste box at the top
+            cmd = f.get("cmd", "").strip()
+            label = f.get("label", "")
+            if not cmd:
+                return self.send_html(render("Paste a command to run first."), 400)
+            cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
+            if err:
+                return self.send_html(render(err, cmd=cmd, label=label, save_open=bool(f.get("save"))), 400)
+            name = auto_name(cmd.split()[0])
+            err = create_session("shell", name, cwd, command=cmd)
+            if err:
+                return self.send_html(render(err, cmd=cmd, label=label, save_open=bool(f.get("save"))), 500)
+            if f.get("save"):
+                add_shortcut(label, cmd, cwd)
+            return self.redirect(term_href(name))
+
+        if path.startswith("/tools/"):
+            return self.do_tool(path, f)
+
+        self.send_html("<h1>404</h1>", 404)
+
+    # ------------------------------------------------------------ agents --
+    #
+    # Every one of these ends the same way: a command running in a tmux
+    # session, and you looking at it. serverjack does not read the output.
+
+    def fail(self, msg, status=400, tid=""):
+        return self.send_html(render(msg, open_tool=tid), status)
+
+    def do_tool(self, path, f):
+        t = find_tool(f.get("id", ""))
+        if not t:
+            return self.fail("Unknown tool.", 404)
+        tid = t["id"]
+        st = tool_state(t)
+        # Every failure below re-renders the page with this tool's row open.
+        fail = lambda msg, status=400: self.fail(msg, status, tid)      # noqa: E731
+
+        if path == "/tools/install":
+            if st["installed"]:
+                return fail(f"{t['label']} is already installed.")
+            if not st["needs_ok"]:
+                return fail(f"{t['label']} needs Node.js (node + npm), which isn’t installed.")
+            if not t.get("install"):
+                return fail(f"No install command is configured for {t['label']}.")
+            return self.launch(auto_name("install-" + tid), HOME, t["install"], tid)
+
+        if path == "/tools/login":
+            if not t.get("login"):
+                return fail(f"No login command is configured for {t['label']}.")
+            return self.launch(auto_name("login-" + tid), HOME, t["login"], tid)
+
+        if path == "/tools/open":
+            if tid not in tool_kinds():
+                return fail(f"{t['label']} isn’t installed, or has no command to run.")
+            name, err = validate_name(f.get("name", ""), required=False, base=tid)
+            if err:
+                return fail(err)
+            cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
+            if err:
+                return fail(err)
+            err = create_session(tid, name, cwd)
+            clear_tool_cache(tid)
+            if err:
+                return fail(err, 500)
+            return self.redirect(term_href(name))
+
+        if path == "/tools/action":
+            actions = t.get("actions") or []
+            try:
+                a = actions[int(f.get("i", ""))]
+            except (ValueError, IndexError):
+                return fail("That button no longer exists.")
+            cwd = HOME
+            if a.get("dir"):
+                cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
+                if err:
+                    return fail(err)
+            return self.launch(auto_name(a.get("label") or tid), cwd, a["cmd"], tid)
+
+        if path == "/tools/server":
+            server = t.get("server") or {}
+            sess = server.get("session")
+            if not sess or not server.get("cmd"):
+                return fail(f"No server is configured for {t['label']}.")
+            if f.get("action") == "stop":
+                tmux("kill-session", "-t", f"={sess}")
+                clear_tool_cache(tid)
+                return self.redirect("/")
+            if session_exists(sess):
+                if not session_idle(sess):
+                    return fail(f"“{sess}” is already running. Open it from the Sessions list.")
+                tmux("kill-session", "-t", f"={sess}")     # exited into its shell: replace it
+            # Start in the directory picked on the card: Claude's server opens
+            # its sessions there (and never trusts the home directory).
+            cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
+            if err:
+                return fail(err)
+            err = create_command_session(sess, cwd, server["cmd"])
+            clear_tool_cache(tid)
+            if err:
+                return fail(err, 500)
+            return self.redirect(term_href(sess))
+
+        if path == "/tools/daemon":
+            daemon = t.get("daemon") or {}
+            action = f.get("action", "start")
+            cmd = daemon.get(action if action in ("start", "stop") else "start")
+            if not cmd:
+                return fail(f"No daemon {action} command is configured for {t['label']}.")
+            try:
+                r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60,
+                                   cwd=HOME, env={**os.environ, "PATH": TOOL_PATH})
+            except (OSError, subprocess.SubprocessError) as e:
+                return fail(f"{cmd}: {e}", 500)
+            clear_tool_cache(tid)
+            if r.returncode != 0:
+                tail = "\n".join(((r.stderr or "") + (r.stdout or "")).strip().splitlines()[-5:])
+                return fail(f"“{cmd}” exited with status {r.returncode}. {tail}", 500)
+            return self.redirect("/")
+
+        return fail("Unknown action.", 404)
+
+    def launch(self, name, cwd, cmd, tid=None):
+        """Run one command in a new session and show it."""
+        err = create_session("shell", name, cwd, command=cmd)
+        if tid:
+            clear_tool_cache(tid)
+        if err:
+            return self.fail(err, 500, tid or "")
+        return self.redirect(term_href(name))
+
+
+if __name__ == "__main__":
+    srv = ThreadingHTTPServer(BIND, Handler)
+    sys.stderr.write(f"serverjack listening on http://{BIND[0]}:{BIND[1]}  title={TITLE!r} dirs={DIR_ROOTS} tools={[t['id'] for t in load_tools()[0]]}\n")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
