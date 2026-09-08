@@ -854,13 +854,35 @@ def session_mouse(name):
     return r.returncode == 0 and r.stdout.strip() == "on"
 
 
+_SCROLL_ACC = {}      # session -> rows not yet turned into a page (alternate-screen panes)
+
+
 def scroll_session(name, lines):
-    """Scroll the pane's history from outside tmux: enter copy mode (leaving
-    it again once back at the bottom, like a mouse wheel would) and move by
-    that many lines. Positive = older."""
+    """Scroll the pane's history from outside tmux. Positive = older.
+
+    A pane on the alternate screen (Claude Code, less, vim, htop ...) has no
+    tmux history, so copy mode would show nothing and just trap the keys:
+    those get PageUp/PageDown, which such apps understand, one page per half
+    a screen of travel. Everything else enters copy mode (leaving it again at
+    the bottom, like a mouse wheel would) and moves by that many lines."""
     n = max(-200, min(200, lines))
     if not n:
         return
+    r = tmux("display-message", "-p", "-t", f"={name}:", "#{alternate_on} #{pane_height}")
+    alt, height = "0", 24
+    if r.returncode == 0:
+        parts = r.stdout.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            alt, height = parts[0], max(int(parts[1]), 4)
+    if alt == "1":
+        acc = _SCROLL_ACC.get(name, 0) + n
+        page = max(height // 2, 2)
+        pages = int(acc / page)              # truncates toward zero
+        _SCROLL_ACC[name] = acc - pages * page
+        if pages:
+            tmux("send-keys", "-t", f"={name}:", "-N", str(abs(pages)), "PageUp" if pages > 0 else "PageDown")
+        return
+    _SCROLL_ACC.pop(name, None)
     if n > 0:
         tmux("copy-mode", "-e", "-t", f"={name}:")
     tmux("send-keys", "-t", f"={name}:", "-X", "-N", str(abs(n)), "scroll-up" if n > 0 else "scroll-down")
