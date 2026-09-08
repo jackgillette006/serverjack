@@ -453,6 +453,7 @@ left in place; delete it when you're happy.
 | `SERVERJACK_TOOLS` | unset (all) | optional comma-separated tool ids: restricts and orders the Agent rows, e.g. `claude,codex` |
 | `SERVERJACK_TERM` | `/term/` | URL path serverjack serves the terminal on (proxying it to ttyd's socket) |
 | `TTYD_EXTRA_ARGS` | | extra ttyd flags; rarely needed, serverjack strips the prefix itself |
+| `SERVERJACK_TMUX_STATUS` | `off` | sessions opened from the page get tmux's status line turned off (the bar shows tabs and window count instead); `on` leaves tmux alone |
 | `SERVERJACK_SSH` | `auto` | `user@host` for the SSH menu items (tailnet DNS name if Tailscale is up, else hostname); `off` hides them |
 | `SERVERJACK_CONFIG` | `~/.config/serverjack` | config directory override |
 | `SERVERJACK_AUTOSTART_DELAY` | `15` | seconds after startup before `autostart.json` is acted on |

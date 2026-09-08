@@ -62,5 +62,13 @@ if ! tmux has-session -t "=$name" 2>/dev/null; then
   exit 1
 fi
 
+# The page has its own bar (tabs, window count), so tmux's status line is
+# just noise in a browser: hide it for sessions opened through serverjack.
+# It is a session option, so an ssh client of the same session loses it too;
+# SERVERJACK_TMUX_STATUS=on keeps it.
+if [[ "${SERVERJACK_TMUX_STATUS:-off}" != "on" ]]; then
+  tmux set-option -t "=$name:" status off 2>/dev/null
+fi
+
 # No -d: never yank the session away from another client (tty1, ssh, phone).
 exec tmux attach-session -t "=$name"

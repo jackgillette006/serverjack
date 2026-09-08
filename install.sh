@@ -226,6 +226,9 @@ SERVERJACK_TERM=/term/
 TTYD_EXTRA_ARGS=
 # user@host used by "Copy SSH command" / "Open in SSH app" (auto: tailnet name); "off" hides them
 #SERVERJACK_SSH=
+# Sessions opened from the page get tmux's status line hidden (the page bar
+# shows tabs and window count). Set to on to leave tmux's status line alone.
+#SERVERJACK_TMUX_STATUS=off
 # Restrict this instance to named tailnet logins (comma-separated), e.g.
 # alice@github. Anyone else who reaches it gets a 403 page -- the terminal
 # included, since serverjack serves that too. Unset means the tailnet itself is
