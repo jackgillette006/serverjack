@@ -51,7 +51,7 @@ You are testing a browser-based tmux terminal at https://<your-host>/ on iPhone 
 12. Long-press in the terminal: can you select and copy text? Long-press then Paste: does it paste?
 13. Tap ↗ pop-out: expected to just open a new tab (phones don't do popups). Not a fail.
 14. Share → Add to Home Screen. Open it from the home screen. It should open full screen with no Safari bars, and opening a session should stay inside it.
-14b. **Mouse mode** (needs `set -g mouse on` — `bash install.sh --mouse` adds it): run `seq 1 500` in a session, then drag one finger up and down over the terminal. The pane's scrollback scrolls instead of the web page, and tapping the bottom or pressing `q` leaves copy mode. Without mouse mode this does nothing and PgUp/PgDn in the key row are the only way — check both and say which you tested.
+14b. **Scrolling**: run `seq 1 500` in a session, then drag one finger up and down over the terminal (or use the mouse wheel on a desktop). The pane's history scrolls, tmux's copy-mode position shows top right, and scrolling back to the bottom leaves copy mode. A mouse drag on a desktop still selects text.
 14c. In a session with two windows (`tmux new-window`), tap the active tab: the window list opens as a comfortable, readable sheet with 44px rows, and picking one switches. Nothing overflows sideways.
 15. ☰ goes back to the list; ✕ closes: in a pop-out it closes the window, in a tab it goes back to the list. The session keeps running either way (kill it from its menu on the landing page).
 Report PASS/FAIL per step and the iOS version.

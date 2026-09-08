@@ -847,6 +847,25 @@ def windows(name):
     return out
 
 
+def session_mouse(name):
+    """Whether tmux mouse mode is on for the session (then xterm's own wheel
+    reports reach tmux and the page must not scroll it a second time)."""
+    r = tmux("show-options", "-A", "-v", "-t", f"={name}:", "mouse")
+    return r.returncode == 0 and r.stdout.strip() == "on"
+
+
+def scroll_session(name, lines):
+    """Scroll the pane's history from outside tmux: enter copy mode (leaving
+    it again once back at the bottom, like a mouse wheel would) and move by
+    that many lines. Positive = older."""
+    n = max(-200, min(200, lines))
+    if not n:
+        return
+    if n > 0:
+        tmux("copy-mode", "-e", "-t", f"={name}:")
+    tmux("send-keys", "-t", f"={name}:", "-X", "-N", str(abs(n)), "scroll-up" if n > 0 else "scroll-down")
+
+
 def screen_text(name, lines=300):
     """Plain text of the session's active pane, last <lines> lines, wrapped
     lines joined. Used by the phone 'Copy' view where native selection works."""
@@ -1760,20 +1779,6 @@ body.keys #keys{{display:flex}}
 .k:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
 .k:active,.k.armed{{background:var(--accent-wash);border-color:var(--accent);color:var(--accent)}}
 .k.act{{color:var(--accent);border-color:rgb(57 255 136 / .32)}}
-/* ---- chat-style compose bar: real textarea => autocorrect, dictation, native paste */
-#compose{{flex:none;display:none;gap:8px;align-items:flex-end;background:var(--bg-secondary);
-  border-top:1px solid var(--border-soft);padding:8px 8px calc(8px + env(safe-area-inset-bottom))}}
-body.keys #compose{{display:flex}}
-body.keys #keys{{padding-bottom:6px}}
-#msg{{flex:1 1 auto;min-height:42px;max-height:120px;resize:none;padding:11px 12px;
-  border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-primary);
-  color:var(--text-primary);font:16px/1.3 var(--font-mono)}}
-#msg::placeholder{{color:#6d7f76;font:13px/1.3 var(--font-ui)}}
-#msg:focus{{outline:none;border-color:var(--accent-dim);box-shadow:var(--focus-ring)}}
-.send{{flex:none;width:48px;height:42px;border:0;border-radius:var(--radius-sm);background:var(--accent);
-  color:var(--on-accent);display:flex;align-items:center;justify-content:center;cursor:pointer}}
-.send:hover{{background:#5cffa0}}
-.send:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
 /* ---- screen-text view (glass over the terminal) */
 #screen{{position:absolute;inset:0;z-index:30;background:var(--glass-bg);
   -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));
@@ -1876,10 +1881,6 @@ body.popout #popout,body.touch #popout{{display:none}}
   <button class="k act" id="paste" title="Paste clipboard into the terminal">Paste</button>
   <button class="k act" id="copy" title="Show the screen as selectable text">Copy</button>
 </div>
-<form id="compose" autocomplete="off">
-  <textarea id="msg" rows="1" placeholder="Message the agent… (Send = paste + Enter)" enterkeyhint="send" autocapitalize="sentences"></textarea>
-  <button type="submit" class="send" title="Send" aria-label="Send">{i_send}</button>
-</form>
 <div id="screen" hidden>
   <div class="sbar"><span>Screen text &middot; tap a line to copy it, or select</span>
     <button class="ib" id="screen-copy">Copy all</button>
@@ -1994,10 +1995,34 @@ APP_JS = r"""
   // `set -g mouse on`, and tmux opens its history. One wheel per row of
   // finger travel; a tap or a long-press (no travel) is left alone so the
   // native Paste callout still works.
-  function touchScroll() {
-    var d = tdoc(); if (!d || !touch || d.__sjTouch) return; d.__sjTouch = true;
+  // Scrolling. xterm.js answers a swipe or a wheel by scrolling its own
+  // viewport, which is empty under tmux (tmux keeps the history). So the page
+  // scrolls tmux itself: rows go to POST /api/scroll, which enters copy mode
+  // and moves by that many lines (and leaves copy mode at the bottom). That
+  // needs no `mouse on`, so a mouse drag still selects text for copying. If
+  // the session does have mouse mode on, xterm's own wheel reports already
+  // reach tmux, so wheels pass through and swipes become wheel events.
+  var MOUSE = false, scrollQ = 0, scrollT = null, wheelAcc = 0;
+  function flushScroll() {
+    scrollT = null; var n = scrollQ; scrollQ = 0; if (!n || !cur) return;
+    fetch('/api/scroll', { method: 'POST', body: new URLSearchParams({ name: cur, lines: n }) }).catch(function () {});
+  }
+  function queueScroll(rows) { scrollQ += rows; if (!scrollT) scrollT = setTimeout(flushScroll, 40); }
+  function pollMouse() {
+    fetch('/api/scroll?name=' + encodeURIComponent(cur), { cache: 'no-store' })
+      .then(function (r) { return r.json(); }).then(function (j) { MOUSE = !!j.mouse; }).catch(function () {});
+  }
+  function scrollHooks() {
+    var d = tdoc(); if (!d || d.__sjScroll) return; d.__sjScroll = true;
     var w = frame.contentWindow, lastY = null, acc = 0, moved = false;
     function rowH() { var r = d.querySelector('.xterm-rows > div'); return (r && r.offsetHeight) || 18; }
+    d.addEventListener('wheel', function (e) {
+      if (MOUSE || e.ctrlKey) return;                     // mouse mode: xterm reports it; ctrl+wheel: browser zoom
+      e.preventDefault(); e.stopPropagation();
+      wheelAcc += e.deltaMode === 1 ? e.deltaY : e.deltaY / rowH();
+      var n = Math.trunc(wheelAcc); if (n) { wheelAcc -= n; queueScroll(-n); }   // wheel down => newer
+    }, { capture: true, passive: false });
+    if (!touch) return;
     d.addEventListener('touchstart', function (e) {
       if (e.touches.length !== 1) { lastY = null; return; }
       lastY = e.touches[0].clientY; acc = 0; moved = false;
@@ -2005,18 +2030,18 @@ APP_JS = r"""
     d.addEventListener('touchmove', function (e) {
       if (lastY === null || e.touches.length !== 1) return;
       var y = e.touches[0].clientY; acc += y - lastY; lastY = y;
-      if (!moved && Math.abs(acc) < 8) return;
+      if (!moved && Math.abs(acc) < 8) return;            // a wobble during a long-press is not a swipe
       moved = true; e.preventDefault();
       var h = rowH(), target = d.querySelector('.xterm-screen') || d.querySelector('.xterm');
-      if (!target) return;
       while (Math.abs(acc) >= h) {
-        var older = acc > 0; acc += older ? -h : h;       // finger down => older lines => wheel up
-        target.dispatchEvent(new w.WheelEvent('wheel', { deltaY: older ? -h : h, deltaMode: 0, bubbles: true, cancelable: true }));
+        var older = acc > 0; acc += older ? -h : h;       // finger down => older lines
+        if (MOUSE && target) target.dispatchEvent(new w.WheelEvent('wheel', { deltaY: older ? -h : h, deltaMode: 0, bubbles: true, cancelable: true }));
+        else queueScroll(older ? 1 : -1);
       }
     }, { capture: true, passive: false });
     d.addEventListener('touchend', function () { lastY = null; }, { capture: true, passive: true });
   }
-  frame.addEventListener('load', function () { hook(); touchCss(); touchScroll(); focusTerm(); });
+  frame.addEventListener('load', function () { hook(); touchCss(); scrollHooks(); pollMouse(); focusTerm(); });
 
   // ---- soft key row
   var ctrlBtn = document.getElementById('ctrl');
@@ -2036,17 +2061,18 @@ APP_JS = r"""
     });
   });
 
-  // ---- Paste / Copy buttons and the compose bar
-  var msg = document.getElementById('msg'), compose = document.getElementById('compose');
+  // ---- Paste / Copy buttons
   function flash(btn, text) { var old = btn.textContent; btn.textContent = text; setTimeout(function () { btn.textContent = old; }, 1200); }
   document.getElementById('paste').addEventListener('pointerdown', function (e) { e.preventDefault(); });
   document.getElementById('paste').addEventListener('click', function () {
     var btn = this;
-    if (!navigator.clipboard || !navigator.clipboard.readText) { msg.focus(); flash(btn, 'use box ↓'); return; }
+    // No clipboard API, or permission denied: touch-and-hold the terminal
+    // brings up the browser's own Paste callout instead.
+    if (!navigator.clipboard || !navigator.clipboard.readText) { flash(btn, 'hold to paste'); focusTerm(); return; }
     navigator.clipboard.readText().then(function (t) {
       if (!t) { flash(btn, 'empty'); return; }
       sendText(t); focusTerm();
-    }).catch(function () { msg.focus(); flash(btn, 'use box ↓'); });   // denied: paste into the compose box instead
+    }).catch(function () { flash(btn, 'hold to paste'); focusTerm(); });
   });
   var screen = document.getElementById('screen'), screenText = document.getElementById('screen-text');
   function loadScreen() {
@@ -2077,18 +2103,6 @@ APP_JS = r"""
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(screenText.textContent).then(function () { flash(btn, 'Copied'); }, function () { flash(btn, 'select text'); });
     else flash(btn, 'select text');
   };
-  compose.onsubmit = function (e) {
-    e.preventDefault();
-    var t = msg.value;
-    if (t) sendText(t);
-    setTimeout(function () { sendKey('Enter'); }, t ? 60 : 0);   // let the paste land first
-    msg.value = ''; msg.style.height = '';
-    msg.focus();                                                 // keep chatting
-  };
-  msg.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); compose.requestSubmit ? compose.requestSubmit() : compose.onsubmit(e); }
-  });
-  msg.addEventListener('input', function () { msg.style.height = ''; msg.style.height = Math.min(msg.scrollHeight, 120) + 'px'; });
 
   // ---- iOS: the soft keyboard doesn't shrink the layout viewport, so track
   // the visual viewport and size the page to it (keeps the key row visible).
@@ -2803,6 +2817,12 @@ class Handler(BaseHTTPRequestHandler):
             if not session_exists(name):
                 return self.send_json([], 404)
             return self.send_json(windows(name))
+        if path == "/api/scroll":
+            q = parse_qs(urlparse(self.path).query)
+            name = (q.get("name") or [""])[0]
+            if not session_exists(name):
+                return self.send_json({"error": "no such session"}, 404)
+            return self.send_json({"mouse": session_mouse(name)})
         if path == "/api/status":
             return self.send_json(status())
         if path == "/api/tools":
@@ -3050,6 +3070,17 @@ class Handler(BaseHTTPRequestHandler):
             if r.returncode != 0:
                 return self.send_json({"error": (r.stderr or r.stdout).strip()}, 400)
             return self.send_json({"ok": True, "index": int(idx)})
+
+        if path == "/api/scroll":
+            name = f.get("name", "")
+            try:
+                lines = int(f.get("lines", "0"))
+            except ValueError:
+                return self.send_json({"error": "lines must be an integer"}, 400)
+            if not session_exists(name):
+                return self.send_json({"error": "no such session"}, 404)
+            scroll_session(name, lines)
+            return self.send_json({"ok": True})
 
         if path == "/shortcuts/add":
             cmd = f.get("cmd", "").strip()

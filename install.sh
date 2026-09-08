@@ -12,8 +12,6 @@
 #                                port and page name; a second Linux account on
 #                                this machine needs its own port, --https-port
 #                                and --title
-#   bash install.sh --mouse      also add `set -g mouse on` to ~/.tmux.conf, so
-#                                a phone can scroll tmux history by dragging
 #
 # What it does, all inside your own account:
 #   0. migrates an older tmux-web install (env file, shortcuts, old user units)
@@ -44,7 +42,6 @@ ENV_FILE=$CFG_DIR/env
 UNIT_DIR=$HOME/.config/systemd/user
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 NO_SERVE=0
-OPT_MOUSE=0
 OPT_LISTEN=
 # Empty unless passed on the command line. A flag sets the value in a NEW env
 # file, and rewrites that one line in an existing one -- everything else kept.
@@ -53,7 +50,6 @@ usage() { sed -n '2,17p' "$0"; exit "${1:-0}"; }
 while (( $# )); do
   case "$1" in
     --no-serve)   NO_SERVE=1 ;;
-    --mouse)      OPT_MOUSE=1 ;;
     --unix)       OPT_LISTEN=unix ;;
     --tcp)        OPT_LISTEN=tcp ;;
     --port)       OPT_PORT=${2:?--port needs a number}; shift ;;
@@ -352,38 +348,6 @@ else
     -w "  landing  $RUNTIME/web.sock  -> HTTP %{http_code}\n" http://serverjack/healthz
   curl -s -o /dev/null --unix-socket "$RUNTIME/web.sock" \
     -w "  terminal $RUNTIME/web.sock$SERVERJACK_TERM -> HTTP %{http_code}\n" "http://serverjack$SERVERJACK_TERM"
-fi
-
-# ---------------------------------------------------------------- tmux mouse mode
-# Without `set -g mouse on` there is no way to scroll a pane's history on a
-# phone: a drag scrolls the web page, not tmux, and the soft PgUp/PgDn keys are
-# the only way into copy mode. Adding it is a change to the user's own tmux
-# config, so it is never done silently: --mouse does it, a real terminal is
-# asked, and anything else just gets told.
-TMUX_CONF=$HOME/.tmux.conf
-mouse_line='set -g mouse on  # serverjack: scroll history on a phone'
-enable_mouse() {
-  [[ -s "$TMUX_CONF" && -n "$(tail -c 1 "$TMUX_CONF")" ]] && printf '\n' >> "$TMUX_CONF"
-  printf '%s\n' "$mouse_line" >> "$TMUX_CONF"
-  say "Added \`set -g mouse on\` to $TMUX_CONF"
-  # A running server keeps its old options until told otherwise; reload so the
-  # sessions you already have get it too, without restarting anything.
-  if tmux has-session 2>/dev/null; then
-    tmux source-file "$TMUX_CONF" >/dev/null 2>&1 \
-      && echo "  reloaded it into the running tmux server" \
-      || echo "  (tmux source-file failed -- run it yourself: tmux source-file $TMUX_CONF)"
-  fi
-}
-# Idempotent: any uncommented `set ... mouse on` already in the file counts.
-if grep -qE '^[[:space:]]*set(-option)?[[:space:]].*mouse[[:space:]]+on' "$TMUX_CONF" 2>/dev/null; then
-  :
-elif (( OPT_MOUSE )); then
-  enable_mouse
-elif [[ -t 0 ]]; then
-  read -r -p "Enable tmux mouse mode so phones can scroll history? [Y/n] " ans
-  case "${ans:-y}" in [Yy]*|"") enable_mouse ;; *) echo "  left $TMUX_CONF alone" ;; esac
-else
-  echo "Tip: phones can't scroll tmux history without mouse mode. Re-run with --mouse, or add to $TMUX_CONF:  $mouse_line"
 fi
 
 # ---------------------------------------------------------------- boot persistence

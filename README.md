@@ -23,8 +23,8 @@ Tailscale from an iPhone or a laptop. Open a URL and you get three things:
 
 The terminal itself is [ttyd](https://github.com/tsl0922/ttyd) in an iframe,
 with session tabs, a tmux-window picker on the active tab, a phone soft-key row
-(Esc, Tab, Shift-Tab, Ctrl, arrows, ^C, PgUp/PgDn, Paste, Copy) and a compose
-bar you can type or dictate into.
+(Esc, Tab, Shift-Tab, Ctrl, arrows, ^C, PgUp/PgDn, Paste, Copy). Touch-and-hold
+the terminal for the browser's own Paste callout.
 "Add to Home Screen" on iOS gives a full-screen app with no browser chrome.
 
 Everything server-side is one stdlib Python file plus a prebuilt ttyd binary.
@@ -328,18 +328,12 @@ Flags (all optional):
 | `--port N` | serverjack's port (default `7680`); implies `--tcp` |
 | `--https-port N` | HTTPS port `tailscale serve` publishes on: `443`, `8443` or `10000` (default `443`) |
 | `--title NAME` | page / tab / PWA name (default the hostname) |
-| `--mouse` | add `set -g mouse on` to `~/.tmux.conf` without asking (see below) |
 
-**tmux mouse mode.** serverjack turns a finger swipe in the terminal into
-scroll-wheel events, which is what tmux listens for when `set -g mouse on` is
-set. Without it, a phone cannot scroll a pane's history and the soft PgUp/PgDn
-keys are the only way into tmux copy mode. Because that is a change to *your* tmux config,
-the installer never does it silently: `--mouse` adds the line (and
-`tmux source-file`s it into the running server, so existing sessions get it
-too), a real terminal is asked `Enable tmux mouse mode so phones can scroll
-history? [Y/n]`, and a non-interactive run with no flag just prints the line to
-add. It is idempotent — any uncommented `set … mouse on` already in the file
-counts, and nothing is appended twice.
+**Scrolling.** A finger swipe or a mouse wheel over the terminal scrolls the
+tmux pane's history: the page asks serverjack, which puts the pane into
+copy mode and moves it, leaving copy mode again at the bottom. Nothing in
+your tmux config is touched, and a mouse drag still selects text. If a
+session has `mouse on`, tmux gets the wheel directly instead.
 
 The value flags write into `~/.config/serverjack/env` — they set the
 initial value when the file is created, and rewrite just that line if you pass
@@ -630,10 +624,8 @@ verifiable there.
 ## Known limitations
 
 - Linux WebKit browsers (Epiphany) still need Ctrl+Shift+C to copy.
-- Scrolling history on a phone needs `set -g mouse on` in `~/.tmux.conf` (or
-  the PgUp/PgDn soft keys, which enter tmux copy mode). `install.sh --mouse`
-  adds it, and an interactive install offers to; see
-  [Install](#install-no-sudo).
+- While scrolled back, the pane is in tmux copy mode: keys go to copy mode
+  until you scroll to the bottom or press Esc/`q`. That's tmux.
 - tmux resizes a session to its most recent client, so a phone attaching
   shrinks the desktop view until the desktop sends a key. That's tmux.
 - Installer and units are Linux + systemd only.
