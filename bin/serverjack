@@ -1988,7 +1988,35 @@ APP_JS = r"""
     st.textContent = '.xterm-helper-textarea{position:fixed!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;opacity:0!important;z-index:20!important;-webkit-user-select:text!important;user-select:text!important;caret-color:transparent}';
     (d.head || d.documentElement).appendChild(st);
   }
-  frame.addEventListener('load', function () { hook(); touchCss(); focusTerm(); });
+  // Finger swipe -> wheel events. xterm.js answers touch by scrolling its
+  // own viewport, which is empty under tmux (tmux keeps the history), so a
+  // swipe did nothing. Wheel events, though, reach tmux as mouse scroll when
+  // `set -g mouse on`, and tmux opens its history. One wheel per row of
+  // finger travel; a tap or a long-press (no travel) is left alone so the
+  // native Paste callout still works.
+  function touchScroll() {
+    var d = tdoc(); if (!d || !touch || d.__sjTouch) return; d.__sjTouch = true;
+    var w = frame.contentWindow, lastY = null, acc = 0, moved = false;
+    function rowH() { var r = d.querySelector('.xterm-rows > div'); return (r && r.offsetHeight) || 18; }
+    d.addEventListener('touchstart', function (e) {
+      if (e.touches.length !== 1) { lastY = null; return; }
+      lastY = e.touches[0].clientY; acc = 0; moved = false;
+    }, { capture: true, passive: true });
+    d.addEventListener('touchmove', function (e) {
+      if (lastY === null || e.touches.length !== 1) return;
+      var y = e.touches[0].clientY; acc += y - lastY; lastY = y;
+      if (!moved && Math.abs(acc) < 8) return;
+      moved = true; e.preventDefault();
+      var h = rowH(), target = d.querySelector('.xterm-screen') || d.querySelector('.xterm');
+      if (!target) return;
+      while (Math.abs(acc) >= h) {
+        var older = acc > 0; acc += older ? -h : h;       // finger down => older lines => wheel up
+        target.dispatchEvent(new w.WheelEvent('wheel', { deltaY: older ? -h : h, deltaMode: 0, bubbles: true, cancelable: true }));
+      }
+    }, { capture: true, passive: false });
+    d.addEventListener('touchend', function () { lastY = null; }, { capture: true, passive: true });
+  }
+  frame.addEventListener('load', function () { hook(); touchCss(); touchScroll(); focusTerm(); });
 
   // ---- soft key row
   var ctrlBtn = document.getElementById('ctrl');

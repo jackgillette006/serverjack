@@ -330,9 +330,10 @@ Flags (all optional):
 | `--title NAME` | page / tab / PWA name (default the hostname) |
 | `--mouse` | add `set -g mouse on` to `~/.tmux.conf` without asking (see below) |
 
-**tmux mouse mode.** Without `set -g mouse on`, a phone cannot scroll a pane's
-history — dragging scrolls the web page, and the soft PgUp/PgDn keys are the
-only way into tmux copy mode. Because that is a change to *your* tmux config,
+**tmux mouse mode.** serverjack turns a finger swipe in the terminal into
+scroll-wheel events, which is what tmux listens for when `set -g mouse on` is
+set. Without it, a phone cannot scroll a pane's history and the soft PgUp/PgDn
+keys are the only way into tmux copy mode. Because that is a change to *your* tmux config,
 the installer never does it silently: `--mouse` adds the line (and
 `tmux source-file`s it into the running server, so existing sessions get it
 too), a real terminal is asked `Enable tmux mouse mode so phones can scroll
