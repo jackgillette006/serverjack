@@ -2012,16 +2012,20 @@ APP_JS = r"""
     fetch('/api/scroll?name=' + encodeURIComponent(cur), { cache: 'no-store' })
       .then(function (r) { return r.json(); }).then(function (j) { MOUSE = !!j.mouse; }).catch(function () {});
   }
+  function rowH() { var d = tdoc(), r = d && d.querySelector('.xterm-rows > div'); return (r && r.offsetHeight) || 18; }
+  function onWheel(e) {
+    if (MOUSE || e.ctrlKey) return;                       // mouse mode: xterm reports it; ctrl+wheel: browser zoom
+    e.preventDefault(); e.stopPropagation();
+    wheelAcc += e.deltaMode === 1 ? e.deltaY : e.deltaY / rowH();
+    var n = Math.trunc(wheelAcc); if (n) { wheelAcc -= n; queueScroll(-n); }   // wheel down => newer
+  }
+  // Chromium hands the first wheel over an iframe to the parent document
+  // (target = the iframe element) before it latches onto the frame.
+  document.addEventListener('wheel', function (e) { if (e.target === frame) onWheel(e); }, { capture: true, passive: false });
   function scrollHooks() {
     var d = tdoc(); if (!d || d.__sjScroll) return; d.__sjScroll = true;
     var w = frame.contentWindow, lastY = null, acc = 0, moved = false;
-    function rowH() { var r = d.querySelector('.xterm-rows > div'); return (r && r.offsetHeight) || 18; }
-    d.addEventListener('wheel', function (e) {
-      if (MOUSE || e.ctrlKey) return;                     // mouse mode: xterm reports it; ctrl+wheel: browser zoom
-      e.preventDefault(); e.stopPropagation();
-      wheelAcc += e.deltaMode === 1 ? e.deltaY : e.deltaY / rowH();
-      var n = Math.trunc(wheelAcc); if (n) { wheelAcc -= n; queueScroll(-n); }   // wheel down => newer
-    }, { capture: true, passive: false });
+    d.addEventListener('wheel', onWheel, { capture: true, passive: false });
     if (!touch) return;
     d.addEventListener('touchstart', function (e) {
       if (e.touches.length !== 1) { lastY = null; return; }
@@ -2257,7 +2261,7 @@ APP_JS = r"""
   });
   document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
   setInterval(refresh, 15000);
-  refresh(); hook(); touchCss(); focusTerm();
+  refresh(); hook(); touchCss(); scrollHooks(); pollMouse(); focusTerm();
 })();
 """
 
