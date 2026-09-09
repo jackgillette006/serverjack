@@ -27,6 +27,16 @@ with session tabs, a tmux-window picker on the active tab, a phone soft-key row
 the terminal for the browser's own Paste callout.
 "Add to Home Screen" on iOS gives a full-screen app with no browser chrome.
 
+A light CRT costume runs over all of that: a ~320ms tube warm-up when a page
+loads, a collapse-to-a-line when you leave through Close or open a session in
+the same tab, a scanline sweep while the terminal is connecting, and a barely
+visible flicker/roll on the landing page's background. It is CSS only (opacity
+and transform, nothing that repaints), off under `prefers-reduced-motion`, and
+never sits over the terminal once it is connected. The **CRT fx** control in the
+landing-page footer (and at the bottom of the terminal's new-session panel)
+toggles it instantly and remembers the choice; `SERVERJACK_FX=off` makes off the
+default for everyone.
+
 Everything server-side is one stdlib Python file plus a prebuilt ttyd binary.
 No pip, no npm, no compiler, no root.
 
@@ -455,6 +465,7 @@ left in place; delete it when you're happy.
 | `TTYD_EXTRA_ARGS` | | extra ttyd flags; rarely needed, serverjack strips the prefix itself |
 | `SERVERJACK_TMUX_STATUS` | `off` | sessions opened from the page get tmux's status line turned off (the bar shows tabs and window count instead); `on` leaves tmux alone |
 | `SERVERJACK_SSH` | `auto` | `user@host` for the SSH menu items (tailnet DNS name if Tailscale is up, else hostname); `off` hides them |
+| `SERVERJACK_FX` | unset (on) | `off` (or `0`/`no`/`false`) turns the CRT effects off by default; each browser can still flip them with the **CRT fx** toggle |
 | `SERVERJACK_CONFIG` | `~/.config/serverjack` | config directory override |
 | `SERVERJACK_AUTOSTART_DELAY` | `15` | seconds after startup before `autostart.json` is acted on |
 

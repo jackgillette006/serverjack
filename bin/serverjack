@@ -394,6 +394,10 @@ def peer_allowed(uid):
         return False
     return uid in ALLOWED_UIDS
 TITLE = os.environ.get("SERVERJACK_TITLE") or socket.gethostname().split(".")[0]
+# CRT effects: on unless SERVERJACK_FX says otherwise. The browser can still
+# override either way (localStorage sj-fx), which is what the toggle writes.
+FX_CLASS = "" if (os.environ.get("SERVERJACK_FX") or "").strip().lower() in (
+    "0", "off", "no", "false") else "fx"
 TERM_PATH = os.environ.get("SERVERJACK_TERM", "/term/")
 if not TERM_PATH.endswith("/"):
     TERM_PATH += "/"          # ttyd builds its ws URL relative to the page path
@@ -1323,6 +1327,63 @@ TOKENS = """
 }
 """
 
+# ---- CRT effects. Opacity/transform only (compositor-cheap), every rule gated
+# on body.fx, and switched off wholesale under prefers-reduced-motion, so the
+# static look is exactly the same as with the effects off. See DESIGN.md.
+FX_CSS = """
+#crt{position:fixed;inset:0;z-index:99;pointer-events:none;display:none;background:var(--bg-primary)}
+body.fx #crt{display:block;animation:sj-on 320ms ease-out forwards}
+#crt::after{content:"";position:absolute;left:0;right:0;top:calc(50% - 1px);height:2px;
+  background:var(--accent);box-shadow:0 0 18px 2px rgb(57 255 136 / .5);opacity:0}
+body.fx #crt::after{animation:sj-line 320ms ease-out forwards}
+@keyframes sj-on{0%{opacity:1}60%{opacity:.5}99%{opacity:0}100%{opacity:0;visibility:hidden}}
+@keyframes sj-line{0%{opacity:1;transform:scaleY(.002)}40%{opacity:1;transform:scaleY(.002)}
+  100%{opacity:0;transform:scaleY(400)}}
+/* leaving through one of our own controls: collapse to a line, then a dot */
+body.fx.off{animation:sj-off 180ms ease-in forwards}
+@keyframes sj-off{0%{opacity:1;transform:none}60%{opacity:1;transform:scale(1,.004)}
+  100%{opacity:0;transform:scale(.002,.004)}}
+/* the toggle itself: a ghost control, footer of the landing page / bottom of #pop */
+.fxt{border:0;background:transparent;color:var(--text-muted);cursor:pointer;padding:2px 0;
+  font:500 11px/16px var(--font-mono);letter-spacing:.04em;opacity:.7}
+.fxt:hover{color:var(--accent);opacity:1}
+@media (prefers-reduced-motion:reduce){
+  #crt,#conn,body.fx::before,body.fx::after{display:none!important}
+  body.fx.off{opacity:1!important;transform:none!important}
+}
+"""
+
+# Landing-page only: ambient flicker on a scanline layer plus a slow rolling
+# band, both behind content, and a static phosphor glow on the wordmark.
+FX_CSS_LAND = """
+body.fx::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.04;
+  background:repeating-linear-gradient(180deg,rgb(57 255 136 / .3) 0 1px,transparent 1px 3px);
+  animation:sj-flick 9s linear infinite}
+@keyframes sj-flick{0%,97%{opacity:.04}97.3%{opacity:.09}97.6%,98.6%{opacity:.04}
+  98.9%{opacity:.09}99.2%,100%{opacity:.04}}
+body.fx::after{content:"";position:fixed;left:0;right:0;top:0;height:1px;z-index:-1;
+  pointer-events:none;background:rgb(230 247 233 / .3);opacity:.1;
+  animation:sj-roll 12s linear infinite}
+@keyframes sj-roll{from{transform:translateY(-2px)}to{transform:translateY(100vh)}}
+body.fx h1{text-shadow:0 0 12px rgb(57 255 136 / .35)}
+body.fx h1 small{text-shadow:none}
+body.fx .btn:active{opacity:.75;transition:opacity 120ms ease}
+"""
+
+# Terminal-page only: a scanline sweeping over the frame while ttyd connects.
+FX_CSS_TERM = """
+#conn{position:absolute;inset:0;z-index:8;pointer-events:none;display:none;overflow:hidden}
+body.fx.conn #conn{display:block}
+#conn::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;
+  background:linear-gradient(90deg,transparent,rgb(57 255 136 / .5),transparent);
+  animation:sj-sweep 900ms linear infinite}
+#conn .cap{position:absolute;left:12px;bottom:10px;color:var(--accent);opacity:.5;
+  font:500 11px/16px var(--font-mono);letter-spacing:.1em}
+@keyframes sj-sweep{0%{transform:translateY(0);opacity:0}12%{opacity:1}
+  88%{opacity:1}100%{transform:translateY(100vh);opacity:0}}
+"""
+
+
 # Outline icons, 1.5px stroke, currentColor. Inline SVG only -- no icon font.
 def _svg(body, size=16, cls="i"):
     return (f'<svg class="{cls}" viewBox="0 0 24 24" width="{size}" height="{size}" fill="none" '
@@ -1354,7 +1415,7 @@ I_DOTS = ('<svg class="i" viewBox="0 0 24 24" width="18" height="18" fill="curre
           'aria-hidden="true"><circle cx="5.5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/>'
           '<circle cx="18.5" cy="12" r="1.6"/></svg>')
 
-CSS = TOKENS + """
+CSS = TOKENS + FX_CSS + FX_CSS_LAND + """
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg-primary);color:var(--text-primary);
@@ -1575,19 +1636,40 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon-180.png">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
-<style>{css}</style></head><body><main>
+<style>{css}</style></head><body class="{fx_class}">
+<div id="crt" aria-hidden="true"></div><main>
 <h1>{glyph}serverjack <small>{title}</small></h1>
 <p class="tagline">Jack into your server.</p>
 <p class="sysline">{sysline}</p>
 {error}
 {body}
-<p class="foot">Opening a session puts you in a terminal attached to that tmux session. Use the browser's back button to return here (the session keeps running).</p>
+<p class="foot">Opening a session puts you in a terminal attached to that tmux session. Use the browser's back button to return here (the session keeps running).
+<button class="fxt" id="fxt" type="button">CRT fx: on</button></p>
 <script>
 (function(){{
   // Desktop: "Open" pops the session out in its own window and this page
   // stays put. Phones: same tab (a pile of browser tabs is worse there).
   var touch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
   if (touch) document.body.classList.add('touch');
+  // CRT effects: the server put .fx on <body> (so the power-on plays before any
+  // script runs); localStorage overrides it either way and the toggle writes it.
+  var fxb = document.getElementById('fxt'), ls = null;
+  try {{ ls = localStorage.getItem('sj-fx'); }} catch (e) {{}}
+  function fxSet(on, save) {{
+    document.body.classList.toggle('fx', on);
+    fxb.textContent = 'CRT fx: ' + (on ? 'on' : 'off');
+    if (save) try {{ localStorage.setItem('sj-fx', on ? '1' : '0'); }} catch (e) {{}}
+  }}
+  fxSet(ls === '0' ? false : ls === '1' || document.body.classList.contains('fx'), false);
+  fxb.onclick = function () {{ fxSet(!document.body.classList.contains('fx'), true); }};
+  // Leaving through one of our own links: play the power-off, then navigate.
+  function powerOff(go) {{
+    if (!document.body.classList.contains('fx')) return go();
+    var done = false, fire = function () {{ if (!done) {{ done = true; go(); }} }};
+    document.body.classList.add('off');
+    document.body.addEventListener('animationend', fire, {{once: true}});
+    setTimeout(fire, 200);
+  }}
   function popout(href, name) {{
     var w = window.open(href, 'serverjack-' + name, 'popup=yes,width=1000,height=650');
     if (w) {{ w.focus(); return true; }} return false;   // blocked => caller falls back to navigating
@@ -1605,6 +1687,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
       var name = a.dataset.name || a.closest('.sess').querySelector('a.open').dataset.name;
       var wantPop = a.dataset.open === 'popout' || (!touch && !a.dataset.open);
       if (wantPop && popout('/s/' + encodeURIComponent(name) + '?popout=1', name)) e.preventDefault();
+      else if (a.href) {{ e.preventDefault(); powerOff(function () {{ location.href = a.href; }}); }}
       if (menu) menu.removeAttribute('open');
       return;
     }}
@@ -1741,7 +1824,7 @@ TERM_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon-180.png">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
-<style>{tokens}
+<style>{tokens}{fx_css}{fx_css_term}
 *{{box-sizing:border-box}}
 html,body{{margin:0;height:100%;background:#000;color:var(--text-primary);
   font:14px/1.4 var(--font-ui);overflow:hidden;overscroll-behavior:none;-webkit-text-size-adjust:100%}}
@@ -1869,6 +1952,7 @@ body.popout #popout,body.touch #popout{{display:none}}
     transition-duration:.01ms!important}}
 }}
 </style></head><body{body_class}>
+<div id="crt" aria-hidden="true"></div>
 <button id="handle" title="Show menu" aria-label="Show menu">{i_dots}</button>
 <div id="bar">
   <a class="ib" href="/" title="All sessions" aria-label="All sessions">{i_list}</a>
@@ -1885,9 +1969,11 @@ body.popout #popout,body.touch #popout{{display:none}}
   <div><label>…or type a path (created if new)</label><input name="dir_custom" autocapitalize="off" spellcheck="false" placeholder="~/new-or-existing/dir"></div>
   <div class="err" id="err"></div>
   <button class="btn" type="submit">Start &amp; open</button>
+  <button class="fxt" id="fxt" type="button">CRT fx: on</button>
 </form>
 <div id="winmenu" hidden></div>
-<div id="frame-wrap"><iframe id="frame" src="{src}" allow="clipboard-read; clipboard-write"></iframe></div>
+<div id="frame-wrap"><iframe id="frame" src="{src}" allow="clipboard-read; clipboard-write"></iframe>
+<div id="conn" aria-hidden="true"><span class="cap">connecting</span></div></div>
 <div id="keys">
   <button class="k" data-k="Escape">Esc</button>
   <button class="k" data-k="Tab">Tab</button>
@@ -1933,7 +2019,29 @@ APP_JS = r"""
   function textarea() { var d = tdoc(); return d && d.querySelector('.xterm-helper-textarea'); }
   function focusTerm() {
     var tries = 0;
-    (function f() { var ta = textarea(); if (ta) { ta.focus(); } else if (tries++ < 40) setTimeout(f, 100); })();
+    (function f() {
+      var ta = textarea();
+      if (ta) { ta.focus(); body.classList.remove('conn'); }
+      else if (tries++ < 40) setTimeout(f, 100); else body.classList.remove('conn');
+    })();
+  }
+  // ---- CRT effects. .fx arrives on <body> from the server so the power-on
+  // plays before this script runs; localStorage overrides it, the toggle writes it.
+  var fxb = document.getElementById('fxt'), fxls = null;
+  try { fxls = localStorage.getItem('sj-fx'); } catch (e) {}
+  function fxSet(on, save) {
+    body.classList.toggle('fx', on);
+    fxb.textContent = 'CRT fx: ' + (on ? 'on' : 'off');
+    if (save) try { localStorage.setItem('sj-fx', on ? '1' : '0'); } catch (e) {}
+  }
+  fxSet(fxls === '0' ? false : fxls === '1' || body.classList.contains('fx'), false);
+  fxb.onclick = function () { fxSet(!body.classList.contains('fx'), true); };
+  function powerOff(go) {
+    if (!body.classList.contains('fx')) return go();
+    var done = false, fire = function () { if (!done) { done = true; go(); } };
+    body.classList.add('off');
+    body.addEventListener('animationend', fire, {once: true});
+    setTimeout(fire, 200);
   }
   var KEYS = { Escape: 27, Tab: 9, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
                PageUp: 33, PageDown: 34, Enter: 13, Backspace: 8, Delete: 46, Home: 36, End: 35 };
@@ -2146,7 +2254,7 @@ APP_JS = r"""
   function setUrl(name) { history.replaceState(null, '', pageUrl(name)); document.title = name + ' · ' + TITLE; }
   function switchTo(name) {
     if (name === cur) { focusTerm(); return; }
-    cur = name; WINS = []; closeWins();
+    cur = name; WINS = []; closeWins(); body.classList.add('conn');
     frame.src = termSrc(name);
     setUrl(name); refresh();
   }
@@ -2244,7 +2352,7 @@ APP_JS = r"""
   // the landing page). Pop-out window: close it; normal tab: back to the list.
   document.getElementById('close').onclick = function () {
     if (POP) { window.close(); setTimeout(function () { location.href = '/'; }, 150); return; }
-    location.href = '/';
+    powerOff(function () { location.href = '/'; });
   };
   pop.onsubmit = function (e) {
     e.preventDefault(); err.classList.remove('on');
@@ -2283,6 +2391,7 @@ APP_JS = r"""
   });
   document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
   setInterval(refresh, 15000);
+  body.classList.add('conn');
   refresh(); hook(); touchCss(); scrollHooks(); pollMouse(); focusTerm();
 })();
 """
@@ -2581,7 +2690,7 @@ def render(error=None, name="", dir_custom="", cmd="", label="", sc_label="", sc
     ])
     err = "".join(f'<div class="err">{esc(e)}</div>' for e in (error, tools_error) if e)
     return PAGE.format(css=CSS, error=err, body=body, title=esc(TITLE), glyph=I_PROMPT,
-                       sysline=system_line())
+                       sysline=system_line(), fx_class=FX_CLASS)
 
 
 def render_term(name, popout=False):
@@ -2590,8 +2699,10 @@ def render_term(name, popout=False):
         title=esc(TITLE), tokens=TOKENS,
         i_dots=I_DOTS, i_list=I_LIST, i_plus=I_PLUS, i_keys=I_KEYBOARD, i_popout=I_POPOUT,
         i_close=I_CLOSE, i_send=I_SEND, i_refresh=I_REFRESH,
+        fx_css=FX_CSS, fx_css_term=FX_CSS_TERM,
         term_path_json=js(TERM_PATH), name_json=js(name), title_json=js(TITLE),
-        body_class=' class="popout"' if popout else "")
+        body_class=' class="%s"' % " ".join(
+            filter(None, ["popout" if popout else "", FX_CLASS])))
 
 
 TERM_DOWN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">

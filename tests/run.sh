@@ -149,7 +149,9 @@ tmux kill-session -t =pwauto 2>/dev/null
 for p in $(ss -ltnp 2>/dev/null | grep ':7694 ' | grep -o 'pid=[0-9]*' | cut -d= -f2); do kill "$p" 2>/dev/null; done
 
 suites=("$@"); [[ ${#suites[@]} -eq 0 ]] && suites=(pwtest pwclip pwmobile pwpop pwland pwauth pwwin)
-docker run --rm --network host -v "$PWD:/w" -w /w -v "$SOCK:$SOCK" -e TMUX_SOCK="$SOCK/default" "$IMG" bash -c '
-  pip install -q playwright==1.62.0 >/dev/null 2>&1
+docker run --rm --network host --add-host pypi.org:151.101.0.223 \
+  --add-host files.pythonhosted.org:151.101.0.223 \
+  -v "$PWD:/w" -w /w -v "$SOCK:$SOCK" -e TMUX_SOCK="$SOCK/default" "$IMG" bash -c '
+  pip install -q --timeout 15 --retries 1 playwright==1.62.0 >/dev/null 2>&1
   (apt-get -qq update && apt-get -qq install -y tmux) >/dev/null 2>&1
   for s in '"${suites[*]}"'; do echo "== $s"; python3 "$s.py"; done' 2>&1 | grep -v 'GL Driver\|maybe unknown option'

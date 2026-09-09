@@ -89,8 +89,34 @@ Interactive controls should have generous hit targets, especially on mobile. Vis
 6. **Keyboard-friendly by default.** Desktop interactions should support logical tab order, visible focus, Escape to dismiss transient UI, Enter where expected, and shortcuts when discoverable.
 7. **Touch-friendly by default.** Mobile should not be a shrunken desktop terminal. Maintain comfortable targets and use native-feeling transient patterns such as bottom sheets.
 8. **Accessibility is part of the aesthetic.** Maintain contrast, respect reduced-motion settings, expose semantic labels, and never encode state solely with green/red.
-9. **Motion should communicate mechanics.** Use short fades/slides for layer changes and subtle state transitions. Avoid ornamental animation, fake CRT flicker, or anything that slows operation.
+9. **Motion should communicate mechanics.** Use short fades/slides for layer changes and subtle state transitions. Avoid ornamental animation or anything that slows operation. The CRT effects below are the one deliberate exception, and they stay inside the budget in that section.
 10. **Terminal flavor comes from typography, color, language, and micro-details—not usability compromises.**
+
+## CRT effects
+
+A small, deliberately cheap CRT costume is allowed on top of the modern look: a
+tube warm-up on page load, a collapse-to-a-line when leaving through one of our
+own controls, a scanline sweep while the terminal connects, an almost invisible
+flicker/roll on the page background, and a static phosphor glow on the wordmark.
+
+Rules:
+
+- **Opacity and transform only.** Those are the properties a compositor can
+  animate without repainting. No canvas, no JS animation loop, no animated
+  `filter`, no images, no fonts.
+- **Everything is gated on `body.fx`**, which the server puts on `<body>`
+  (`SERVERJACK_FX=off` leaves it off) and a per-browser toggle overrides via
+  `localStorage['sj-fx']`. With the class removed, the UI is pixel-for-pixel what
+  it is without the feature.
+- **All of it is off under `@media (prefers-reduced-motion: reduce)`**, and the
+  static result must look the same as with the effects off.
+- **Never over the terminal at rest.** Overlays on `#frame-wrap` are
+  `pointer-events:none`, only exist during a transition, and stay under ~6%
+  alpha for any wash. The iframe's own content (ttyd/xterm) is never touched.
+- **No franchise references.** No mascots, vault marks, radiation symbols or
+  faux hardware bezels — this is a phosphor tube, not a prop.
+- **Budget:** the whole feature is roughly 120 lines of CSS + JS + markup. If an
+  effect costs more than that, it is not wanted.
 
 ## Copy and voice
 
