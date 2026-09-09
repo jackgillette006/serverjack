@@ -1332,15 +1332,15 @@ TOKENS = """
 # static look is exactly the same as with the effects off. See DESIGN.md.
 FX_CSS = """
 #crt{position:fixed;inset:0;z-index:99;pointer-events:none;display:none;background:var(--bg-primary)}
-body.fx #crt{display:block;animation:sj-on 320ms ease-out forwards}
+body.fx #crt{display:block;animation:sj-on 200ms ease-out forwards}
 #crt::after{content:"";position:absolute;left:0;right:0;top:calc(50% - 1px);height:2px;
   background:var(--accent);box-shadow:0 0 18px 2px rgb(57 255 136 / .5);opacity:0}
-body.fx #crt::after{animation:sj-line 320ms ease-out forwards}
+body.fx #crt::after{animation:sj-line 200ms ease-out forwards}
 @keyframes sj-on{0%{opacity:1}60%{opacity:.5}99%{opacity:0}100%{opacity:0;visibility:hidden}}
 @keyframes sj-line{0%{opacity:1;transform:scaleY(.002)}40%{opacity:1;transform:scaleY(.002)}
   100%{opacity:0;transform:scaleY(400)}}
 /* leaving through one of our own controls: collapse to a line, then a dot */
-body.fx.off{animation:sj-off 180ms ease-in forwards}
+body.fx.off{animation:sj-off 110ms ease-in forwards}
 @keyframes sj-off{0%{opacity:1;transform:none}60%{opacity:1;transform:scale(1,.004)}
   100%{opacity:0;transform:scale(.002,.004)}}
 /* the toggle itself: a ghost control, footer of the landing page / bottom of #pop */
@@ -1376,7 +1376,7 @@ FX_CSS_TERM = """
 body.fx.conn #conn{display:block}
 #conn::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;
   background:linear-gradient(90deg,transparent,rgb(57 255 136 / .5),transparent);
-  animation:sj-sweep 900ms linear infinite}
+  animation:sj-sweep 600ms linear infinite}
 #conn .cap{position:absolute;left:12px;bottom:10px;color:var(--accent);opacity:.5;
   font:500 11px/16px var(--font-mono);letter-spacing:.1em}
 @keyframes sj-sweep{0%{transform:translateY(0);opacity:0}12%{opacity:1}
@@ -1668,7 +1668,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     var done = false, fire = function () {{ if (!done) {{ done = true; go(); }} }};
     document.body.classList.add('off');
     document.body.addEventListener('animationend', fire, {{once: true}});
-    setTimeout(fire, 200);
+    setTimeout(fire, 130);
   }}
   function popout(href, name) {{
     var w = window.open(href, 'serverjack-' + name, 'popup=yes,width=1000,height=650');
@@ -2041,7 +2041,7 @@ APP_JS = r"""
     var done = false, fire = function () { if (!done) { done = true; go(); } };
     body.classList.add('off');
     body.addEventListener('animationend', fire, {once: true});
-    setTimeout(fire, 200);
+    setTimeout(fire, 130);
   }
   var KEYS = { Escape: 27, Tab: 9, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
                PageUp: 33, PageDown: 34, Enter: 13, Backspace: 8, Delete: 46, Home: 36, End: 35 };
