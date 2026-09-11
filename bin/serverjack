@@ -148,7 +148,10 @@ explanations shown beside those options; keep them to a single sentence.
 "paths" lists extra directories to look for "bin" in -- a coding CLI often
 installs into a private bin dir that only your .bashrc adds to PATH; the ones
 that exist are appended to the PATH used for the installed/login checks, the
-daemon commands and every session serverjack starts.
+daemon commands and every session serverjack starts. Shell globs are allowed
+("~/.local/share/pnpm/*/bin"). nvm's node directories are always appended
+too, so a CLI installed with `npm install -g` under nvm is found without any
+configuration.
 Only id, label and bin are required. Example:
 
     [
@@ -195,6 +198,7 @@ import json
 import os
 import re
 import getpass
+import glob
 import shlex
 import shutil
 import socket
@@ -672,16 +676,45 @@ def load_tools():
     return tools, error
 
 
+def _nvm_bins():
+    """nvm keeps node -- and every CLI `npm install -g` puts beside it -- in a
+    versioned directory that only nvm.sh adds to PATH, so a user unit never
+    sees it. Offer them all, the `nvm alias default` one first, then newest."""
+    root = os.path.expanduser("~/.nvm/versions/node")
+    try:
+        vers = [d for d in os.listdir(root)
+                if os.path.isdir(os.path.join(root, d, "bin"))]
+    except OSError:
+        return []
+    vers.sort(key=lambda v: [int(p) if p.isdigit() else -1
+                             for p in v.lstrip("v").split(".")], reverse=True)
+    try:
+        with open(os.path.expanduser("~/.nvm/alias/default")) as f:
+            default = f.read().strip()
+    except OSError:
+        default = ""
+    for cand in (default, "v" + default):
+        if cand in vers:
+            vers.remove(cand)
+            vers.insert(0, cand)
+            break
+    return [os.path.join(root, v, "bin") for v in vers]
+
+
 def _tool_path():
-    """PATH_ENV plus every existing directory a tool declares in "paths".
-    Coding CLIs like to install into a private bin dir that only .bashrc adds
-    to PATH; serverjack runs from a systemd unit and never sees that."""
+    """PATH_ENV plus every existing directory a tool declares in "paths"
+    (shell globs allowed), plus nvm's node directories. Coding CLIs like to
+    install into a private bin dir that only .bashrc adds to PATH; serverjack
+    runs from a systemd unit and never sees that."""
     out = PATH_ENV.split(":")
+    extra = []
     for t in load_tools()[0]:
-        for d in t.get("paths") or []:
-            d = os.path.expanduser(str(d))
-            if d and d not in out and os.path.isdir(d):
-                out.append(d)
+        for pat in t.get("paths") or []:
+            extra.extend(sorted(glob.glob(os.path.expanduser(str(pat)))))
+    extra.extend(_nvm_bins())
+    for d in extra:
+        if d and d not in out and os.path.isdir(d):
+            out.append(d)
     return ":".join(out)
 
 
@@ -1421,7 +1454,9 @@ html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg-primary);color:var(--text-primary);
   font:14px/1.5 var(--font-ui);overflow-x:hidden;
   background-image:repeating-linear-gradient(180deg,rgb(57 255 136 / .012) 0 1px,transparent 1px 3px)}
-main{max-width:760px;margin:0 auto;padding:var(--space-4) var(--space-3) var(--space-6)}
+main{max-width:760px;margin:0 auto;
+  padding:calc(var(--space-4) + env(safe-area-inset-top)) calc(var(--space-3) + env(safe-area-inset-right))
+    calc(var(--space-6) + env(safe-area-inset-bottom)) calc(var(--space-3) + env(safe-area-inset-left))}
 h1{margin:0;font:600 20px/28px var(--font-mono);letter-spacing:-.01em;
   display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
 h1 .glyph{color:var(--accent);flex:none}
