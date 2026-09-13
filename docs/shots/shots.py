@@ -43,13 +43,13 @@ with sync_playwright() as p:
     b = p.webkit.launch()
     ctx = b.new_context(**p.devices["iPhone 14"])
     page = ctx.new_page()
-    # make.sh already fed the "api" session its ls / uname -sr transcript
+    # make.sh already fed the "game" session its ls / git log transcript
     # directly over tmux (send-keys), so the pane has fixed, settled content
     # before we ever connect -- no live typing here, and so nothing to race
     # against ttyd's WebSocket (that used to occasionally desync the on-
     # screen xterm from the real pane under load, e.g. a concurrent
     # tests/run.sh).
-    page.goto(f"{BASE}/s/api", wait_until="networkidle")
+    page.goto(f"{BASE}/s/game", wait_until="networkidle")
     page.wait_for_selector("#tabs .tab.on")
     term = page.frame_locator("#frame").locator(".xterm-helper-textarea")
     term.wait_for(state="attached", timeout=15000)
@@ -65,7 +65,7 @@ with sync_playwright() as p:
         rendered = page.locator("#screen-text").inner_text()
         page.click("#screen-close")
         page.wait_for_selector("#screen", state="hidden", timeout=5000)
-        if "uname -sr" in rendered and "Linux" in rendered:
+        if "git log" in rendered and "Initial commit" in rendered:
             break
     else:
         raise RuntimeError(f"terminal never rendered the transcript: {rendered!r}")

@@ -8,23 +8,29 @@ Everything it does ends in the same place: a command running inside a tmux
 session, with a terminal on your screen. The landing page has three panels,
 in the order you actually need them from a phone:
 
-  1. Run a command  -- an agent told you to run `sudo apt install ffmpeg` and
-     it can't do that itself. Paste it, tap Run: it starts in a new session in
-     front of a login shell, so a sudo password prompt works and the output
-     stays on screen afterwards.
-  2. Sessions       -- list, open, kill; plus a plain new shell.
-  3. Agents         -- an accordion with one collapsed row per coding CLI
-     (Claude Code, Codex, OpenCode, Copilot, Gemini). The row shows the tool
-     and its state: not installed / installed but not logged in / ready, plus
-     a pill for any server or daemon. Open one (they are exclusive, native
-     <details name=...>, no JS) and the body offers one option row per way of
-     starting it -- here in this terminal, with remote control, as a server,
-     as a daemon -- each with a one-line note on the difference. Every button
-     just launches a command in a session and shows you the terminal --
-     install scripts print progress, login flows print a URL or a device code,
-     remote-control servers print a QR code. serverjack never parses what a
-     tool prints. The one exception is the Codex daemon, whose start/stop are
-     quick non-interactive commands.
+  1. Start a session -- a segmented Shell / <agent> choice, a directory
+     picker (default ~), and, for Shell only, an optional command box: an
+     agent told you to run `sudo apt install ffmpeg` and can't do that
+     itself, so paste it and tap Start -- it runs in front of a login shell,
+     so a sudo password prompt works and the output stays on screen
+     afterwards. Picking an agent instead just runs its plain command
+     (`claude`, `codex`, ...) in the chosen directory; there is no
+     remote-control/server-mode choice here, that lives in Agent servers
+     below.
+  2. Sessions        -- list, open, kill.
+  3. Agent servers    -- an accordion with one collapsed row per coding CLI
+     that still needs something: not installed, installed but not logged in,
+     or ready with a server, daemon or extra action to offer. A tool that is
+     ready with nothing else to configure (just Gemini CLI, by default) has
+     no row here -- it only ever needed the picker at the top. Open one (they
+     are exclusive, native <details name=...>, no JS) and the body offers one
+     option row per way of running it in the background -- a remote-control
+     server, a daemon, a pairing action -- each with a one-line note on the
+     difference. Every button just launches a command in a session and shows
+     you the terminal -- install scripts print progress, login flows print a
+     URL or a device code, remote-control servers print a QR code. serverjack
+     never parses what a tool prints. The one exception is the Codex daemon,
+     whose start/stop are quick non-interactive commands.
 
 Opening a session goes to /s/<name>: a slim menu bar (session tabs, + new,
 x close, pop-out, soft keys for phones) over the terminal in a frame at
@@ -45,11 +51,16 @@ Routes
     GET  /api/tools            one state object per agent
     GET  /api/screen?name=     the session's pane as plain text
     GET  /api/status           counts + agent + machine summary, for a dashboard
-    POST /new, /api/new        create a session
+    POST /start                the Start a session card: a shell (with an
+                               optional command) or an agent, in one form
+    POST /new, /api/new        create a session -- kept for the terminal
+                               page's own new-session form; the landing page
+                               posts to /start instead
     POST /kill, /api/kill      kill one
     POST /rename, /api/rename  rename one
     POST /api/window           select a tmux window
-    POST /run                  the paste-and-run box
+    POST /run                  legacy alias for /start's "shell + command"
+                               case, kept working for anything still using it
     POST /shortcuts/add, /shortcuts/del, /shortcuts/run
     POST /tools (dispatches to /tools/install, /tools/login, /tools/open,
          /tools/action, /tools/server, /tools/daemon, /tools/autostart)
@@ -567,12 +578,6 @@ BUILTIN_TOOLS = [
         "login_check": "claude auth status",
         "run": "claude",
         "run_note": "Interactive Claude Code in this terminal only.",
-        "actions": [
-            {"label": "Open with remote control", "cmd": "claude --remote-control",
-             "dir": True,
-             "note": "The same interactive session, also steerable from the Claude app "
-                     "and claude.ai/code. Best for one session you want on both."},
-        ],
         "server": {
             "label": "Remote Control server",
             "cmd": "claude remote-control",
@@ -632,10 +637,6 @@ BUILTIN_TOOLS = [
         "login": "copilot", "login_note": "type /login at the prompt",
         "run": "copilot",
         "run_note": "Interactive Copilot in this terminal only.",
-        "actions": [
-            {"label": "Open with remote control", "cmd": "copilot --remote", "dir": True,
-             "note": "Same session, also steerable from GitHub Mobile or github.com."},
-        ],
     },
     {
         "id": "gemini", "label": "Gemini CLI", "bin": "gemini",
@@ -1657,6 +1658,15 @@ h2 + .sess:has(+ :not(.sess)){border-radius:var(--radius-md)}
 .btn.wide{width:100%;padding:12px;min-height:44px;font-size:14px}
 .btn.sm{padding:7px 11px;min-height:32px;font-size:12px}
 .btns{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center}
+/* Start-a-session's Shell/agent choice: pills over visually-hidden radios */
+.seg{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.seg .pill{position:relative;cursor:pointer;padding:7px 14px;font-size:12px;user-select:none}
+.seg .pill::before{content:none}
+.seg .pill input{position:absolute;opacity:0;width:1px;height:1px;margin:0;pointer-events:none}
+.seg .pill:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+.seg .pill.on,.seg .pill:has(input:checked){color:var(--accent);
+  border-color:rgb(57 255 136 / .35);background:var(--accent-wash)}
+@media (pointer:coarse){.seg .pill{padding:9px 16px;min-height:38px}}
 form.row{display:flex;flex-direction:column;gap:10px}
 label{font:500 12px/16px var(--font-mono);color:var(--text-secondary);letter-spacing:.02em}
 input,select,textarea{width:100%;padding:11px 12px;border-radius:var(--radius-sm);
@@ -1898,24 +1908,54 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     }}
     cb.form.submit();
   }});
+  // Start a session: Shell shows the command box; an agent hides it and
+  // explains what it runs instead (its own command, fixed, in the directory
+  // above). Delegated so the one radio checked on load is synced too.
+  var cmdwrap = document.getElementById('cmdwrap'), toolhint = document.getElementById('toolhint');
+  function syncStart() {{
+    var checked = document.querySelector('input[name=what]:checked');
+    document.querySelectorAll('.seg .pill').forEach(function (p) {{
+      p.classList.toggle('on', p.querySelector('input').checked);
+    }});
+    if (!checked || checked.value === 'shell') {{
+      cmdwrap.hidden = false;
+      toolhint.hidden = true;
+    }} else {{
+      cmdwrap.hidden = true;
+      toolhint.textContent = 'Runs ';
+      var code = document.createElement('code');
+      code.textContent = checked.dataset.run || '';
+      toolhint.appendChild(code);
+      toolhint.appendChild(document.createTextNode(' in the directory above.'));
+      toolhint.hidden = false;
+    }}
+  }}
+  document.addEventListener('change', function (e) {{
+    if (e.target.name === 'what') syncStart();
+  }});
+  syncStart();
 }})();
 </script>
 </main></body></html>
 """
 
-RUN_CARD = """<h2>Run a command</h2>
-<div class="card"><form class="row" method="post" action="/run">
-  <div><textarea id="cmd" name="cmd" rows="2" required autocapitalize="off" spellcheck="false"
-    placeholder="Paste the command here, e.g. sudo apt install ffmpeg">{cmd}</textarea></div>
+START_CARD = """<h2>Start a session</h2>
+<div class="card"><form class="row" id="startform" method="post" action="/start">
+  <div class="seg">{what_options}</div>
   <div class="dirline">
     <select id="dir" name="dir">{dirs}</select>
-    <input name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="…or type a path (created if new)"></div>
-  <button class="btn wide" type="submit">Run</button>
-  <p class="hint">Runs in a new terminal session, so password prompts (sudo) work. The session stays open afterwards.</p>
-  <details class="inline"{save_open}><summary>Save as a shortcut</summary>
-    <div class="save"><input type="checkbox" id="save" name="save" value="1"><label for="save">Keep this command in Shortcuts</label></div>
-    <input name="label" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Name it, e.g. Update packages" value="{label}">
-  </details>
+    <input name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="…or type a path (created if new)" value="{dir_custom}"></div>
+  <div id="cmdwrap">
+    <textarea id="cmd" name="cmd" rows="2" autocapitalize="off" spellcheck="false"
+      placeholder="Optional: a command to run, e.g. sudo apt install ffmpeg">{cmd}</textarea>
+    <details class="inline"{save_open}><summary>Save as a shortcut</summary>
+      <div class="save"><input type="checkbox" id="save" name="save" value="1"><label for="save">Keep this command in Shortcuts</label></div>
+      <input name="label" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Name it, e.g. Update packages" value="{label}">
+    </details>
+  </div>
+  <p class="hint" id="toolhint" hidden></p>
+  <button class="btn wide" type="submit">Start</button>
+  <p class="hint">Opens a new terminal session. A shell stays open after its command finishes, so password prompts work.</p>
 </form></div>"""
 
 ADD_SHORTCUT_CARD = """<details class="card" id="addsc"{addsc_open}><summary>Add a shortcut</summary>
@@ -1929,18 +1969,6 @@ ADD_SHORTCUT_CARD = """<details class="card" id="addsc"{addsc_open}><summary>Add
   <div><label for="sc_dir_custom">…or type a path (created if new)</label>
   <input id="sc_dir_custom" name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="~/new-or-existing/dir"></div>
   <button class="btn wide" type="submit">Save shortcut</button>
-</form></details>"""
-
-NEW_SHELL_CARD = """<details class="card" id="newshell"><summary>New shell</summary>
-<form class="row" method="post" action="/new" id="newform">
-  <input type="hidden" name="kind" value="shell">
-  <div><label for="ns_name">Name <span class="opt">(optional)</span></label>
-  <input id="ns_name" name="name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="auto (shell, shell-2, …)" value="{name}"></div>
-  <div><label for="ns_dir">Directory</label>
-  <select id="ns_dir" name="dir">{dirs}</select></div>
-  <div><label for="ns_dir_custom">…or type a path (created if new)</label>
-  <input id="ns_dir_custom" name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="~/new-or-existing/dir" value="{dir_custom}"></div>
-  <button class="btn wide" type="submit">Start &amp; open</button>
 </form></details>"""
 
 SHORTCUT_CARD = """<div class="card sess">
@@ -2608,9 +2636,16 @@ def kind_options():
 
 
 def dir_options():
+    """<option> list for every directory picker on the page. ~ always comes
+    first and pre-selected -- dir_choices()'s own order (a real project dir
+    first, ~ last) is untouched, only reordered here, so every picker on the
+    page defaults to the same place."""
+    dirs = dir_choices()
+    ordered = [HOME] + [d for d in dirs if d != HOME]
     return "\n".join(
-        f'<option value="{esc(d)}">{esc(d.replace(HOME, "~", 1))}</option>'
-        for d in dir_choices())
+        f'<option value="{esc(d)}"{" selected" if d == HOME else ""}>'
+        f'{esc(d.replace(HOME, "~", 1))}</option>'
+        for d in ordered)
 
 
 def note(text):
@@ -2704,8 +2739,6 @@ def tool_card(t, st, dirs, open_=False):
                + "> start at boot</label>")
         return form, box
 
-    open_btn = '<button class="btn sec" type="submit" name="do" value="/tools/open">Open</button>'
-
     if not st["installed"]:
         if not st["needs_ok"]:
             out.append(note("Needs Node.js (node + npm), which isn\u2019t installed on this server."))
@@ -2722,14 +2755,9 @@ def tool_card(t, st, dirs, open_=False):
         out.append('<form method="post" action="/tools/login">' + hid
                    + '<button class="btn sec wide" type="submit">Log in</button></form>')
         out.append(note(esc(t.get("login_note", ""))))
-        if t.get("run"):
-            out.append('<details class="inline"><summary>Open anyway</summary>'
-                       + main_form('<div class="btns">' + open_btn + "</div>") + "</details>")
 
     else:
         rows, aux = [], []
-        if t.get("run"):
-            rows.append(orow("Open", esc(t.get("run_note", "")), open_btn))
 
         for i, a in enumerate(t.get("actions") or []):
             label = esc(a.get("label") or a.get("cmd", ""))
@@ -2821,8 +2849,27 @@ def tool_card(t, st, dirs, open_=False):
     return "\n".join(x for x in out if x)
 
 
-def render(error=None, name="", dir_custom="", cmd="", label="", sc_label="", sc_cmd="",
-           addsc_open=False, save_open=False, open_tool=""):
+def what_option(value, label, checked=False, run_cmd=None):
+    """One pill of the Start-a-session segmented choice. The radio is the
+    real control (visually hidden, still tabbable); data-run is read by the
+    page's JS to word the hint under the command box."""
+    run_attr = f' data-run="{esc(run_cmd)}"' if run_cmd else ""
+    return (f'<label class="pill"><input type="radio" name="what" value="{esc(value)}"'
+            + (" checked" if checked else "") + run_attr + ">" + esc(label) + "</label>")
+
+
+def wants_agent_card(t, st):
+    """Whether a tool earns a row in Agent servers: something to install, log
+    into, or a background process to run. A ready tool with nothing else
+    going on starts from the Start-a-session picker instead and needs no
+    row here."""
+    if not st["installed"] or st["logged_in"] is False:
+        return True
+    return bool(t.get("server") or t.get("daemon") or t.get("actions"))
+
+
+def render(error=None, dir_custom="", cmd="", label="", sc_label="", sc_cmd="",
+           addsc_open=False, save_open=False, open_tool="", what="shell"):
     dirs = dir_options()
     sess = sessions()
     if sess:
@@ -2838,7 +2885,7 @@ def render(error=None, name="", dir_custom="", cmd="", label="", sc_label="", sc
                                        i_copy=I_COPY, i_link=I_LINK) if SSH_TARGET else "",
         ) for s in sess)
     else:
-        cards = '<div class="empty">No sessions running. Run a command above, or start a shell below.</div>'
+        cards = '<div class="empty">No sessions running. Start one above.</div>'
     scs = load_shortcuts()
     # The built-in row first, and only when this really is a git checkout --
     # a tarball copy has nothing to pull.
@@ -2853,22 +2900,43 @@ def render(error=None, name="", dir_custom="", cmd="", label="", sc_label="", sc
         shortcuts = builtin + '\n<div class="empty">None yet. Tick “Save as a shortcut” above to keep a command here.</div>'
 
     tools, tools_error = load_tools()
-    if tools:
-        # All rows collapsed, except the one whose button produced this error.
-        agents = "\n".join(tool_card(t, st, dirs, open_=(t["id"] == open_tool))
-                           for t, st in zip(tools, tool_states(tools)))
-    else:
+    pairs = list(zip(tools, tool_states(tools))) if tools else []
+
+    # Start-a-session's segmented choice: Shell, then every installed tool
+    # with a run command, in registry order -- the same test tool_kinds()
+    # uses, but read straight off the states already fetched above instead of
+    # a second round of shutil.which() calls.
+    what_ids = {"shell"} | {t["id"] for t, st in pairs if st["installed"] and t.get("run")}
+    checked = what if what in what_ids else "shell"
+    what_opts = [what_option("shell", "Shell", checked=(checked == "shell"))]
+    what_opts.extend(what_option(t["id"], t.get("label") or t["id"],
+                                 checked=(checked == t["id"]), run_cmd=t["run"])
+                     for t, st in pairs if st["installed"] and t.get("run"))
+
+    if not pairs:
         agents = '<div class="empty">No agents configured.</div>'
+    else:
+        # All rows collapsed, except the one whose button produced this error.
+        card_pairs = [(t, st) for t, st in pairs if wants_agent_card(t, st)]
+        if card_pairs:
+            agents = "\n".join(tool_card(t, st, dirs, open_=(t["id"] == open_tool))
+                               for t, st in card_pairs)
+        else:
+            agents = ('<div class="empty">Nothing to set up: every agent is installed and '
+                      'starts from the top of the page.</div>')
 
     body = "\n".join([
-        RUN_CARD.format(dirs=dirs, cmd=esc(cmd), label=esc(label),
-                        save_open=" open" if save_open else ""),
+        START_CARD.format(dirs=dirs, dir_custom=esc(dir_custom), cmd=esc(cmd), label=esc(label),
+                          save_open=" open" if save_open else "",
+                          what_options="\n".join(what_opts)),
         "<h2>Shortcuts</h2>", shortcuts,
         ADD_SHORTCUT_CARD.format(dirs=dirs, sc_label=esc(sc_label), sc_cmd=esc(sc_cmd),
                                  addsc_open=" open" if addsc_open else ""),
         "<h2>Sessions</h2>", cards,
-        NEW_SHELL_CARD.format(dirs=dirs, name=esc(name), dir_custom=esc(dir_custom)),
-        "<h2>Agents</h2>", agents,
+        "<h2>Agent servers</h2>",
+        '<p class="hint">Install, log in, and the background servers the phone apps connect '
+        'to. Interactive sessions start at the top of the page.</p>',
+        agents,
     ])
     err = "".join(f'<div class="err">{esc(e)}</div>' for e in (error, tools_error) if e)
     return PAGE.format(css=CSS, error=err, body=body, title=esc(TITLE), glyph=I_PROMPT,
@@ -3358,6 +3426,53 @@ class Handler(BaseHTTPRequestHandler):
         err = create_session(kind, name, cwd, command=f.get("cmd") if kind == "shell" else None)
         return name, err
 
+    def do_start(self, f):
+        """The Start a session card: what=shell runs an optional command in
+        front of a login shell (exactly /run, plus a plain shell when there is
+        no command); any other what is a tool id from tool_kinds() and opens
+        it (exactly /tools/open), auto-named. Any error re-renders the page
+        with the form's own state -- what, dir, the typed command -- so the
+        right radio is still checked and nothing typed is lost."""
+        what = f.get("what") or "shell"
+        cmd = f.get("cmd", "").strip()
+        label = f.get("label", "")
+        save_open = bool(f.get("save"))
+
+        def fail(msg, status=400):
+            return self.send_html(render(msg, dir_custom=f.get("dir_custom", ""), cmd=cmd,
+                                         label=label, save_open=save_open, what=what), status)
+
+        if what != "shell" and what not in tool_kinds():
+            return fail("Unknown session type.")
+
+        cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
+        if err:
+            return fail(err)
+
+        if what == "shell":
+            if cmd:
+                name = auto_name(cmd.split()[0])
+                err = create_session("shell", name, cwd, command=cmd)
+                if err:
+                    return fail(err, 500)
+                if f.get("save"):
+                    add_shortcut(label, cmd, cwd)
+            else:
+                name, err = validate_name("", required=False, base="shell")
+                if err:
+                    return fail(err)
+                err = create_session("shell", name, cwd, command=None)
+                if err:
+                    return fail(err, 500)
+            return self.redirect(term_href(name))
+
+        name = auto_name(what)
+        err = create_session(what, name, cwd)
+        clear_tool_cache(what)
+        if err:
+            return fail(err, 500)
+        return self.redirect(term_href(name))
+
     def do_POST(self):
         ok, _login = self.gate()
         if not ok:
@@ -3381,10 +3496,13 @@ class Handler(BaseHTTPRequestHandler):
                 f["i"] = arg
             path = do
 
-        if path == "/new":                       # landing-page form
+        if path == "/start":                      # the Start a session card
+            return self.do_start(f)
+
+        if path == "/new":                        # the terminal page's own new-session form
             name, err = self.new_from_form(f)
             if err:
-                return self.send_html(render(err, f.get("name", ""), f.get("dir_custom", ""), f.get("cmd", "")), 400)
+                return self.send_html(render(err, dir_custom=f.get("dir_custom", ""), cmd=f.get("cmd", "")), 400)
             return self.redirect(term_href(name))
 
         if path == "/api/new":                   # menu bar
@@ -3468,7 +3586,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_html(render(err), 500)
             return self.redirect(term_href(name))
 
-        if path == "/run":                       # the paste box at the top
+        if path == "/run":                       # legacy alias for /start's "shell + cmd" case
             cmd = f.get("cmd", "").strip()
             label = f.get("label", "")
             if not cmd:

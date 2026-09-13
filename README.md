@@ -44,19 +44,21 @@ No pip, no npm, no compiler, no root.
 serverjack is a web front door to a home server, meant to be reached over
 Tailscale from an iPhone or a laptop. Open a URL and you get:
 
-- **Run a command** — a paste box at the top. An agent tells you to run
-  something it can't (`sudo apt install ...`, a service restart, a disk
-  check): paste it, tap Run, and you land in a real terminal with it running.
+- **Start a session** — pick Shell or an installed agent (Claude Code, Codex,
+  OpenCode, GitHub Copilot CLI, Gemini CLI), a directory (defaults to `~`),
+  and tap Start. Shell doubles as the paste-and-run box: an agent tells you to
+  run something it can't (`sudo apt install ...`, a service restart, a disk
+  check), type it in and you land in a real terminal with it running.
 - **Sessions** — every tmux session on the box as a button. Tap to attach.
   Any "type a path" field accepts a directory that doesn't exist yet and
   creates it, so starting a shell or an agent in a new project is one step.
   Open, rename, kill, pop out into its own window on a desktop, or hand off to
   a real SSH client.
-- **Agents** — a collapsed accordion row per coding CLI (Claude Code, Codex,
-  OpenCode, GitHub Copilot CLI, Gemini CLI). Each one lists the ways to start
-  it side by side — install, log in, open, open with remote control, start
-  its remote-control server — every option a button that runs a command in a
-  tmux session and shows you the terminal.
+- **Agent servers** — a collapsed accordion row per coding CLI that still
+  needs something: install, log in, or start the background server the phone
+  app connects to (Claude's remote-control server, Codex's daemon and
+  pairing, OpenCode's server). A tool that's ready with nothing else to
+  configure has no row here — it only ever needed the picker above.
 - **A real terminal** — [ttyd](https://github.com/tsl0922/ttyd) in an iframe,
   with session tabs, a tmux-window picker, a phone soft-key row (Esc, Tab,
   Shift-Tab, Ctrl, arrows, ^C, PgUp/PgDn, Paste, Copy), and "Add to Home
@@ -70,11 +72,11 @@ Code Remote Control, VibeTunnel, plain ttyd, and Zellij's web client.
 
 ## Contents
 
-- [Run a command](#run-a-command)
+- [Start a session](#start-a-session)
   - [Update serverjack](#update-serverjack)
 - [Sessions](#sessions)
   - [tmux windows](#tmux-windows)
-- [Agents](#agents)
+- [Agent servers](#agent-servers)
   - [Start at boot](#start-at-boot)
 - [Why this and not X](#why-this-and-not-x)
 - [Security model, read this first](#security-model-read-this-first)
@@ -91,24 +93,29 @@ Code Remote Control, VibeTunnel, plain ttyd, and Zellij's web client.
 - [Changelog](#changelog)
 - [License](#license)
 
-## Run a command
+## Start a session
 
 This is the reason serverjack exists. Coding agents can do almost everything
 now except the things that need a password, a device, or a human at the
 machine. When one stops and says "run this yourself", you are usually away
 from the server with a phone in your hand.
 
-Paste the command into the box and tap Run. serverjack starts a new tmux
-session, runs the command **in front of a login shell**, and drops you into
-the terminal. So:
+Pick **Shell** or an installed agent, a directory (defaults to `~`), and tap
+**Start**:
 
-- an interactive `sudo` prompt appears and you can type the password;
-- anything that asks a question (apt, a login flow, a confirmation) works;
-- when the command finishes the session stays open at a shell prompt, so you
-  can see the output and keep going instead of watching a session vanish.
+- **Shell** opens a plain login shell, or — type a command first — runs it
+  **in front of** that login shell: an interactive `sudo` prompt works,
+  anything that asks a question (apt, a login flow, a confirmation) works,
+  and when the command finishes the session stays open at a prompt so you can
+  see the output instead of watching it vanish.
+- An **agent** just runs its plain command (`claude`, `codex`, ...) in the
+  directory you picked. There's no separate "remote control" or "server"
+  choice here — those are background processes the phone apps connect to,
+  and live in [Agent servers](#agent-servers) below.
 
-Tick "save as a shortcut" and it becomes a one-tap button in the Shortcuts
-list for next time. Shortcuts live in `~/.config/serverjack/shortcuts.json`.
+Tick "Save as a shortcut" (only offered with a Shell command) and it becomes
+a one-tap button in the Shortcuts list for next time. Shortcuts live in
+`~/.config/serverjack/shortcuts.json`.
 
 ### Update serverjack
 
@@ -156,14 +163,21 @@ Selecting a window is a tmux operation, not a browser one, so **every client
 attached to that session moves with you** — the phone and the desktop are
 looking at the same session. That is tmux, not serverjack.
 
-## Agents
+## Agent servers
 
-The agents are an **accordion**: one collapsed row per tool, so five tools
-take about the height of one card. The row itself is the summary — tool name,
-state, and a pill for any server or daemon that is up — and tapping it opens
-the body while closing whichever row was open (native `<details name="agent">`,
-no JavaScript). serverjack never parses the tool's output; every button just
-launches a command in a tmux session and shows you the terminal.
+Interactive agent sessions start from [Start a session](#start-a-session)
+above. This section is for everything else a coding CLI needs: installing
+it, logging in, and starting the background server the phone apps connect to
+(Claude's remote-control server, Codex's daemon and pairing, OpenCode's
+server).
+
+It's an **accordion**: one collapsed row per tool that still needs something,
+so it doesn't grow past what's actually unfinished. The row itself is the
+summary — tool name, state, and a pill for any server or daemon that is up —
+and tapping it opens the body while closing whichever row was open (native
+`<details name="agent">`, no JavaScript). serverjack never parses the tool's
+output; every button just launches a command in a tmux session and shows you
+the terminal.
 
 A row is in one of three states:
 
@@ -171,20 +185,21 @@ A row is in one of three states:
    then runs the vendor's official installer in a visible terminal.
 2. **Installed, not logged in** — a Log in button. These flows print a URL or
    a device code, which is fine to read and tap in a phone browser.
-3. **Ready** — the directory picker once at the top, then one **option row**
-   per way of starting the tool: its label, a one-line note on how it differs
-   from the others, and the button. They end with a quiet
-   "Log in / switch account".
+3. **Ready, with something to run in the background** — one **option row**
+   per server, daemon or extra action: its label, a one-line note on how it
+   differs from the others, and the button. They end with a quiet
+   "Log in / switch account". A tool that's ready with nothing else to
+   configure (Gemini CLI, by default) has no row here at all.
 
-Ready-state options, per tool:
+Background servers, per tool:
 
-| Tool | Open | Remote control | Server / daemon |
-|---|---|---|---|
-| Claude Code | `claude` — interactive Claude Code in this terminal only | **Open with remote control**: `claude --remote-control`, the same interactive session, also steerable from the Claude app and claude.ai/code | **Remote Control server**: `claude remote-control`, started in the directory you pick, in a tmux session named `claude-remote-<dir>`. No local chat — the Claude app starts sessions here on demand, several at once. One server per project directory, so the row lists every running one with its directory and Start adds another; prints a QR code, gives up after ~10 minutes without network |
-| Codex | `codex` — interactive Codex in this terminal only | **Pair with phone**: `codex remote-control pair`, prints a short-lived pairing code | **Remote control daemon**: `codex remote-control start` / `stop` (status from `~/.codex/app-server-daemon/app-server.pid`). The ChatGPT app connects to it and opens Codex sessions in any directory on this machine |
-| OpenCode | `opencode` — interactive TUI in this terminal | — | **Server for the mobile app**: `opencode serve` in tmux session `opencode-serve`. Binds 127.0.0.1:4096 by default; override `cmd` in `tools.json` to reach it over Tailscale |
-| GitHub Copilot CLI | `copilot` — interactive Copilot in this terminal only | **Open with remote control**: `copilot --remote`, same session, also steerable from GitHub Mobile or github.com | — |
-| Gemini CLI | `gemini` — interactive Gemini CLI in this terminal | — | — |
+| Tool | Server / daemon |
+|---|---|
+| Claude Code | **Remote Control server**: `claude remote-control`, started in the directory you pick, in a tmux session named `claude-remote-<dir>`. No local chat — the Claude app starts sessions here on demand, several at once. One server per project directory, so the row lists every running one with its directory and Start adds another; prints a QR code, gives up after ~10 minutes without network |
+| Codex | **Pair with phone**: `codex remote-control pair`, prints a short-lived pairing code, plus a **Remote control daemon**: `codex remote-control start` / `stop` (status from `~/.codex/app-server-daemon/app-server.pid`). The ChatGPT app connects to the daemon and opens Codex sessions in any directory on this machine |
+| OpenCode | **Server for the mobile app**: `opencode serve` in tmux session `opencode-serve`. Binds 127.0.0.1:4096 by default; override `cmd` in `tools.json` to reach it over Tailscale |
+| GitHub Copilot CLI | — |
+| Gemini CLI | — |
 
 Install and login commands: Claude Code
 `curl -fsSL https://claude.ai/install.sh | bash` / `claude auth login`; Codex
@@ -502,7 +517,7 @@ so when it takes one down. `uninstall.sh` turns off the `/` mount (and that old
 | `SERVERJACK_HTTPS_PORT` | `443` | HTTPS port `tailscale serve` publishes on, and the only one `uninstall.sh` turns off — `443`, `8443` or `10000`. Give a second account on the machine its own |
 | `SERVERJACK_TITLE` | hostname | page title, tab title, PWA name |
 | `SERVERJACK_DIRS` | `~/projects:~/src:~/code:~` | directories offered when starting a session |
-| `SERVERJACK_TOOLS` | unset (all) | optional comma-separated tool ids: restricts and orders the Agent rows, e.g. `claude,codex` |
+| `SERVERJACK_TOOLS` | unset (all) | optional comma-separated tool ids: restricts and orders the agent choices, both the Start a session radios and the Agent servers rows, e.g. `claude,codex` |
 | `SERVERJACK_TERM` | `/term/` | URL path serverjack serves the terminal on (proxying it to ttyd's socket) |
 | `TTYD_EXTRA_ARGS` | unset | optional ttyd client options, shell-parsed as data with no expansion. Allowed flags: `-t`/`--client-option`, `-T`/`--terminal-type`, `-m`/`--max-clients`, and `-P`/`--ping-interval`. Listener, auth, command, base-path, origin and write-access flags are refused |
 | `SERVERJACK_TMUX_STATUS` | `off` | sessions opened from the page get tmux's status line turned off (the bar shows tabs and window count instead); `on` leaves tmux alone |
@@ -531,8 +546,8 @@ unrecognized `id` is appended as a new tool.
 | `login` | shell command run by the Log in button |
 | `login_note` | text shown next to it |
 | `login_check` | command whose exit status 0 means "logged in" |
-| `run` | interactive command for the "Open" option |
-| `run_note` | one-line note under the Open option — how it differs from the others |
+| `run` | interactive command; having one is what makes the tool a radio in Start a session (missing means the tool can only be installed/logged in below) |
+| `run_note` | unused now, kept for compatibility with an existing `tools.json` — Start a session doesn't show a per-tool note |
 | `paths` | extra directories (may use `~`) to look for `bin` in, on top of `PATH` |
 | `server` | `{label, cmd, session, note, per_dir}` — long-running command kept in a named tmux session; `per_dir: true` means one per project directory, sessions named `<session>-<dir>`, each listed with its directory |
 | `daemon` | `{label, start, stop, pidfile, note}` — self-daemonizing command with start/stop and a pidfile for status |
@@ -557,8 +572,9 @@ Example — point OpenCode's server at a different port and hide the Gemini row:
 
 A tool session runs the tool in front of a login shell, so if it isn't
 installed or isn't logged in you land on its error message and a prompt
-instead of a session that vanished. Shells with a start command, the Run box,
-and shortcuts all work the same way: the command runs, then you get a prompt.
+instead of a session that vanished. Shells with a start command, the Start a
+session card, and shortcuts all work the same way: the command runs, then you
+get a prompt.
 
 ## Status line and /api/status
 
@@ -652,7 +668,8 @@ upgrade succeeds. If ttyd is down you get a 502 page saying so, in the frame.
 
 Both services run as you and talk to your normal tmux server, so the sessions
 shown are the same ones `tmux ls` shows in any other login — including the
-ones an Install or Run button started. Opening a session loads `/s/<name>`,
+ones an Install button or the Start a session card started. Opening a
+session loads `/s/<name>`,
 whose bar sits over an iframe of `/term/?arg=<name>`; ttyd passes that one
 argument to `tmux-attach.sh`, which attaches. There is no no-argument fallback,
 so `bin/tmux-picker.sh` is only for use from a real terminal.

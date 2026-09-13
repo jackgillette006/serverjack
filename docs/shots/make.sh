@@ -16,8 +16,8 @@
 # real tmux server, or ~/.config/serverjack.
 #
 # What makes the shots neutral:
-#   - a fake $HOME with generic project dirs (api, blog, infra, src), and
-#     sessions in them with a made-up "dev@homeserver" shell prompt
+#   - a fake $HOME with example project dirs (3d-lab, game, media-stack, src),
+#     and sessions in them with a made-up "dev@homeserver" shell prompt
 #   - bin/serverjack is run from a throwaway copy of the repo with no .git,
 #     so the built-in "Update serverjack" shortcut (which names this
 #     checkout's real path) never renders
@@ -66,14 +66,26 @@ chmod +x "$NEUTRAL_REPO"/bin/*
 
 # ------------------------------------------------------------------ fake HOME
 FAKE_HOME="$RUN_ROOT/home"
-mkdir -p "$FAKE_HOME"/projects/api "$FAKE_HOME"/projects/blog "$FAKE_HOME"/projects/infra "$FAKE_HOME"/src
-: > "$FAKE_HOME/projects/api/app.py"
-: > "$FAKE_HOME/projects/api/requirements.txt"
-mkdir -p "$FAKE_HOME/projects/api/tests"
-: > "$FAKE_HOME/projects/blog/index.md"
+mkdir -p "$FAKE_HOME"/projects/3d-lab/{models,renders} "$FAKE_HOME"/projects/game/{src,assets} \
+  "$FAKE_HOME"/projects/media-stack "$FAKE_HOME"/src
+: > "$FAKE_HOME/projects/3d-lab/render.py"
+: > "$FAKE_HOME/projects/game/Cargo.toml"
+: > "$FAKE_HOME/projects/game/src/main.rs"
+: > "$FAKE_HOME/projects/media-stack/docker-compose.yml"
+# A tiny git history in "game", so the terminal shot can show a real
+# `git log`. Identity is passed per command: this HOME has no global config,
+# and none of this touches the real user's git configuration.
+G=(git -C "$FAKE_HOME/projects/game" -c user.name=dev -c user.email=dev@example.com
+   -c commit.gpgsign=false)
+"${G[@]}" init -q
+"${G[@]}" add -A && "${G[@]}" commit -q -m "Initial commit"
+: > "$FAKE_HOME/projects/game/src/input.rs"
+"${G[@]}" add -A && "${G[@]}" commit -q -m "Wire up controller input"
+: > "$FAKE_HOME/projects/game/src/terrain.rs"
+"${G[@]}" add -A && "${G[@]}" commit -q -m "Procedural terrain: first pass"
 
 # A generic prompt -- no real username or hostname. \w expands relative to
-# $HOME, and HOME below is this fake one, so it renders as "~" / "~/projects/api".
+# $HOME, and HOME below is this fake one, so it renders as "~" / "~/projects/game".
 printf '%s\n' "PS1='dev@homeserver:\\w\$ '" "unset HISTFILE" > "$FAKE_HOME/bashrc"
 printf -v session_shell 'exec env HOME=%q bash --noprofile --rcfile %q -i' \
   "$FAKE_HOME" "$FAKE_HOME/bashrc"
@@ -86,8 +98,10 @@ cat > "$CFG/tools.json" <<'JSON'
   "login_check": "true", "run": "bash"}]
 JSON
 cat > "$CFG/shortcuts.json" <<'JSON'
-[{"id": "sc-packages", "label": "Update packages",
-  "cmd": "sudo apt update && sudo apt upgrade"}]
+[{"id": "sc-media", "label": "Rebuild media stack",
+  "cmd": "cd ~/projects/media-stack && docker compose pull && docker compose up -d"},
+ {"id": "sc-snapshot", "label": "Snapshot to NAS",
+  "cmd": "restic -r sftp:nas:/backups backup ~/projects"}]
 JSON
 chmod 600 "$CFG"/*.json
 
@@ -101,25 +115,25 @@ mkdir -m 700 "$TMUX_TMPDIR/tmux-$(id -u)"
 TMUX_SOCK="$TMUX_TMPDIR/tmux-$(id -u)/default"
 T=(tmux -S "$TMUX_SOCK")
 
-"${T[@]}" new-session -d -s api -x 100 -y 30 -c "$FAKE_HOME/projects/api" "$session_shell"
-"${T[@]}" new-session -d -s blog -x 100 -y 30 -c "$FAKE_HOME/projects/blog" "$session_shell"
-# Looks like an agent CLI is running, without running anything real: rename
-# this pane's own process via exec -a so tmux reports its command as "agent".
-# "exec -a" is a bash-ism (dash lacks it), so force bash explicitly rather
-# than trust tmux's default-shell.
-"${T[@]}" new-session -d -s infra -x 100 -y 30 -c "$FAKE_HOME/projects/infra" \
-  'bash -c "exec -a agent sleep infinity"'
+"${T[@]}" new-session -d -s game -x 100 -y 30 -c "$FAKE_HOME/projects/game" "$session_shell"
+"${T[@]}" new-session -d -s media-stack -x 100 -y 30 -c "$FAKE_HOME/projects/media-stack" "$session_shell"
+# Looks like Claude Code is working in 3d-lab, without running anything real:
+# rename this pane's own process via exec -a so tmux reports its command as
+# "claude". "exec -a" is a bash-ism (dash lacks it), so force bash explicitly
+# rather than trust tmux's default-shell.
+"${T[@]}" new-session -d -s 3d-lab -x 100 -y 30 -c "$FAKE_HOME/projects/3d-lab" \
+  'bash -c "exec -a claude sleep infinity"'
 
-# Feed the "api" pane its transcript now, over tmux itself -- not by typing
+# Feed the "game" pane its transcript now, over tmux itself -- not by typing
 # into the live xterm later. Typing through the browser raced against
 # ttyd's WebSocket under load (a concurrent tests/run.sh once left the
 # capture showing a blank pane): send-keys is synchronous and leaves a fixed,
 # already-rendered buffer for Playwright to simply attach to and screenshot.
 sleep 0.5   # let the login shell print its first prompt before send-keys
-"${T[@]}" send-keys -t api "ls" Enter
+"${T[@]}" send-keys -t game "ls" Enter
 sleep 0.4
-"${T[@]}" send-keys -t api "uname -sr" Enter
-sleep 0.4
+"${T[@]}" send-keys -t game "git log --oneline -3" Enter
+sleep 0.6
 
 # --------------------------------------------------------------- serverjack
 RT="$RUN_ROOT/rt"
@@ -134,9 +148,9 @@ PY
 )
 BASE="http://127.0.0.1:$PORT"
 
-common=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE=homeserver SERVERJACK_FX=off
+common=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE="Home server" SERVERJACK_FX=off
         SERVERJACK_CONFIG="$CFG" SERVERJACK_TOOLS=claude SERVERJACK_SSH=off
-        SERVERJACK_DIRS="~/projects/api:~/projects/blog:~/projects/infra:~/src"
+        SERVERJACK_DIRS="~/projects/3d-lab:~/projects/game:~/projects/media-stack:~/src:~"
         HOME="$FAKE_HOME" XDG_RUNTIME_DIR="$RT")
 env "${common[@]}" SERVERJACK_PORT="$PORT" \
   python3 "$NEUTRAL_REPO/bin/serverjack" >"$RUN_ROOT/web.log" 2>&1 & pids+=($!)

@@ -5,6 +5,23 @@ All notable changes to serverjack are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- Landing page: "Run a command" and "New shell" are replaced by one "Start a
+  session" card at the top — Shell (the default) or any installed agent, a
+  directory (defaults to `~`), and an optional command for Shell. Picking an
+  agent just runs its plain command (`claude`, `codex`, ...) in the chosen
+  directory; there's no remote-control/server-mode choice on this card any
+  more. The bottom accordion is renamed "Agent servers" and now only lists a
+  tool that needs installing, logging in, or has a server/daemon/extra action
+  to offer — a tool that's ready with nothing else to configure (just Gemini
+  CLI, by default) has no row there any more. Removed the "Open with remote
+  control" action from Claude Code's and Copilot's cards (an interactive
+  session now starts from the top instead; Claude's Remote Control server is
+  unaffected).
+
 ## 1.1.0 - 2026-09-13
 
 ### Added
