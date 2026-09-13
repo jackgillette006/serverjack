@@ -14,7 +14,7 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-BASE = "http://127.0.0.1:7690"
+BASE = os.environ.get("SERVERJACK_TEST_BASE", "http://127.0.0.1:7690")
 SESS = "pwtest"
 T = ["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default")]
 fails = 0
@@ -127,3 +127,5 @@ finally:
     for idx in tmux("list-windows", "-t", f"={SESS}", "-F", "#{window_index}").stdout.split()[1:]:
         tmux("kill-window", "-t", f"={SESS}:{idx}")
 print("  " + ("all window checks passed" if not fails else f"{fails} window check(s) FAILED"))
+if fails:
+    raise SystemExit(1)

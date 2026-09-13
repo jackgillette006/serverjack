@@ -1,11 +1,15 @@
 """Paste / Copy / soft-key checks: Chromium desktop, then WebKit iPhone."""
 import os, sys, time, subprocess
 from playwright.sync_api import sync_playwright
-BASE = "http://127.0.0.1:7690"; SESS = "pwtest"
+BASE = os.environ.get("SERVERJACK_TEST_BASE", "http://127.0.0.1:7690"); SESS = "pwtest"
 T = ["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default")]
+fails = 0
 def pane(): return subprocess.run(T + ["capture-pane", "-p", "-t", SESS], capture_output=True, text=True).stdout
 def clear(): subprocess.run(T + ["send-keys", "-t", SESS, "C-c", ""]); time.sleep(0.2); subprocess.run(T + ["send-keys", "-t", SESS, "clear", "Enter"]); time.sleep(0.4)
 def ok(label, cond, extra=""):
+    global fails
+    if not cond:
+        fails += 1
     print(("  PASS " if cond else "  FAIL ") + label + (("  -- " + extra) if extra and not cond else ""))
 
 def suite(page, tag, can_read_clipboard):
@@ -52,3 +56,6 @@ with sync_playwright() as p:
     ok("textarea stretched over terminal (native long-press paste target)", tb and tb["width"] > fb["width"] * 0.9 and tb["height"] > fb["height"] * 0.8, str(tb))
     page.screenshot(path="shots/iphone-paste.png")
     b.close()
+
+if fails:
+    raise SystemExit(1)

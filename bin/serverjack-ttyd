@@ -58,8 +58,74 @@ mkdir -m 700 -p "$RUNTIME"
 check_dir "$RUNTIME" "runtime dir"
 
 sock=$RUNTIME/ttyd.sock
-rm -f "$sock"                       # stale socket from a hard kill
+if [[ -e $sock || -L $sock ]]; then
+  # Never let a path substitution turn startup into an arbitrary-file unlink.
+  # A symlink is refused even when it happens to resolve to a socket.
+  [[ -S $sock && ! -L $sock ]] || {
+    echo "serverjack-ttyd: $sock exists and is not a socket -- refusing to remove it" >&2
+    exit 1
+  }
+  rm -f -- "$sock"                   # stale socket from a hard kill
+fi
+
+# TTYD_EXTRA_ARGS is a convenience string in the systemd EnvironmentFile, not
+# shell code. Parse shell-style quoting without eval or expansion, then accept
+# only display/resource options which cannot replace the private listener,
+# authentication, origin check, writable mode or command. Keep every parsed
+# word as one argv element.
+extra=()
+if [[ -n ${TTYD_EXTRA_ARGS:-} ]]; then
+  args_file=$(mktemp "$RUNTIME/.ttyd-args.XXXXXX")
+  if ! TTYD_EXTRA_ARGS=$TTYD_EXTRA_ARGS python3 -c \
+      'import os, shlex, sys
+try:
+    words = shlex.split(os.environ["TTYD_EXTRA_ARGS"], posix=True)
+except ValueError as exc:
+    print(f"serverjack-ttyd: malformed TTYD_EXTRA_ARGS: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+for word in words:
+    sys.stdout.buffer.write(word.encode() + b"\0")' > "$args_file"; then
+    rm -f -- "$args_file"
+    exit 1
+  fi
+  mapfile -d '' -t words < "$args_file"
+  rm -f -- "$args_file"
+
+  i=0
+  while (( i < ${#words[@]} )); do
+    option=${words[i]}
+    case $option in
+      -t|--client-option|-T|--terminal-type|-m|--max-clients|-P|--ping-interval)
+        (( i + 1 < ${#words[@]} )) || {
+          echo "serverjack-ttyd: $option in TTYD_EXTRA_ARGS needs a value" >&2
+          exit 1
+        }
+        value=${words[i+1]}
+        [[ $value != -* ]] || {
+          echo "serverjack-ttyd: $option in TTYD_EXTRA_ARGS needs a value" >&2
+          exit 1
+        }
+        extra+=("$option" "$value")
+        i=$((i + 2))
+        ;;
+      --client-option=*|--terminal-type=*|--max-clients=*|--ping-interval=*)
+        value=${option#*=}
+        [[ -n $value ]] || {
+          echo "serverjack-ttyd: ${option%%=*} in TTYD_EXTRA_ARGS needs a value" >&2
+          exit 1
+        }
+        extra+=("$option")
+        i=$((i + 1))
+        ;;
+      *)
+        echo "serverjack-ttyd: unsafe or unsupported TTYD_EXTRA_ARGS option: $option" >&2
+        echo "serverjack-ttyd: allowed: -t/--client-option, -T/--terminal-type, -m/--max-clients, -P/--ping-interval" >&2
+        exit 1
+        ;;
+    esac
+  done
+fi
 
 exec ttyd -i "$sock" -W -a -O \
   -t "titleFixed=${SERVERJACK_TITLE:-serverjack}" -t disableLeaveAlert=true \
-  ${TTYD_EXTRA_ARGS:-} "$here/tmux-attach.sh"
+  "${extra[@]}" "$here/tmux-attach.sh"

@@ -2,7 +2,7 @@
 engine-specific).
 
 run.sh brings up two serverjack instances, each with its own ttyd on its own
-Unix socket: 7690 with no SERVERJACK_ALLOW, 7692 with
+Unix socket: one with no SERVERJACK_ALLOW and one with
 SERVERJACK_ALLOW=alice@example.com. Playwright plays the part of `tailscale
 serve` by sending (or withholding) the Tailscale-User-Login header.
 
@@ -24,8 +24,8 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-OPEN = "http://127.0.0.1:7690"          # no SERVERJACK_ALLOW
-AUTH = "http://127.0.0.1:7692"          # SERVERJACK_ALLOW=alice@example.com
+OPEN = os.environ.get("SERVERJACK_TEST_BASE", "http://127.0.0.1:7690")
+AUTH = os.environ.get("SERVERJACK_TEST_AUTH_BASE", "http://127.0.0.1:7692")
 SESS = "pwtest"
 TAG = str(int(time.time()))[-6:]
 T = ["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default")]
@@ -106,6 +106,10 @@ with sync_playwright() as p:
     ok("...and says who you are", "nobody" in body, body[:200])
     r = anon.request.get(f"{AUTH}/api/sessions")
     ok("JSON API is 403 too", r.status == 403, str(r.status))
+    for asset in ("/manifest.webmanifest", "/icon.svg", "/icon-180.png"):
+        r = anon.request.get(f"{AUTH}{asset}")
+        ok(f"{asset} does not leak restricted instance branding", r.status == 403,
+           str(r.status))
     ok("/healthz needs no tailnet identity (the peer-uid check still applies)",
        anon.request.get(f"{AUTH}/healthz").status == 200)
 
@@ -172,3 +176,5 @@ with sync_playwright() as p:
     anon.close()
     b.close()
 print("  " + ("all identity checks passed" if not fails else f"{fails} identity check(s) FAILED"))
+if fails:
+    raise SystemExit(1)

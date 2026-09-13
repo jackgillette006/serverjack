@@ -2,8 +2,12 @@
 pop-out returns the tab to the list; SSH copy item present."""
 import os, time
 from playwright.sync_api import sync_playwright
-BASE = "http://127.0.0.1:7690"; SESS = "pwtest"
+BASE = os.environ.get("SERVERJACK_TEST_BASE", "http://127.0.0.1:7690"); SESS = "pwtest"
+fails = 0
 def ok(label, cond, extra=""):
+    global fails
+    if not cond:
+        fails += 1
     print(("  PASS " if cond else "  FAIL ") + label + (("  -- " + extra) if extra and not cond else ""))
 with sync_playwright() as p:
     print("chromium desktop:")
@@ -51,3 +55,6 @@ with sync_playwright() as p:
     ok("Open navigates in the same tab", page.url.endswith(f"/s/{SESS}"), page.url)
     ok("↗ hidden in the bar on phone", not page.locator("#popout").is_visible())
     b.close()
+
+if fails:
+    raise SystemExit(1)

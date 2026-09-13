@@ -3,6 +3,8 @@
 Your tmux sessions and coding agents, from your phone. One Python file, no
 Node, no sudo.
 
+[Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [MIT license](LICENSE)
+
 serverjack is a web front door to a home server, meant to be reached over
 Tailscale from an iPhone or a laptop. Open a URL and you get three things:
 
@@ -26,6 +28,23 @@ with session tabs, a tmux-window picker on the active tab, a phone soft-key row
 (Esc, Tab, Shift-Tab, Ctrl, arrows, ^C, PgUp/PgDn, Paste, Copy). Touch-and-hold
 the terminal for the browser's own Paste callout.
 "Add to Home Screen" on iOS gives a full-screen app with no browser chrome.
+
+## Quick start
+
+Requirements: Linux, systemd, tmux, Python 3.9+ and curl. Tailscale is optional
+but recommended.
+
+```sh
+git clone https://github.com/jackgillette006/serverjack ~/projects/serverjack
+bash ~/projects/serverjack/install.sh
+```
+
+serverjack has no password of its own. Anyone who can reach it gets a shell as
+the account running it. Keep it behind `tailscale serve` or a reverse proxy
+with real authentication, never `tailscale funnel`. On a shared machine, use
+`install.sh --unix`; set `SERVERJACK_ALLOW` when the tailnet has other users.
+Read the full [security model](#security-model-read-this-first) before exposing
+the service.
 
 A light CRT costume runs over all of that: a ~320ms tube warm-up when a page
 loads, a collapse-to-a-line when you leave through Close or open a session in
@@ -422,10 +441,10 @@ people. With it, bob gets a 403 page — the terminal included, since serverjack
 serves that itself. Per-port tailnet ACLs are worth adding on top, but they are
 defence in depth, not the mechanism.
 
-Don't run `tests/run.sh` from two accounts at once: it uses fixed scratch ports
-(7690, 7692, 7694) and the second run will fail on the busy port.
+The test harness chooses unused loopback ports and an isolated tmux socket, so
+concurrent runs do not share sessions or listeners.
 
-### Upgrading from tmux-web
+### Upgrading an existing install
 
 Re-running `install.sh` after a pull is always safe, and from this version on
 it also **removes the old `/term` `tailscale serve` mount** if your machine
@@ -462,7 +481,7 @@ left in place; delete it when you're happy.
 | `SERVERJACK_DIRS` | `~/projects:~/src:~/workspace:~` | directories offered when starting a session |
 | `SERVERJACK_TOOLS` | unset (all) | optional comma-separated tool ids: restricts and orders the Agent rows, e.g. `claude,codex` |
 | `SERVERJACK_TERM` | `/term/` | URL path serverjack serves the terminal on (proxying it to ttyd's socket) |
-| `TTYD_EXTRA_ARGS` | | extra ttyd flags; rarely needed, serverjack strips the prefix itself |
+| `TTYD_EXTRA_ARGS` | unset | optional ttyd client options, shell-parsed as data with no expansion. Allowed flags: `-t`/`--client-option`, `-T`/`--terminal-type`, `-m`/`--max-clients`, and `-P`/`--ping-interval`. Listener, auth, command, base-path, origin and write-access flags are refused |
 | `SERVERJACK_TMUX_STATUS` | `off` | sessions opened from the page get tmux's status line turned off (the bar shows tabs and window count instead); `on` leaves tmux alone |
 | `SERVERJACK_SSH` | `auto` | `user@host` for the SSH menu items (tailnet DNS name if Tailscale is up, else hostname); `off` hides them |
 | `SERVERJACK_FX` | unset (on) | `off` (or `0`/`no`/`false`) turns the CRT effects off by default; each browser can still flip them with the **CRT fx** toggle |
@@ -644,4 +663,4 @@ verifiable there.
 
 ## License
 
-MIT.
+MIT. See [LICENSE](LICENSE).

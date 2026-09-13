@@ -207,6 +207,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -218,7 +219,15 @@ HOME = os.path.expanduser("~")
 # "Update serverjack" shortcut, which only appears when <repo>/.git exists.
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 LISTEN = (os.environ.get("SERVERJACK_LISTEN") or "tcp").strip().lower()
-BIND = ("127.0.0.1", int(os.environ.get("SERVERJACK_PORT", "7680")))
+if LISTEN not in ("tcp", "unix"):
+    raise SystemExit("serverjack: SERVERJACK_LISTEN must be tcp or unix")
+try:
+    PORT = int(os.environ.get("SERVERJACK_PORT", "7680"))
+except ValueError:
+    raise SystemExit("serverjack: SERVERJACK_PORT must be an integer from 1 to 65535")
+if not 1 <= PORT <= 65535:
+    raise SystemExit("serverjack: SERVERJACK_PORT must be an integer from 1 to 65535")
+BIND = ("127.0.0.1", PORT)
 
 
 def safe_dir(path, what):
@@ -1065,6 +1074,27 @@ def create_session(kind, name, cwd, command=None):
 
 # ---------- shortcuts: user-defined one-click commands, stored as JSON
 
+
+def save_private_json(path, items):
+    """Atomically save owner-only configuration without a predictable temp
+    filename. Shortcut commands can contain credentials, and autostart entries
+    expose project paths, so neither file should inherit a permissive umask."""
+    os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
+    safe_dir(CONFIG_DIR, "config dir")
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=CONFIG_DIR)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(items, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
 def load_shortcuts():
     try:
         with open(SHORTCUTS_FILE) as f:
@@ -1075,11 +1105,7 @@ def load_shortcuts():
 
 
 def save_shortcuts(items):
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    tmp = SHORTCUTS_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(items, f, indent=2)
-    os.replace(tmp, SHORTCUTS_FILE)
+    save_private_json(SHORTCUTS_FILE, items)
 
 
 def add_shortcut(label, cmd, cwd):
@@ -1102,7 +1128,7 @@ UPDATE_CMD = f"cd {shlex.quote(REPO)} && git pull --ff-only && bash install.sh"
 
 
 def update_available():
-    return os.path.isdir(os.path.join(REPO, ".git"))
+    return os.path.exists(os.path.join(REPO, ".git"))   # a file in a git worktree
 
 
 # ---------- autostart: servers and daemons to bring up when serverjack starts
@@ -1129,11 +1155,7 @@ def load_autostart():
 
 
 def save_autostart(items):
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    tmp = AUTOSTART_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(items, f, indent=2)
-    os.replace(tmp, AUTOSTART_FILE)
+    save_private_json(AUTOSTART_FILE, items)
 
 
 def _auto_match(e, tid, kind, cwd):
@@ -2902,8 +2924,7 @@ class Handler(BaseHTTPRequestHandler):
     # user, so there is no Tailscale-User-Login header to match and an ALLOW
     # check could only 403 it. Both are still behind the peer-uid check, and
     # /api/status reports counts only -- never session names.
-    OPEN_PATHS = ("/healthz", "/api/status", "/manifest.webmanifest",
-                  "/icon.svg", "/icon-180.png")
+    OPEN_PATHS = ("/healthz", "/api/status")
 
     def identity_ok(self, path):
         """(ok, login). ok is always True when SERVERJACK_ALLOW is unset.
@@ -2915,7 +2936,10 @@ class Handler(BaseHTTPRequestHandler):
         login = ""
         if self.peer is not None and self.peer in TRUST_IDENTITY_UIDS:
             login = (self.headers.get("Tailscale-User-Login") or "").strip()
-        if not ALLOW or path in self.OPEN_PATHS:
+        # These are read-only machine probes. A POST to the same spelling must
+        # still authenticate; otherwise an unauthenticated peer could reach the
+        # request-body parser (and future state-changing handlers added here).
+        if not ALLOW or (self.command == "GET" and path in self.OPEN_PATHS):
             return True, login
         return login.lower() in ALLOW, login
 
@@ -3164,8 +3188,35 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def form(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(min(n, 65536)).decode(errors="replace")
+        """Read one small URL-encoded form, or answer the malformed request.
+
+        Never partially consume an oversized body: bytes left behind can be
+        mistaken for another request on a persistent connection. Chunked input
+        is unsupported by BaseHTTPRequestHandler and is rejected explicitly.
+        """
+        if self.headers.get_all("Transfer-Encoding"):
+            self.close_connection = True
+            self.send_bytes(b"Transfer-Encoding is not supported\n",
+                            "text/plain; charset=utf-8", 400, cache=False)
+            return None
+        lengths = self.headers.get_all("Content-Length") or []
+        if len(lengths) > 1 or (lengths and not re.fullmatch(r"[0-9]+", lengths[0])):
+            self.close_connection = True
+            self.send_bytes(b"invalid Content-Length\n", "text/plain; charset=utf-8",
+                            400, cache=False)
+            return None
+        # Avoid feeding arbitrarily long decimal strings to int(). Any value
+        # with more than ten digits is already far beyond this limit.
+        if lengths and len(lengths[0]) > 10:
+            n = 65537
+        else:
+            n = int(lengths[0]) if lengths else 0
+        if n > 65536:
+            self.close_connection = True
+            self.send_bytes(b"request body too large\n", "text/plain; charset=utf-8",
+                            413, cache=False)
+            return None
+        raw = self.rfile.read(n).decode(errors="replace")
         return {k: v[0] for k, v in parse_qs(raw).items()}
 
     def new_from_form(self, f):
@@ -3192,6 +3243,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "cross-site request refused"}, 403)
             return self.send_html("<h1>403</h1>cross-site request refused", 403)
         f = self.form()
+        if f is None:
+            return
 
         # An agent card is one form with several submit buttons, so the button
         # carries the route it wants ("/tools/action:0" -> /tools/action, i=0).
@@ -3456,21 +3509,30 @@ class UnixHTTPServer(ThreadingHTTPServer):
 
     def server_bind(self):
         try:
-            os.unlink(self.server_address)     # stale socket from a hard kill
+            st = os.lstat(self.server_address)
         except FileNotFoundError:
             pass
-        except OSError:
-            pass
+        else:
+            if not stat.S_ISSOCK(st.st_mode):
+                raise OSError(f"refusing to replace non-socket path {self.server_address}")
+            os.unlink(self.server_address)     # stale socket from a hard kill
         socketserver.TCPServer.server_bind(self)
         os.chmod(self.server_address, 0o600)   # only this account, belt and braces
+        st = os.lstat(self.server_address)
+        self._bound_socket_identity = (st.st_dev, st.st_ino)
         self.server_name, self.server_port = "serverjack", 0
 
     def server_close(self):
         super().server_close()
         try:
+            st = os.lstat(self.server_address)
+        except FileNotFoundError:
+            return
+        # Do not unlink a regular file, symlink or a replacement socket placed
+        # at this pathname after we bound ours.
+        if (stat.S_ISSOCK(st.st_mode)
+                and (st.st_dev, st.st_ino) == self._bound_socket_identity):
             os.unlink(self.server_address)
-        except OSError:
-            pass
 
 
 if __name__ == "__main__":

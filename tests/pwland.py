@@ -15,11 +15,12 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-BASE = "http://127.0.0.1:7690"
-AUTH = "http://127.0.0.1:7692"          # the SERVERJACK_ALLOW instance
+BASE = os.environ.get("SERVERJACK_TEST_BASE", "http://127.0.0.1:7690")
+AUTH = os.environ.get("SERVERJACK_TEST_AUTH_BASE", "http://127.0.0.1:7692")
 TAG = str(int(time.time()))[-6:]
 T = ["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default")]
 MADE = []          # sessions this suite created, killed at the end
+fails = 0
 
 
 def pane(name, lines=200):
@@ -48,6 +49,9 @@ def wait_for(fn, timeout=10.0):
 
 
 def ok(label, cond, extra=""):
+    global fails
+    if not cond:
+        fails += 1
     print(("  PASS " if cond else "  FAIL ") + label + (("  -- " + extra) if extra and not cond else ""))
     return bool(cond)
 
@@ -295,7 +299,10 @@ with sync_playwright() as p:
     ok("...and nothing was started", not exists("echo"), "session 'echo' exists")
     b.close()
 
-# belt and braces: run.sh's cleanup also sweeps these names
+# Keep the suite tidy even before run.sh removes its isolated tmux server.
 for name in MADE:
     if name and exists(name):
         subprocess.run(T + ["kill-session", "-t", f"={name}"], capture_output=True)
+
+if fails:
+    raise SystemExit(1)

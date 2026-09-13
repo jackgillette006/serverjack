@@ -1,13 +1,17 @@
 import os, sys, time, subprocess
 from playwright.sync_api import sync_playwright
 
-BASE = "http://127.0.0.1:7690"
+BASE = os.environ.get("SERVERJACK_TEST_BASE", "http://127.0.0.1:7690")
 SESS = "pwtest"
+fails = 0
 def pane():
     return subprocess.run(["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default"), "capture-pane", "-p", "-t", SESS], capture_output=True, text=True).stdout
 def cmd():
     return subprocess.run(["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default"), "display", "-p", "-t", SESS, "#{pane_current_command}"], capture_output=True, text=True).stdout.strip()
 def ok(label, cond, extra=""):
+    global fails
+    if not cond:
+        fails += 1
     print(("  PASS " if cond else "  FAIL ") + label + (("  -- " + extra) if extra and not cond else ""))
     return cond
 
@@ -116,3 +120,6 @@ with sync_playwright() as p:
     page.screenshot(path="shots/iphone-term.png")
     page.tap("#keys [data-k=Escape]"); time.sleep(0.3)
     b.close()
+
+if fails:
+    raise SystemExit(1)
