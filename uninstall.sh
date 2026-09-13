@@ -10,17 +10,6 @@ UNIT_DIR=$HOME/.config/systemd/user
 systemctl --user disable --now serverjack serverjack-ttyd 2>/dev/null
 rm -f "$UNIT_DIR"/serverjack.service "$UNIT_DIR"/serverjack-ttyd.service
 
-# Units from the pre-rename tmux-web install, if this machine still has them.
-old=()
-for u in tmux-web ttyd; do
-  [[ -f "$UNIT_DIR/$u.service" ]] && old+=("$u")
-done
-if (( ${#old[@]} )); then
-  systemctl --user disable --now "${old[@]}" 2>/dev/null
-  for u in "${old[@]}"; do rm -f "$UNIT_DIR/$u.service"; done
-  echo "also removed old tmux-web user units: ${old[*]}"
-fi
-
 systemctl --user daemon-reload
 
 # The sockets live in the runtime dir. The directory itself is left: the other

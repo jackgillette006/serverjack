@@ -453,16 +453,6 @@ straight at ttyd's port would be a way around every check. The installer says
 so when it takes one down. `uninstall.sh` turns off the `/` mount (and that old
 `/term` one, for installs that predate the change).
 
-### Upgrading from tmux-web
-
-This project used to be called tmux-web. Just pull and re-run `install.sh`: if
-`~/.config/serverjack/env` doesn't exist yet it converts the old
-`~/.config/tmux-web/env` (renaming `TMUX_WEB_*` to `SERVERJACK_*` and replacing
-the old `TMUX_WEB_TOOLS` line with a pointer to the new tools registry), copies
-`shortcuts.json` across, and stops and removes the old `tmux-web` and `ttyd`
-user units so the ports are free for the new ones. The old config directory is
-left in place; delete it when you're happy.
-
 ## Configure
 
 `~/.config/serverjack/env`:
