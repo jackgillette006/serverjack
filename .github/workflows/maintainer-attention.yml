@@ -26,9 +26,12 @@ env:
 
 jobs:
   queue-issue:
+    # The queue is for activity by other people: the owner's own issues and
+    # comments do not need the owner's attention.
     if: >-
       (github.event_name == 'issues' || github.event_name == 'issue_comment') &&
-      github.actor != 'github-actions[bot]'
+      github.actor != 'github-actions[bot]' &&
+      github.actor != github.repository_owner
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
@@ -36,6 +39,9 @@ jobs:
       cancel-in-progress: false
     permissions:
       issues: write
+      # A comment can be on a pull request, and labeling one through the
+      # issues endpoint needs pull-request write access as well.
+      pull-requests: write
     steps:
       - name: Add to the maintainer queue
         env:
@@ -57,7 +63,8 @@ jobs:
       (github.event_name == 'pull_request_target' ||
       github.event_name == 'pull_request_review' ||
       github.event_name == 'pull_request_review_comment') &&
-      github.actor != 'github-actions[bot]'
+      github.actor != 'github-actions[bot]' &&
+      github.actor != github.repository_owner
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
