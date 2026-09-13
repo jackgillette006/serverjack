@@ -1,7 +1,7 @@
 """Open/pop-out behaviour: desktop pops out and stays; phone navigates; in-session
 pop-out returns the tab to the list; SSH copy item present."""
 import os, time
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, Error as PlaywrightError
 BASE = os.environ.get("SERVERJACK_TEST_BASE", "http://127.0.0.1:7690"); SESS = "pwtest"
 fails = 0
 def ok(label, cond, extra=""):
@@ -25,7 +25,14 @@ with sync_playwright() as p:
     n = len(ctx.pages); page.click(f"a.open[data-name={SESS}]"); time.sleep(0.8)
     ok("opening again reuses the window", len(ctx.pages) == n, str(len(ctx.pages)))
     # ☰ inside the popout closes it
-    pop.click("#handle"); time.sleep(0.2); pop.click("#bar a.ib"); time.sleep(0.6)
+    pop.click("#handle"); time.sleep(0.2)
+    # The link calls window.close() inside its click handler, so the click
+    # can race the window going away: a closed target here is the success case.
+    try:
+        pop.click("#bar a.ib")
+    except PlaywrightError:
+        pass
+    time.sleep(0.6)
     ok("☰ in popout closes the window", pop.is_closed())
     # menu: Open here navigates in-tab; SSH items exist
     page.click(f"a.open[data-name={SESS}] ~ details summary, .sess:has(a.open[data-name={SESS}]) details summary"); time.sleep(0.2)
