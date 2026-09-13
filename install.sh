@@ -34,6 +34,8 @@
 # After that the daily loop is:  systemctl --user restart serverjack serverjack-ttyd
 
 set -euo pipefail
+# Non-login shells (ssh host 'bash install.sh', containers) may not export USER.
+USER=${USER:-$(id -un)}
 cd "$(dirname "$(readlink -f "$0")")"
 REPO=$PWD
 BIN=$HOME/.local/bin
@@ -201,7 +203,7 @@ PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 # connection's owner up in /proc/net/tcp and only answers root (tailscaled) and
 # you -- SERVERJACK_TRUST_UIDS adds a proxy's uid, SERVERJACK_TRUST_LOCAL=1
 # turns the check off. "unix": a socket in \$XDG_RUNTIME_DIR/serverjack, 0600 in
-# a 0700 directory, which the kernel enforces -- but `tailscale serve` then has
+# a 0700 directory, which the kernel enforces -- but \`tailscale serve\` then has
 # to be pointed at it once as root.
 SERVERJACK_LISTEN=${OPT_LISTEN:-tcp}
 #SERVERJACK_TRUST_UIDS=101
