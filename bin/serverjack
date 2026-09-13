@@ -495,7 +495,7 @@ def host_allowed(header):
 
 
 def _dirs():
-    raw = os.environ.get("SERVERJACK_DIRS") or "~/projects:~/src:~/workspace:~"
+    raw = os.environ.get("SERVERJACK_DIRS") or "~/projects:~/src:~/code:~"
     out = []
     for d in raw.split(":"):
         d = os.path.expanduser(d.strip())
