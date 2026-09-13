@@ -1,33 +1,17 @@
 # serverjack
 
-Your tmux sessions and coding agents, from your phone. One Python file, no
-Node, no sudo.
+[![CI](https://github.com/jackgillette006/serverjack/actions/workflows/ci.yml/badge.svg)](https://github.com/jackgillette006/serverjack/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/jackgillette006/serverjack)](https://github.com/jackgillette006/serverjack/releases)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 
-[Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [MIT license](LICENSE)
+Your tmux sessions and coding agents, from your phone — one Python file, no Node, no sudo.
 
-serverjack is a web front door to a home server, meant to be reached over
-Tailscale from an iPhone or a laptop. Open a URL and you get three things:
+[Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
 
-- **Run a command** — a paste box at the top. An agent tells you to run
-  something it can't (`sudo apt install ...`, a service restart, a disk
-  check): paste it, tap Run, and you land in a real terminal with it running.
-- **Sessions** — every tmux session on the box as a button. Tap to attach.
-  Any "type a path" field accepts a directory that doesn't exist yet and
-  creates it, so starting a shell or an agent in a new project is one step.
-  Open, rename, kill, pop out into its own window on a desktop, or hand off to
-  a real SSH client. A "New shell" form for starting one in a chosen directory.
-- **Agents** — a collapsed accordion row per coding CLI (Claude Code, Codex,
-  OpenCode, GitHub Copilot CLI, Gemini CLI). Open one and it lists the ways to
-  start that tool side by side, one line each on how they differ: install it,
-  log in, open it in a directory, open it with remote control, or start its
-  remote-control server — each of those is a button that runs a
-  command in a tmux session and shows you the terminal.
-
-The terminal itself is [ttyd](https://github.com/tsl0922/ttyd) in an iframe,
-with session tabs, a tmux-window picker on the active tab, a phone soft-key row
-(Esc, Tab, Shift-Tab, Ctrl, arrows, ^C, PgUp/PgDn, Paste, Copy). Touch-and-hold
-the terminal for the browser's own Paste callout.
-"Add to Home Screen" on iOS gives a full-screen app with no browser chrome.
+| Desktop | iPhone — landing | iPhone — terminal |
+|---|---|---|
+| ![Landing page on a desktop](docs/shots/desktop.png) | ![Landing page on iPhone](docs/shots/iphone-landing.png) | ![Terminal on iPhone](docs/shots/iphone-term.png) |
 
 ## Quick start
 
@@ -36,38 +20,76 @@ but recommended.
 
 ```sh
 git clone https://github.com/jackgillette006/serverjack
-bash serverjack/install.sh
+cd serverjack
+bash install.sh
 ```
 
 Clone it anywhere you keep code. The installer records that path in the user
-units and the built-in "Update serverjack" shortcut runs `git pull` there, so
+units, and the built-in "Update serverjack" shortcut runs `git pull` there, so
 leave the checkout where it is; move it and re-run `install.sh` if you must.
 
 serverjack has no password of its own. Anyone who can reach it gets a shell as
-the account running it. Keep it behind `tailscale serve` or a reverse proxy
-with real authentication, never `tailscale funnel`. On a shared machine, use
-`install.sh --unix`; set `SERVERJACK_ALLOW` when the tailnet has other users.
-Read the full [security model](#security-model-read-this-first) before exposing
-the service.
-
-A light CRT costume runs over all of that: a ~320ms tube warm-up when a page
-loads, a collapse-to-a-line when you leave through Close or open a session in
-the same tab, a scanline sweep while the terminal is connecting, and a barely
-visible flicker/roll on the landing page's background. It is CSS only (opacity
-and transform, nothing that repaints), off under `prefers-reduced-motion`, and
-never sits over the terminal once it is connected. The **CRT fx** control in the
-landing-page footer (and at the bottom of the terminal's new-session panel)
-toggles it instantly and remembers the choice; `SERVERJACK_FX=off` makes off the
-default for everyone.
+the account running it. Keep it behind `tailscale serve` (what `install.sh`
+sets up) or a reverse proxy with real authentication, never `tailscale
+funnel`. On a shared machine, use `install.sh --unix`; set `SERVERJACK_ALLOW`
+when the tailnet has other users. Read the full
+[security model](#security-model-read-this-first) before exposing the
+service.
 
 Everything server-side is one stdlib Python file plus a prebuilt ttyd binary.
 No pip, no npm, no compiler, no root.
 
-## Screenshots
+## Why serverjack
 
-| Landing page | Terminal | Desktop |
-|---|---|---|
-| ![Landing page on iPhone](docs/shots/iphone-landing.png) | ![Terminal on iPhone](docs/shots/iphone-term.png) | ![Landing page on a desktop](docs/shots/desktop.png) |
+serverjack is a web front door to a home server, meant to be reached over
+Tailscale from an iPhone or a laptop. Open a URL and you get:
+
+- **Run a command** — a paste box at the top. An agent tells you to run
+  something it can't (`sudo apt install ...`, a service restart, a disk
+  check): paste it, tap Run, and you land in a real terminal with it running.
+- **Sessions** — every tmux session on the box as a button. Tap to attach.
+  Any "type a path" field accepts a directory that doesn't exist yet and
+  creates it, so starting a shell or an agent in a new project is one step.
+  Open, rename, kill, pop out into its own window on a desktop, or hand off to
+  a real SSH client.
+- **Agents** — a collapsed accordion row per coding CLI (Claude Code, Codex,
+  OpenCode, GitHub Copilot CLI, Gemini CLI). Each one lists the ways to start
+  it side by side — install, log in, open, open with remote control, start
+  its remote-control server — every option a button that runs a command in a
+  tmux session and shows you the terminal.
+- **A real terminal** — [ttyd](https://github.com/tsl0922/ttyd) in an iframe,
+  with session tabs, a tmux-window picker, a phone soft-key row (Esc, Tab,
+  Shift-Tab, Ctrl, arrows, ^C, PgUp/PgDn, Paste, Copy), and "Add to Home
+  Screen" on iOS for a full-screen app with no browser chrome.
+- A CRT toggle skins the whole UI (off under `prefers-reduced-motion`); the
+  full effect budget is documented in
+  [docs/design/DESIGN.md](docs/design/DESIGN.md#crt-effects).
+
+See [Why this and not X](#why-this-and-not-x) for how this compares to Claude
+Code Remote Control, VibeTunnel, plain ttyd, and Zellij's web client.
+
+## Contents
+
+- [Run a command](#run-a-command)
+  - [Update serverjack](#update-serverjack)
+- [Sessions](#sessions)
+  - [tmux windows](#tmux-windows)
+- [Agents](#agents)
+  - [Start at boot](#start-at-boot)
+- [Why this and not X](#why-this-and-not-x)
+- [Security model, read this first](#security-model-read-this-first)
+  - [Residual risk](#residual-risk)
+- [Install (no sudo)](#install-no-sudo)
+  - [Two accounts on one machine](#two-accounts-on-one-machine)
+  - [Upgrading an existing install](#upgrading-an-existing-install)
+- [Configure](#configure)
+  - [Tools](#tools)
+- [Status line and /api/status](#status-line-and-apistatus)
+- [Architecture](#architecture)
+- [Tests](#tests)
+- [Known limitations](#known-limitations)
+- [Changelog](#changelog)
+- [License](#license)
 
 ## Run a command
 
@@ -118,8 +140,8 @@ Rename unfolds a small text box in place; the same rules as a new session
 apply, so tmux's forbidden characters (`:` and `.`) and a name something else
 already has are refused with the reason. Renaming a session leaves a browser
 sitting on the old `/s/<name>` without a session. That is harmless: the page
-notices within 15 seconds that the name is gone and moves itself to another session,
-exactly as it does when a session is killed.
+notices within 15 seconds that the name is gone and moves itself to another
+session, exactly as it does when a session is killed.
 
 ### tmux windows
 
@@ -343,6 +365,13 @@ git clone https://github.com/jackgillette006/serverjack
 bash serverjack/install.sh
 ```
 
+Afterwards, `bin/serverjack --check` (alias `--doctor`) runs a read-only
+diagnosis, one `ok`/`warn`/`fail` line per item (Python, tmux and ttyd
+versions, runtime and config directory modes, env-file permissions, Tailscale,
+whether the listen address is free), and exits non-zero on any `fail`. It is
+the first thing to run after a reboot that left the page unreachable.
+`bin/serverjack --version` and `install.sh --version` print the version.
+
 The installer downloads ttyd and fzf binaries into `~/.local/bin` — HTTPS
 only, and verified against sha256 hashes **pinned in `install.sh` itself**, not
 just against a checksum file fetched from the same host as the binary — writes
@@ -443,7 +472,7 @@ tailnet login.** Without it, `tailscale serve` will happily hand *any* tailnet
 device that opens `:8443` a shell as alice — serve authenticates devices, not
 people. With it, bob gets a 403 page — the terminal included, since serverjack
 serves that itself. Per-port tailnet ACLs are worth adding on top, but they are
-defence in depth, not the mechanism.
+defense in depth, not the mechanism.
 
 The test harness chooses unused loopback ports and an isolated tmux socket, so
 concurrent runs do not share sessions or listeners.
@@ -488,7 +517,7 @@ The Agent rows come from a registry: the built-ins above, plus
 `~/.config/serverjack/tools.json` if it exists. That file is a JSON **list of
 objects**, merged over the built-ins by `id` — a partial object overrides just
 the fields it names, `"hidden": true` removes a built-in row, and an
-unrecognised `id` is appended as a new tool.
+unrecognized `id` is appended as a new tool.
 
 | Field | Meaning |
 |---|---|
@@ -553,7 +582,7 @@ The same numbers, plus what the agents are doing, come out of `GET
               "servers_running": 1, "daemon_running": false}],
   "agents_summary": "1 server · 1 daemon",
   "load": [0.42, 0.5, 0.6], "mem_used_pct": 61,
-  "disk_free_gb": 1204.3, "uptime_s": 1051200, "version": "1.1"
+  "disk_free_gb": 1204.3, "uptime_s": 1051200, "version": "1.1.0"
 }
 ```
 
@@ -595,7 +624,13 @@ that is how it is published:
           format: text
 ```
 
-## How it fits together
+## Architecture
+
+serverjack is one Python process (`bin/serverjack`) that serves the landing
+page and JSON API, and reverse-proxies the terminal to a ttyd instance it
+manages on a private Unix socket. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+is the full design write-up — request flow, process model, and the reasoning
+behind each boundary; this section is the short version.
 
 ```
 browser ──HTTPS──▶ tailscale serve ── / ──▶ 127.0.0.1:7680  bin/serverjack
@@ -642,9 +677,9 @@ Host-side checks prove the peer-uid rule by curling from containers running as
 uid 65534, 0 and 101 (including `/term/`), that an unknown `Host:` gets 421, and
 that the terminal's WebSocket accepts a same-origin and refuses a foreign
 origin through the proxy; another starts a throwaway instance with an
-`autostart.json` pointing at a fake server to prove it comes up on its own. `docs/MANUAL-TESTS.md` is a
-checklist for real devices; iOS Safari's soft-keyboard behaviour is only
-verifiable there.
+`autostart.json` pointing at a fake server to prove it comes up on its own.
+`docs/MANUAL-TESTS.md` is a checklist for real devices; iOS Safari's
+soft-keyboard behavior is only verifiable there.
 
 ## Known limitations
 
@@ -654,6 +689,10 @@ verifiable there.
 - tmux resizes a session to its most recent client, so a phone attaching
   shrinks the desktop view until the desktop sends a key. That's tmux.
 - Installer and units are Linux + systemd only.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for released and unreleased changes.
 
 ## License
 

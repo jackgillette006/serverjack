@@ -23,19 +23,20 @@ Out of scope, on purpose:
   the server, they handle the agent.
 - Built-in authentication. serverjack is meant to live behind `tailscale
   serve` or an authenticating reverse proxy, and a home-grown login would
-  invite people to expose it. See the security section of the README. Identity
-  comes from Tailscale's headers, never from a password serverjack invents:
-  `SERVERJACK_ALLOW` filters on `Tailscale-User-Login`. Keeping *local*
-  accounts out is a different problem with a different answer -- the peer-uid
-  check on the single listening socket, which covers the terminal too because
-  serverjack proxies it -- and that is not a login either.
+  invite people to expose it. See the
+  [security model](README.md#security-model-read-this-first) in the README.
+  Identity comes from Tailscale's headers, never from a password serverjack
+  invents: `SERVERJACK_ALLOW` filters on `Tailscale-User-Login`. Keeping
+  *local* accounts out is a different problem with a different answer -- the
+  peer-uid check on the single listening socket, which covers the terminal
+  too because serverjack proxies it -- and that is not a login either.
 - Dependencies. No pip packages, no Node, no compiled extensions, no CDN
   assets, no webfonts.
 
 ## Ground rules
 
 - `bin/serverjack` stays one file, Python 3.9+ syntax, stdlib only.
-- The visual layer follows `docs/design/DESIGN.md`. Don't add one-off colours,
+- The visual layer follows `docs/design/DESIGN.md`. Don't add one-off colors,
   radii or fonts; add a token if a genuinely new semantic role is missing.
 - The terminal is ttyd's xterm.js. Don't theme it from serverjack.
 - Real-browser tests live in `tests/`. `bash tests/run.sh` needs docker and
@@ -48,9 +49,11 @@ Out of scope, on purpose:
 
 1. Explain the user-visible problem and the behavior after your change.
 2. Keep the change focused and update the README when commands, configuration,
-   or security assumptions change.
-3. Run `bash tests/run.sh`. If Docker is unavailable, say which checks you
-   could run and which remain unverified.
+   or security assumptions change. Add an entry under `Unreleased` in
+   [CHANGELOG.md](CHANGELOG.md) for anything user-facing.
+3. Run `bash tests/run.sh` (needs Docker; it starts its own serverjack and
+   ttyd, nothing else has to be running). If Docker is unavailable, say which
+   checks you could run and which remain unverified.
 4. Check screenshots and logs before attaching them. Remove usernames, home
    directories, hostnames, tailnet names, login identities, tokens, session
    links, and unrelated terminal history.

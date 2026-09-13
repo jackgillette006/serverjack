@@ -85,6 +85,13 @@ result() {
 }
 echo "== ttyd wrapper security (host-side)"
 bash ./security-wrapper.sh
+
+# Plain unittest against bin/serverjack's pure(ish) helpers -- no server, no
+# browser, imports the file with importlib since it has no .py suffix. Runs
+# before anything else starts so a broken helper fails fast.
+echo "== unit tests (host-side)"
+python3 ./test_unit.py
+
 # A throwaway config dir with two fake agents, so the agent-card tests are
 # deterministic and never touch a real coding CLI or the user's shortcuts.
 CFG=$RUN_ROOT/cfg
@@ -97,6 +104,7 @@ cat > "$CFG/tools.json" <<'JSON'
 JSON
 # SERVERJACK_TRUST_UIDS=101 is not needed to reach anything here any more (no
 # proxy in front), but the peer-uid check below still proves it works.
+# shellcheck disable=SC2054  # the comma is inside SERVERJACK_TOOLS's value, not an array separator
 common=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE=test SERVERJACK_CONFIG="$CFG"
         SERVERJACK_TOOLS=fake,fake2 SERVERJACK_TRUST_UIDS=101)
 env "${common[@]}" XDG_RUNTIME_DIR="$RT" SERVERJACK_PORT="$PORT" \
@@ -186,7 +194,7 @@ JSON
 auto=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE=test XDG_RUNTIME_DIR="$RT_AUTO" SERVERJACK_CONFIG="$ACFG"
       SERVERJACK_TOOLS=fakesrv SERVERJACK_PORT="$PORT_AUTO" SERVERJACK_AUTOSTART_DELAY=2)
 env "${auto[@]}" python3 ../bin/serverjack >shots/web-auto.log 2>&1 & pids+=($!)
-for i in $(seq 1 30); do tmux has-session -t =pwauto 2>/dev/null && break; sleep 0.5; done
+for _ in $(seq 1 30); do tmux has-session -t =pwauto 2>/dev/null && break; sleep 0.5; done
 if tmux has-session -t =pwauto 2>/dev/null; then
   echo "  PASS autostart started the fake server's session"
   if grep -q 'autostart: started fakesrv server' shots/web-auto.log; then

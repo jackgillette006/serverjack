@@ -50,11 +50,14 @@ else
   # /tmp is world-writable, so the fallback parent is checked too: whoever wins
   # the race to create /tmp/serverjack-<uid> would own the socket directory.
   base=/tmp/serverjack-$(id -u)
-  mkdir -m 700 -p "$base"
+  # -m on `mkdir -p` only applies to the deepest directory it creates
+  # (SC2174) -- irrelevant here since /tmp already exists and only $base
+  # itself is new, but chmod after is explicit instead of relying on that.
+  mkdir -p "$base" && chmod 700 "$base"
   check_dir "$base" "runtime dir parent"
 fi
 RUNTIME=$base/serverjack
-mkdir -m 700 -p "$RUNTIME"
+mkdir -p "$RUNTIME" && chmod 700 "$RUNTIME"
 check_dir "$RUNTIME" "runtime dir"
 
 sock=$RUNTIME/ttyd.sock

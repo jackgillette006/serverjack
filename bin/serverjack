@@ -213,7 +213,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "1.1"
+# Bump with every release; the git tag for that release must read "v" + this
+# (v1.0.0, v1.1.0, ...) -- install.sh --version and `--check`'s output both
+# come from here, and it's what /api/status reports for a dashboard tile.
+VERSION = "1.1.0"
 HOME = os.path.expanduser("~")
 # The checkout this file lives in: <repo>/bin/serverjack. Used for the built-in
 # "Update serverjack" shortcut, which only appears when <repo>/.git exists.
@@ -1357,6 +1360,128 @@ def ago(ts):
     return "just now"
 
 
+# ------------------------------------------------------------ self-check ---
+#
+# `--check` (also spelled `--doctor`): a read-only "why won't this start"
+# pass, meant to be run by hand after a reboot or before wiring the unit up
+# for the first time. Every check only reads state -- unlike safe_dir() above
+# (which is allowed to fix a stray mode bit, because it is about to bind a
+# socket there anyway), self_check() never repairs anything. Each line is
+# printed as ok/warn/fail; the process exits non-zero the moment any line is
+# "fail". A "warn" is something worth a look but not a reason this won't run.
+
+def _bin_version(name, path, flag="--version"):
+    """First line of `<name> <flag>`, or None if it's not on PATH at all."""
+    exe = shutil.which(name, path=path)
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, flag], capture_output=True, text=True, timeout=5)
+        out = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
+        return out[0] if out else exe
+    except (OSError, subprocess.SubprocessError):
+        return exe
+
+
+def _listen_target_busy():
+    """True if something is already listening where we would bind, False if
+    it's free, None if we couldn't tell. Not a failure either way -- a
+    running serverjack is the expected reason it's busy -- just context for
+    "why won't the unit start"."""
+    try:
+        if LISTEN == "tcp":
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s.settimeout(1)
+                return s.connect_ex(BIND) == 0
+            finally:
+                s.close()
+        return os.path.exists(WEB_SOCK)
+    except OSError:
+        return None
+
+
+def self_check():
+    """(lines, ok). lines are (level, text) pairs, level in ok/warn/fail."""
+    lines = []
+
+    def add(level, text):
+        lines.append((level, text))
+
+    v = sys.version_info
+    add("ok" if v >= (3, 9) else "fail",
+        f"python {v.major}.{v.minor}.{v.micro}"
+        + ("" if v >= (3, 9) else " -- serverjack needs 3.9 or newer"))
+
+    tmux_v = _bin_version("tmux", PATH_ENV, "-V")
+    add("ok" if tmux_v else "fail",
+        f"tmux: {tmux_v}" if tmux_v else "tmux not found on PATH")
+
+    ttyd_v = _bin_version("ttyd", PATH_ENV)
+    add("ok" if ttyd_v else "fail",
+        f"ttyd: {ttyd_v}" if ttyd_v
+        else "ttyd not found on PATH (install.sh puts it in ~/.local/bin)")
+
+    xdg = os.environ.get("XDG_RUNTIME_DIR")
+    if not xdg:
+        add("warn", "XDG_RUNTIME_DIR not set -- falling back to /tmp/serverjack-<uid> "
+                    "(still locked to 0700 and owner-checked, but set it if you can)")
+    else:
+        try:
+            mode = stat.S_IMODE(os.stat(xdg).st_mode)
+            add("ok" if mode == 0o700 else "warn", f"XDG_RUNTIME_DIR={xdg} mode {mode:04o}")
+        except OSError as e:
+            add("fail", f"XDG_RUNTIME_DIR={xdg}: {e}")
+
+    try:
+        st = os.stat(CONFIG_DIR)
+        mode = stat.S_IMODE(st.st_mode)
+        owned = st.st_uid == os.getuid()
+        add("ok" if (mode == 0o700 and owned) else "warn",
+            f"config dir {CONFIG_DIR} mode {mode:04o}" + ("" if owned else " (not owned by us)"))
+    except FileNotFoundError:
+        add("ok", f"config dir {CONFIG_DIR} does not exist yet (created on first save)")
+    except OSError as e:
+        add("warn", f"config dir {CONFIG_DIR}: {e}")
+
+    env_file = os.path.join(CONFIG_DIR, "env")
+    if os.path.exists(env_file):
+        try:
+            mode = stat.S_IMODE(os.stat(env_file).st_mode)
+            add("ok" if mode == 0o600 else "warn",
+                f"env file {env_file} mode {mode:04o}"
+                + ("" if mode == 0o600 else " (tighten with chmod 600 -- systemd reads it)"))
+        except OSError as e:
+            add("warn", f"env file {env_file}: {e}")
+    else:
+        add("ok", f"env file {env_file} not present (read by systemd, not this process)")
+
+    try:
+        r = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            name = (json.loads(r.stdout).get("Self") or {}).get("DNSName", "").rstrip(".")
+            add("ok", f"tailscale reachable ({name or 'no DNS name yet'})")
+        else:
+            add("warn", "tailscale installed but not answering (tailscaled down?) -- "
+                        "optional, only needed for tailnet identity")
+    except FileNotFoundError:
+        add("warn", "tailscale not on PATH -- optional, only needed for tailnet identity")
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        add("warn", f"tailscale status failed: {e}")
+
+    busy = _listen_target_busy()
+    where = f"{BIND[0]}:{BIND[1]}" if LISTEN == "tcp" else WEB_SOCK
+    if busy is None:
+        add("warn", f"could not tell whether {where} is free")
+    elif busy:
+        add("ok", f"{where} already has a listener (fine if that's a running serverjack)")
+    else:
+        add("ok", f"{where} is free")
+
+    ok = not any(level == "fail" for level, _ in lines)
+    return lines, ok
+
+
 # ----------------------------------------------------------------- html ----
 
 # ---------------------------------------------------------------- theme ----
@@ -1701,7 +1826,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 {error}
 {body}
 <p class="foot">Opening a session puts you in a terminal attached to that tmux session. Use the browser's back button to return here (the session keeps running).
-<button class="fxt" id="fxt" type="button">CRT fx: on</button></p>
+<button class="fxt" id="fxt" type="button">CRT fx: on</button> &middot; <span class="ver">serverjack v{version}</span></p>
 <script>
 (function(){{
   // Desktop: "Open" pops the session out in its own window and this page
@@ -2747,7 +2872,7 @@ def render(error=None, name="", dir_custom="", cmd="", label="", sc_label="", sc
     ])
     err = "".join(f'<div class="err">{esc(e)}</div>' for e in (error, tools_error) if e)
     return PAGE.format(css=CSS, error=err, body=body, title=esc(TITLE), glyph=I_PROMPT,
-                       sysline=system_line(), fx_class=FX_CLASS)
+                       sysline=system_line(), fx_class=FX_CLASS, version=esc(VERSION))
 
 
 def render_term(name, popout=False):
@@ -3536,6 +3661,15 @@ class UnixHTTPServer(ThreadingHTTPServer):
 
 
 if __name__ == "__main__":
+    # No argparse: two flags, neither taking a value, don't earn the import.
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V"):
+        print(f"serverjack {VERSION}")
+        raise SystemExit(0)
+    if len(sys.argv) > 1 and sys.argv[1] in ("--check", "--doctor"):
+        check_lines, check_ok = self_check()
+        for level, text in check_lines:
+            print(f"{level:<4} {text}")
+        raise SystemExit(0 if check_ok else 1)
     if LISTEN == "tcp":
         srv = ThreadingHTTPServer(BIND, Handler)
         where = f"http://{BIND[0]}:{BIND[1]}"
