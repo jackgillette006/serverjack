@@ -72,11 +72,16 @@ if [[ -n $OPT_PORT ]]; then
   OPT_LISTEN=tcp
 fi
 for p in "$OPT_PORT" "$OPT_HTTPS_PORT"; do
-  [[ -z $p || $p =~ ^[0-9]+$ ]] || { echo "not a port number: $p" >&2; exit 1; }
+  [[ -z $p ]] && continue
+  [[ $p =~ ^[0-9]{1,5}$ ]] || { echo "not a port number: $p" >&2; exit 1; }
+  (( 10#$p >= 1 && 10#$p <= 65535 )) \
+    || { echo "port must be between 1 and 65535: $p" >&2; exit 1; }
 done
 # tailscale only terminates HTTPS on these three ports.
 [[ -z $OPT_HTTPS_PORT || $OPT_HTTPS_PORT =~ ^(443|8443|10000)$ ]] \
   || { echo "--https-port must be 443, 8443 or 10000 (tailscale serve only listens on those)" >&2; exit 1; }
+[[ $OPT_TITLE != *$'\n'* && $OPT_TITLE != *$'\r'* ]] \
+  || { echo "--title cannot contain a newline" >&2; exit 1; }
 
 TTYD_VER=1.7.7
 FZF_VER=0.74.3
@@ -115,7 +120,10 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; };
 need tmux; need curl; need python3; need systemctl
 
 # ---------------------------------------------------------------- binaries
+[[ ! -L $CFG_DIR ]] || { echo "$CFG_DIR is a symlink -- refusing to store private configuration there" >&2; exit 1; }
 mkdir -p "$BIN" "$CFG_DIR" "$UNIT_DIR"
+chmod 700 "$CFG_DIR"
+[[ ! -L $ENV_FILE ]] || { echo "$ENV_FILE is a symlink -- refusing" >&2; exit 1; }
 arch=$(uname -m)
 case "$arch" in
   x86_64)  ttyd_asset=ttyd.x86_64;  fzf_asset=fzf-$FZF_VER-linux_amd64.tar.gz ;;
@@ -237,32 +245,93 @@ TTYD_EXTRA_ARGS=
 CFG
   chmod 600 "$ENV_FILE"
 fi
+[[ -f $ENV_FILE && ! -L $ENV_FILE ]] \
+  || { echo "$ENV_FILE is not a regular file, or is a symlink -- refusing" >&2; exit 1; }
+chmod 700 "$CFG_DIR"
+chmod 600 "$ENV_FILE"
 # Read the few values we need the way systemd does (KEY=value, optional
 # quotes) -- NOT with `source`, which chokes on unquoted spaces like "Claude Code".
-cfg() { local v; v=$(grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2-); v=${v#\"}; v=${v%\"}; printf '%s' "${v:-$2}"; }
+cfg() {
+  local key=$1 fallback=${2-} line v=
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line == "$key="* ]] && v=${line#*=}
+  done < "$ENV_FILE"
+  v=${v#\"}; v=${v%\"}
+  printf '%s' "${v:-$fallback}"
+}
+cfg_has() {
+  local key=$1 line
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line == "$key="* ]] && return 0
+  done < "$ENV_FILE"
+  return 1
+}
 # Explicitly-passed flags update an existing env file: rewrite that one line in
 # place (or append it if the file predates the setting), keep everything else.
 setcfg() {
-  local key=$1 val=$2
-  if grep -qE "^$key=" "$ENV_FILE"; then
+  local key=$1 val=$2 encoded line found=0 cfg_tmp
+  [[ $val != *$'\n'* && $val != *$'\r'* ]] \
+    || { echo "$key cannot contain a newline" >&2; exit 1; }
+  encoded=${val//\\/\\\\}
+  encoded=${encoded//\"/\\\"}
+  encoded=\"$encoded\"
+  if cfg_has "$key"; then
     [[ "$(cfg "$key")" == "$val" ]] && return 0
-    sed -i "s|^$key=.*|$key=$val|" "$ENV_FILE"
+    cfg_tmp=$(mktemp "$CFG_DIR/.env.XXXXXX")
+    while IFS= read -r line || [[ -n $line ]]; do
+      if [[ $line == "$key="* ]]; then
+        if (( ! found )); then
+          printf '%s=%s\n' "$key" "$encoded" >> "$cfg_tmp"
+          found=1
+        fi
+      else
+        printf '%s\n' "$line" >> "$cfg_tmp"
+      fi
+    done < "$ENV_FILE"
+    chmod 600 "$cfg_tmp"
+    mv -f -- "$cfg_tmp" "$ENV_FILE"
   else
-    printf '%s=%s\n' "$key" "$val" >> "$ENV_FILE"
+    printf '%s=%s\n' "$key" "$encoded" >> "$ENV_FILE"
   fi
   say "Set $key=$val in $ENV_FILE"
 }
+SERVERJACK_PORT=${OPT_PORT:-$(cfg SERVERJACK_PORT 7680)}
+HTTPS_PORT=${OPT_HTTPS_PORT:-$(cfg SERVERJACK_HTTPS_PORT 443)}
+SERVERJACK_TERM=$(cfg SERVERJACK_TERM /term/)
+LEGACY_TTYD_PORT=$(cfg TTYD_PORT '')
+# An env file written before this setting existed has no line for it and gets
+# the default, tcp -- which is what it was already doing, so an install that is
+# only being refreshed keeps working and its serve mounts stay correct.
+LISTEN=${OPT_LISTEN:-$(cfg SERVERJACK_LISTEN tcp)}
+[[ $LISTEN == tcp || $LISTEN == unix ]] \
+  || { echo "SERVERJACK_LISTEN must be tcp or unix, got: $LISTEN" >&2; exit 1; }
+[[ $SERVERJACK_PORT =~ ^[0-9]{1,5}$ ]] \
+  || { echo "SERVERJACK_PORT must be an integer from 1 to 65535" >&2; exit 1; }
+SERVERJACK_PORT=$((10#$SERVERJACK_PORT))
+(( SERVERJACK_PORT >= 1 && SERVERJACK_PORT <= 65535 )) \
+  || { echo "SERVERJACK_PORT must be an integer from 1 to 65535" >&2; exit 1; }
+[[ $HTTPS_PORT =~ ^(443|8443|10000)$ ]] \
+  || { echo "SERVERJACK_HTTPS_PORT must be 443, 8443 or 10000" >&2; exit 1; }
+[[ $SERVERJACK_TERM =~ ^/[A-Za-z0-9._~/-]+/?$ && $SERVERJACK_TERM != / ]] \
+  || { echo "SERVERJACK_TERM must be a simple absolute subpath such as /term/" >&2; exit 1; }
+SERVERJACK_TERM=/${SERVERJACK_TERM#/}
+SERVERJACK_TERM=${SERVERJACK_TERM%/}/
+if [[ -n $LEGACY_TTYD_PORT ]]; then
+  if [[ $LEGACY_TTYD_PORT =~ ^[0-9]{1,5}$ ]] \
+      && (( 10#$LEGACY_TTYD_PORT >= 1 && 10#$LEGACY_TTYD_PORT <= 65535 )); then
+    LEGACY_TTYD_PORT=$((10#$LEGACY_TTYD_PORT))
+  else
+    # A corrupt legacy value must never be used to claim a machine-wide route.
+    LEGACY_TTYD_PORT=
+  fi
+fi
+# Validate the complete effective configuration before changing the existing
+# file. Thus a bad saved TERM, for example, cannot result in a successful port
+# rewrite followed by a validation failure.
 [[ -n $OPT_LISTEN     ]] && setcfg SERVERJACK_LISTEN     "$OPT_LISTEN"
 [[ -n $OPT_PORT       ]] && setcfg SERVERJACK_PORT       "$OPT_PORT"
 [[ -n $OPT_HTTPS_PORT ]] && setcfg SERVERJACK_HTTPS_PORT "$OPT_HTTPS_PORT"
 [[ -n $OPT_TITLE      ]] && setcfg SERVERJACK_TITLE      "$OPT_TITLE"
-SERVERJACK_PORT=$(cfg SERVERJACK_PORT 7680)
-HTTPS_PORT=$(cfg SERVERJACK_HTTPS_PORT 443)
-SERVERJACK_TERM=$(cfg SERVERJACK_TERM /term/)
-# An env file written before this setting existed has no line for it and gets
-# the default, tcp -- which is what it was already doing, so an install that is
-# only being refreshed keeps working and its serve mounts stay correct.
-LISTEN=$(cfg SERVERJACK_LISTEN tcp)
 RUNTIME=${XDG_RUNTIME_DIR}/serverjack
 mkdir -p "$RUNTIME"; chmod 700 "$RUNTIME"
 if [[ $LISTEN == tcp ]]; then
@@ -302,6 +371,13 @@ serve_backend_for() {
                     cur=(n>1 ? a[n] : "443"); next }
     /^\|--/ && cur==wp && $2==wpath { print $NF; exit }'
 }
+backend_is_ours() {
+  local backend=$1
+  [[ $backend == "http://127.0.0.1:$SERVERJACK_PORT" \
+     || $backend == "unix:$RUNTIME/web.sock" \
+     || $backend == "unix:$RUNTIME/ttyd.sock" \
+     || ( -n $LEGACY_TTYD_PORT && $backend == "http://127.0.0.1:$LEGACY_TTYD_PORT" ) ]]
+}
 remedy() {  # $1 = why, printed first
   local p; p=$(free_pair $(( SERVERJACK_PORT + 10 )))
   echo "$1" >&2
@@ -334,7 +410,19 @@ done
 
 # ---------------------------------------------------------------- units
 for u in serverjack serverjack-ttyd; do
-  sed "s|@REPO@|$REPO|g" "systemd/$u.service" > "$UNIT_DIR/$u.service"
+  python3 - "$REPO" "systemd/$u.service" "$tmp/$u.service" <<'PY'
+import pathlib
+import sys
+
+repo, source, target = sys.argv[1:]
+if any(char in repo for char in "\n\r\0"):
+    raise SystemExit("repository path contains a control character -- refusing")
+# Quoted systemd command arguments still expand percent specifiers. Backslash
+# and quote are the only other characters needing protection inside quotes.
+escaped = repo.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
+pathlib.Path(target).write_text(pathlib.Path(source).read_text().replace("@REPO@", escaped))
+PY
+  install -m 644 "$tmp/$u.service" "$UNIT_DIR/$u.service"
 done
 systemctl --user daemon-reload
 
@@ -367,21 +455,25 @@ if (( ! NO_SERVE )) && command -v tailscale >/dev/null 2>&1 && tailscale status 
   # mount is now a way straight past serverjack's checks, so take it down.
   stale=$(serve_backend_for "$HTTPS_PORT" "$mount")
   if [[ -n $stale ]]; then
-    tailscale serve --https="$HTTPS_PORT" --set-path="$mount" off >/dev/null 2>&1 \
-      && say "Removed the old $mount serve mount ($stale) -- the terminal now goes through serverjack" \
-      || echo "Could not remove the old $mount serve mount ($stale); do it with:
-  tailscale serve --https=$HTTPS_PORT --set-path=$mount off" >&2
+    if backend_is_ours "$stale"; then
+      if tailscale serve --https="$HTTPS_PORT" --set-path="$mount" off >/dev/null 2>&1; then
+        say "Removed the old $mount serve mount ($stale) -- the terminal now goes through serverjack"
+      else
+        stale_clash="could not remove this account's old $mount mount ($stale)"
+      fi
+    else
+      stale_clash="$mount already proxies to $stale, which is not this account's configured backend"
+    fi
   fi
   # `tailscale serve` is machine-wide, not per-user: whoever runs it owns that
   # (https port, path). Don't take over a mount that points somewhere else --
   # that would be silently unpublishing another account's serverjack.
-  clash=
+  clash=${stale_clash:-}
   cur=$(serve_backend_for "$HTTPS_PORT" /)
   # Ours either way: the same backend, or the tcp/unix backend of this same
   # account that we are about to replace (serve config is keyed by port+path,
   # so re-running with the new backend just replaces that mount).
-  if [[ -n $cur && $cur != "$WEB_BACKEND" && $cur != "http://127.0.0.1:$SERVERJACK_PORT" \
-        && $cur != unix:$RUNTIME/* ]]; then
+  if [[ -z $clash && -n $cur ]] && ! backend_is_ours "$cur"; then
     clash="https://<host>:$HTTPS_PORT/ already proxies to $cur, not our $WEB_BACKEND"
   fi
   if [[ -n $clash ]]; then

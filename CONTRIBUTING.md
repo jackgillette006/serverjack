@@ -44,8 +44,24 @@ Out of scope, on purpose:
   `docs/MANUAL-TESTS.md` covers what only a real phone can prove.
 - Run `bash install.sh` after pulling; it is idempotent.
 
+## Before opening a pull request
+
+1. Explain the user-visible problem and the behavior after your change.
+2. Keep the change focused and update the README when commands, configuration,
+   or security assumptions change.
+3. Run `bash tests/run.sh`. If Docker is unavailable, say which checks you
+   could run and which remain unverified.
+4. Check screenshots and logs before attaching them. Remove usernames, home
+   directories, hostnames, tailnet names, login identities, tokens, session
+   links, and unrelated terminal history.
+
+Pull requests from forks are treated as untrusted input. Maintainer automation
+labels them but never checks out or executes their code with a write token.
+
 ## Reporting a bug
 
 Include the output of `journalctl --user -u serverjack -n 50`, the browser
 and device, and, for a tool problem, the tool's version and how it was
-installed.
+installed. Review logs before posting: paths, commands, tailnet identities and
+tool output can contain private information. For vulnerabilities, follow
+[SECURITY.md](SECURITY.md) instead of opening a public issue.

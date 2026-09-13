@@ -11,7 +11,7 @@ Wants=network-online.target
 [Service]
 EnvironmentFile=%h/.config/serverjack/env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/env python3 @REPO@/bin/serverjack
+ExecStart=/usr/bin/env python3 "@REPO@/bin/serverjack"
 WorkingDirectory=%h
 Restart=on-failure
 RestartSec=3

@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose a focused improvement within serverjack's scope
+title: "[request] "
+labels:
+  - maintainer-attention
+body:
+  - type: markdown
+    attributes:
+      value: Read CONTRIBUTING.md first, especially the intentionally narrow scope.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is hard to do today, and who encounters it?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful change and its user-visible result.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing commands, configuration, or tools that almost solve it.
