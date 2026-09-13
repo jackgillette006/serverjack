@@ -14,7 +14,6 @@
 #                                and --title
 #
 # What it does, all inside your own account:
-#   0. migrates an older tmux-web install (env file, shortcuts, old user units)
 #   1. puts ttyd and fzf static binaries in ~/.local/bin (verified against
 #      checksums pinned in this script)
 #   2. writes ~/.config/serverjack/env with defaults if it doesn't exist
@@ -149,45 +148,6 @@ if ! "$BIN/fzf" --version 2>/dev/null | grep -q "^$FZF_VER"; then
   verify "$fzf_asset" "$fzf_asset" "$base/fzf_${FZF_VER}_checksums.txt"
   tar -xzf "$tmp/$fzf_asset" -C "$tmp" fzf
   install -m 755 "$tmp/fzf" "$BIN/fzf"
-fi
-
-# ---------------------------------------------------------------- migrate from tmux-web
-# The project used to be called tmux-web. Move an existing install over once:
-# convert the env file, drop the old user units (which hold ports 7680/7681).
-OLD_CFG_DIR=$HOME/.config/tmux-web
-OLD_ENV=$OLD_CFG_DIR/env
-migrated=()
-if [[ ! -f "$ENV_FILE" && -f "$OLD_ENV" ]]; then
-  sed -e '/^[[:space:]]*#.*Coding tools offered besides a plain shell/d' \
-      -e '/^[[:space:]]*TMUX_WEB_TOOLS=/c\
-# Coding tools now live in a registry: built-ins plus ~/.config/serverjack/tools.json,\
-# whose entries are merged over the built-ins by "id" (see the README).\
-# SERVERJACK_TOOLS is optional and only restricts/orders which ids are shown:\
-#SERVERJACK_TOOLS=claude,codex' \
-      -e 's/TMUX_WEB_/SERVERJACK_/g' \
-      -e 's/^# tmux-web configuration/# serverjack configuration/' \
-      -e 's/systemctl --user restart tmux-web ttyd/systemctl --user restart serverjack serverjack-ttyd/' \
-      "$OLD_ENV" > "$ENV_FILE"
-  chmod 600 "$ENV_FILE"
-  migrated+=("$OLD_ENV -> $ENV_FILE (TMUX_WEB_* renamed to SERVERJACK_*; old file left in place)")
-fi
-if [[ -f "$OLD_CFG_DIR/shortcuts.json" && ! -f "$CFG_DIR/shortcuts.json" ]]; then
-  cp -p "$OLD_CFG_DIR/shortcuts.json" "$CFG_DIR/shortcuts.json"
-  migrated+=("$OLD_CFG_DIR/shortcuts.json -> $CFG_DIR/shortcuts.json")
-fi
-old_units=()
-for u in tmux-web ttyd; do
-  [[ -f "$UNIT_DIR/$u.service" ]] && old_units+=("$u")
-done
-if (( ${#old_units[@]} )); then
-  systemctl --user disable --now "${old_units[@]}" >/dev/null 2>&1 || true
-  for u in "${old_units[@]}"; do rm -f "$UNIT_DIR/$u.service"; done
-  systemctl --user daemon-reload
-  migrated+=("stopped and removed old user units: ${old_units[*]} (they are now serverjack, serverjack-ttyd)")
-fi
-if (( ${#migrated[@]} )); then
-  say "Migrated from the old tmux-web install:"
-  printf '  %s\n' "${migrated[@]}"
 fi
 
 # ---------------------------------------------------------------- config
@@ -401,11 +361,6 @@ for port in $([[ $LISTEN == tcp ]] && echo "$SERVERJACK_PORT"); do
       whose="another process"
     fi
     remedy "port $port is in use by $whose: $holder"
-    if [[ -f /etc/systemd/system/tmux-web.service || -f /etc/systemd/system/ttyd.service ]]; then
-      echo "Or, if that is the old system-level tmux-web install, remove it once (needs root):" >&2
-      echo "  sudo systemctl disable --now tmux-web ttyd; sudo rm -f /etc/systemd/system/{tmux-web,ttyd}.service; sudo systemctl daemon-reload" >&2
-      echo "then re-run: bash $REPO/install.sh" >&2
-    fi
     exit 1
   fi
 done
