@@ -2,16 +2,19 @@
 # serverjack installer. Idempotent -- re-run after pulling changes. It never
 # prompts for a password: any root step is printed for you to paste.
 #
-#   bash install.sh              install/refresh and (re)start
-#   bash install.sh --no-serve   skip the tailscale serve step
-#   bash install.sh --tcp        listen on a 127.0.0.1 port (the default; other
-#                                local users are refused by a peer-uid check)
-#   bash install.sh --unix       listen on a private Unix socket instead --
-#                                needs `tailscale serve` run as root ONCE
+# Usage:
+#   bash install.sh                 install/refresh and (re)start
+#   bash install.sh -h | --help     show this help
+#   bash install.sh --no-serve      skip the tailscale serve step
+#   bash install.sh --tcp           listen on a 127.0.0.1 port (the default;
+#                                   other local users are refused by a
+#                                   peer-uid check)
+#   bash install.sh --unix          listen on a private Unix socket instead --
+#                                   needs `tailscale serve` run as root ONCE
 #   bash install.sh --port N --https-port N --title NAME
-#                                port and page name; a second Linux account on
-#                                this machine needs its own port, --https-port
-#                                and --title
+#                                   port and page name; a second Linux account
+#                                   on this machine needs its own port,
+#                                   --https-port and --title
 #
 # What it does, all inside your own account:
 #   1. puts ttyd and fzf static binaries in ~/.local/bin (verified against
@@ -63,6 +66,8 @@ while (( $# )); do
     --https-port=*) OPT_HTTPS_PORT=${1#*=} ;;
     --title=*)      OPT_TITLE=${1#*=} ;;
     -h|--help)    usage 0 ;;
+    # Single source of truth: bin/serverjack's own VERSION constant.
+    --version)    sed -n 's/^VERSION = "\(.*\)"/serverjack \1/p' bin/serverjack; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage 1 >&2 ;;
   esac
   shift

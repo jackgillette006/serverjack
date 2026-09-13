@@ -1,5 +1,5 @@
 """Paste / Copy / soft-key checks: Chromium desktop, then WebKit iPhone."""
-import os, sys, time, subprocess
+import os, time, subprocess
 from playwright.sync_api import sync_playwright
 BASE = os.environ.get("SERVERJACK_TEST_BASE", "http://127.0.0.1:7690"); SESS = "pwtest"
 T = ["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default")]
