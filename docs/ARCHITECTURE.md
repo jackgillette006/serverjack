@@ -277,9 +277,10 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   session refocuses rather than duplicates.
 - `pwwin.py` — the window-count badge and picker, verified against
   `tmux display -p '#{window_index}'`.
-- `pwland.py` — the Run box really starts a session, a shortcut round-trips
-  through `shortcuts.json`, and an agent card's buttons hit the routes they
-  claim, against two fake (`bin=true`) tools from a throwaway `tools.json`.
+- `pwland.py` — the Start a session card really starts a shell or an agent
+  session, a shortcut round-trips through `shortcuts.json`, and an
+  agent-servers card's buttons hit the routes they claim, against two fake
+  (`bin=true`) tools from a throwaway `tools.json`.
 - `pwauth.py` — `SERVERJACK_ALLOW` end-to-end against a second scratch
   instance, with Playwright forging (or withholding) the
   `Tailscale-User-Login` header itself: wrong/missing header is a 403 that

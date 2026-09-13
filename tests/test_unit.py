@@ -302,6 +302,26 @@ class ToolsJsonMergeTests(unittest.TestCase):
         self.assertIsNotNone(error)
         self.assertTrue(tools)   # falls back to the built-ins
 
+    def test_remote_control_actions_were_removed(self):
+        # The "open with remote control" choice moved out of the built-ins
+        # entirely -- Claude and Copilot's actions no longer include it (the
+        # accordion has no way to start an interactive session any more).
+        tools, _ = self._load([])
+        by_id = {t["id"]: t for t in tools}
+        for tid in ("claude", "copilot"):
+            labels = [a.get("label") for a in by_id[tid].get("actions") or []]
+            self.assertNotIn("Open with remote control", labels, tid)
+
+
+class DirOptionsTests(unittest.TestCase):
+    """dir_options(): ~ is always first and pre-selected, regardless of
+    where dir_choices() would otherwise place it."""
+
+    def test_home_is_first_and_selected(self):
+        first_line = mod.dir_options().split("\n", 1)[0]
+        self.assertIn(f'value="{mod.esc(mod.HOME)}"', first_line)
+        self.assertIn(" selected", first_line)
+
 
 class ShortcutsAtomicityTests(unittest.TestCase):
     """save_private_json(), through save_shortcuts()/load_shortcuts(): the
