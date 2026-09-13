@@ -47,7 +47,10 @@ jobs:
             --color D93F0B \
             --description "Needs maintainer triage" \
             --force
-          gh issue edit "$NUMBER" --add-label "$ATTENTION_LABEL"
+          # The REST issues endpoint labels issues and pull requests alike with
+          # issues: write; the GraphQL path gh uses for PRs would need more.
+          gh api -X POST "repos/${GH_REPO}/issues/${NUMBER}/labels" \
+            -f "labels[]=${ATTENTION_LABEL}" > /dev/null
 
   queue-pull-request:
     if: >-
@@ -62,6 +65,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       issues: write
+      pull-requests: write
     steps:
       - name: Add to the maintainer queue
         env:
@@ -73,7 +77,10 @@ jobs:
             --color D93F0B \
             --description "Needs maintainer triage" \
             --force
-          gh issue edit "$NUMBER" --add-label "$ATTENTION_LABEL"
+          # The REST issues endpoint labels issues and pull requests alike with
+          # issues: write; the GraphQL path gh uses for PRs would need more.
+          gh api -X POST "repos/${GH_REPO}/issues/${NUMBER}/labels" \
+            -f "labels[]=${ATTENTION_LABEL}" > /dev/null
 
   record-ci-failure:
     if: >-
