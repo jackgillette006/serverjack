@@ -35,9 +35,13 @@ Requirements: Linux, systemd, tmux, Python 3.9+ and curl. Tailscale is optional
 but recommended.
 
 ```sh
-git clone https://github.com/jackgillette006/serverjack ~/projects/serverjack
-bash ~/projects/serverjack/install.sh
+git clone https://github.com/jackgillette006/serverjack
+bash serverjack/install.sh
 ```
+
+Clone it anywhere you keep code. The installer records that path in the user
+units and the built-in "Update serverjack" shortcut runs `git pull` there, so
+leave the checkout where it is; move it and re-run `install.sh` if you must.
 
 serverjack has no password of its own. Anyone who can reach it gets a shell as
 the account running it. Keep it behind `tailscale serve` or a reverse proxy
@@ -335,8 +339,8 @@ it runs, and it is the same one the vendor's own docs tell you to paste.
 Requirements: Linux, systemd, tmux, python3, curl. Tailscale optional.
 
 ```
-git clone https://github.com/jackgillette006/serverjack ~/projects/serverjack
-bash ~/projects/serverjack/install.sh
+git clone https://github.com/jackgillette006/serverjack
+bash serverjack/install.sh
 ```
 
 The installer downloads ttyd and fzf binaries into `~/.local/bin` — HTTPS
@@ -468,7 +472,7 @@ so when it takes one down. `uninstall.sh` turns off the `/` mount (and that old
 | `SERVERJACK_PORT` | `7680` | serverjack's port (localhost) — `tcp` mode only |
 | `SERVERJACK_HTTPS_PORT` | `443` | HTTPS port `tailscale serve` publishes on, and the only one `uninstall.sh` turns off — `443`, `8443` or `10000`. Give a second account on the machine its own |
 | `SERVERJACK_TITLE` | hostname | page title, tab title, PWA name |
-| `SERVERJACK_DIRS` | `~/projects:~/src:~/workspace:~` | directories offered when starting a session |
+| `SERVERJACK_DIRS` | `~/projects:~/src:~/code:~` | directories offered when starting a session |
 | `SERVERJACK_TOOLS` | unset (all) | optional comma-separated tool ids: restricts and orders the Agent rows, e.g. `claude,codex` |
 | `SERVERJACK_TERM` | `/term/` | URL path serverjack serves the terminal on (proxying it to ttyd's socket) |
 | `TTYD_EXTRA_ARGS` | unset | optional ttyd client options, shell-parsed as data with no expansion. Allowed flags: `-t`/`--client-option`, `-T`/`--terminal-type`, `-m`/`--max-clients`, and `-P`/`--ping-interval`. Listener, auth, command, base-path, origin and write-access flags are refused |

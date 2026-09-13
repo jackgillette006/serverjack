@@ -11,7 +11,7 @@
 #   it. Esc / Ctrl-C / "Exit" ends the connection.
 #
 #   "New Claude Code session" / "New Codex session": asks for a name and a
-#   directory (fzf over ~/workspace dirs, or type any path), then starts the
+#   directory (fzf over the SERVERJACK_DIRS roots, or type any path), then starts the
 #   tool in a fresh tmux session there and attaches. The tool runs in front of
 #   a login shell, so if it isn't installed or isn't logged in you land on the
 #   error message and a prompt instead of the session silently vanishing.
@@ -34,7 +34,7 @@ EXIT=$'x\tx  Exit'
 
 # Directories offered by the picker for new coding sessions (typing any other
 # path works too).
-IFS=: read -r -a DIR_ROOTS <<<"${SERVERJACK_DIRS:-$HOME/projects:$HOME/src:$HOME/workspace:$HOME}"
+IFS=: read -r -a DIR_ROOTS <<<"${SERVERJACK_DIRS:-$HOME/projects:$HOME/src:$HOME/code:$HOME}"
 DIR_ROOTS=("${DIR_ROOTS[@]/#\~/$HOME}")
 
 list_sessions() {

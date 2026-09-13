@@ -178,7 +178,7 @@ SERVERJACK_PORT=${OPT_PORT:-7680}
 SERVERJACK_HTTPS_PORT=${OPT_HTTPS_PORT:-443}
 SERVERJACK_TITLE=${OPT_TITLE:-$(hostname -s)}
 # Directories offered when starting a session (colon-separated, ~ ok)
-SERVERJACK_DIRS=~/projects:~/src:~/workspace:~
+SERVERJACK_DIRS=~/projects:~/src:~/code:~
 # Coding tools come from a registry: the built-ins (Claude Code, Codex, OpenCode,
 # Copilot CLI, Gemini CLI) plus $CFG_DIR/tools.json, whose entries are merged
 # over the built-ins by "id" -- that is where you add or override a tool.

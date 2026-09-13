@@ -12,7 +12,7 @@ one-line note; screenshots of anything odd help.
 You are testing a browser-based tmux terminal at https://<your-host>/ .
 Open it in Chrome (with the Claude in Chrome extension) or do the steps by hand.
 1. Landing page, top to bottom: a "Run a command" box, Shortcuts, Sessions (listed with Open buttons plus a "New shell" form with a Name box and a Directory dropdown), Agents (one collapsed row per coding tool).
-2. Create a Shell session named "t-desktop" in ~/workspace. You should land in a terminal with a tab bar on top and "t-desktop" highlighted.
+2. Create a Shell session named "t-desktop" in your home directory. You should land in a terminal with a tab bar on top and "t-desktop" highlighted.
 3. Type `echo hello` Enter. Output appears.
 4. Type `sleep 30` Enter, then press Ctrl+C with NOTHING selected. The sleep is interrupted (prompt comes back).
 5. Type `echo COPYTEST` Enter. Drag-select the word COPYTEST in the output with the mouse. Press Ctrl+C. Then click in the terminal, type `echo ` and press Ctrl+V, then Enter. Expect "COPYTEST" echoed back. (Copy with a selection must NOT interrupt anything.)
