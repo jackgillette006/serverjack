@@ -602,7 +602,7 @@ The same numbers, plus what the agents are doing, come out of `GET
               "servers_running": 1, "daemon_running": false}],
   "agents_summary": "1 server · 1 daemon",
   "load": [0.42, 0.5, 0.6], "mem_used_pct": 61,
-  "disk_free_gb": 1204.3, "uptime_s": 1051200, "version": "1.2.0"
+  "disk_free_gb": 1204.3, "uptime_s": 1051200, "version": "1.2.1"
 }
 ```
 
