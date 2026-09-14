@@ -5,7 +5,7 @@ All notable changes to serverjack are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.3.0 - 2026-09-14
 
 ### Changed
 
@@ -13,6 +13,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
   appear in page headers, the terminal's All sessions link, and browser and
   home-screen icons. SVG and antialiased PNG icons share the same geometry;
   refreshed icon URLs replace the previously cached artwork.
+- README repositioned around "Jack into your server": a demo GIF and a
+  five-bullet proof list above the fold, "Why serverjack" reordered to lead
+  with the reason the project exists, and a social preview image for link
+  previews. No behavior change.
+- Added `docs/FAQ.md`, answering the five questions this kind of project
+  gets asked first: why not plain ttyd, why not the vendors' own remote
+  control, why Tailscale and not a password, whether it phones home, and how
+  to run it without Tailscale. Linked from the README's security section and
+  its Contents list.
 
 ## 1.2.1 - 2026-09-14
 
