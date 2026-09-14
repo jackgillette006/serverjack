@@ -1,17 +1,27 @@
 # serverjack
 
+**Jack into your server.**
+
+Your coding agents, from your phone. Lightweight, private, self-hosted.
+
 [![CI](https://github.com/jackgillette006/serverjack/actions/workflows/ci.yml/badge.svg)](https://github.com/jackgillette006/serverjack/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jackgillette006/serverjack)](https://github.com/jackgillette006/serverjack/releases)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 
-Your tmux sessions and coding agents, from your phone — one Python file, no Node, no sudo.
+[Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [FAQ](docs/FAQ.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
 
-[Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
+![Demo: picking Claude Code and a project directory, starting a session, and landing in a live terminal, on a phone](docs/shots/demo.gif)
 
 | Desktop | iPhone — landing | iPhone — terminal |
 |---|---|---|
 | ![Landing page on a desktop](docs/shots/desktop.png) | ![Landing page on iPhone](docs/shots/iphone-landing.png) | ![Terminal on iPhone](docs/shots/iphone-term.png) |
+
+- One stdlib Python file.
+- No Node, no sudo, no root.
+- Only reachable on your Tailscale network.
+- Never phones home: no telemetry, no analytics, no update checks.
+- Installs in three lines.
 
 ## Quick start
 
@@ -33,42 +43,45 @@ the account running it. Keep it behind `tailscale serve` (what `install.sh`
 sets up) or a reverse proxy with real authentication, never `tailscale
 funnel`. On a shared machine, use `install.sh --unix`; set `SERVERJACK_ALLOW`
 when the tailnet has other users. Read the full
-[security model](#security-model-read-this-first) before exposing the
-service.
-
-Everything server-side is one stdlib Python file plus a prebuilt ttyd binary.
-No pip, no npm, no compiler, no root.
+[security model](#security-model-read-this-first) or the
+[FAQ](docs/FAQ.md) before exposing the service.
 
 ## Why serverjack
 
-serverjack is a web front door to a home server, meant to be reached over
-Tailscale from an iPhone or a laptop. Open a URL and you get:
+Your agent asked you something and your laptop is closed. It wants a `sudo`
+password, hit a login prompt, or just finished and you want to see the
+output. serverjack is a web front door to a home server, reached over
+Tailscale, your private network, from a phone or a laptop. Open a URL and you
+get:
 
-- **Start a session** — pick Shell or an installed agent (Claude Code, Codex,
-  OpenCode, GitHub Copilot CLI, Gemini CLI), a directory (defaults to `~`),
-  and tap Start. Shell doubles as the paste-and-run box: an agent tells you to
-  run something it can't (`sudo apt install ...`, a service restart, a disk
-  check), type it in and you land in a real terminal with it running.
-- **Sessions** — every tmux session on the box as a button. Tap to attach.
-  Any "type a path" field accepts a directory that doesn't exist yet and
-  creates it, so starting a shell or an agent in a new project is one step.
-  Open, rename, kill, pop out into its own window on a desktop, or hand off to
-  a real SSH client.
-- **Agent servers** — a collapsed accordion row per coding CLI that still
-  needs something: install, log in, or start the background server the phone
-  app connects to (Claude's remote-control server, Codex's daemon and
-  pairing, OpenCode's server). A tool that's ready with nothing else to
-  configure has no row here — it only ever needed the picker above.
-- **A real terminal** — [ttyd](https://github.com/tsl0922/ttyd) in an iframe,
-  with session tabs, a tmux-window picker, a phone soft-key row (Esc, Tab,
+- **A real terminal.** [ttyd](https://github.com/tsl0922/ttyd) in an iframe,
+  with session tabs, a tmux window picker, a phone soft-key row (Esc, Tab,
   Shift-Tab, Ctrl, arrows, ^C, PgUp/PgDn, Paste, Copy), and "Add to Home
   Screen" on iOS for a full-screen app with no browser chrome.
+- **A paste-and-run box.** An agent tells you to run something it can't
+  (`sudo apt install ...`, a service restart, a disk check); paste it into
+  Shell and you land in that terminal watching it run.
+- **Start a session.** Pick Shell or an installed agent (Claude Code, Codex,
+  OpenCode, GitHub Copilot CLI, Gemini CLI) and a directory (defaults to
+  `~`), and tap Start.
+- **Sessions.** Every tmux session (tmux is the tool that keeps a terminal
+  alive after you close the laptop) is a button on the page. Tap to attach. Any "type a path" field accepts a directory that doesn't exist
+  yet and creates it, so starting a shell or an agent in a new project is one
+  step. Open, rename, kill, pop out into its own window on a desktop, or hand
+  off to a real SSH client.
+- **Agent servers.** A collapsed row per coding CLI that still needs
+  something: install, log in, or start the background server the phone app
+  connects to (Claude's remote-control server, Codex's daemon and pairing,
+  OpenCode's server). A tool that's ready with nothing else to configure has
+  no row here — it only ever needed the picker above.
 - A CRT toggle skins the whole UI (off under `prefers-reduced-motion`); the
   full effect budget is documented in
   [docs/design/DESIGN.md](docs/design/DESIGN.md#crt-effects).
 
 See [Why this and not X](#why-this-and-not-x) for how this compares to Claude
-Code Remote Control, VibeTunnel, plain ttyd, and Zellij's web client.
+Code Remote Control, VibeTunnel, plain ttyd, and Zellij's web client, and the
+[FAQ](docs/FAQ.md) for the rest: why not plain ttyd, why not the vendors' own
+remote control, why Tailscale and not a password, and whether it phones home.
 
 ## Contents
 
@@ -81,6 +94,7 @@ Code Remote Control, VibeTunnel, plain ttyd, and Zellij's web client.
 - [Why this and not X](#why-this-and-not-x)
 - [Security model, read this first](#security-model-read-this-first)
   - [Residual risk](#residual-risk)
+- [FAQ](docs/FAQ.md)
 - [Install (no sudo)](#install-no-sudo)
   - [Two accounts on one machine](#two-accounts-on-one-machine)
   - [Upgrading an existing install](#upgrading-an-existing-install)
@@ -279,6 +293,9 @@ authenticates:
   tailnet, subject to your ACLs. Never `tailscale funnel` it.
 - Or a reverse proxy with real auth in front (VPN-only, mTLS, SSO). See
   `examples/nginx.conf`.
+
+See the [FAQ](docs/FAQ.md) for why Tailscale rather than a password, and
+whether serverjack phones home (no).
 
 Treat the URL exactly like SSH access. The app refuses cross-site POSTs and
 ttyd rejects WebSockets from other origins, so a malicious web page can't
@@ -602,7 +619,7 @@ The same numbers, plus what the agents are doing, come out of `GET
               "servers_running": 1, "daemon_running": false}],
   "agents_summary": "1 server · 1 daemon",
   "load": [0.42, 0.5, 0.6], "mem_used_pct": 61,
-  "disk_free_gb": 1204.3, "uptime_s": 1051200, "version": "1.2.1"
+  "disk_free_gb": 1204.3, "uptime_s": 1051200, "version": "1.3.0"
 }
 ```
 
