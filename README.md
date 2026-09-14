@@ -48,9 +48,9 @@ when the tailnet has other users. Read the full
 
 ## Why serverjack
 
-Your agent asked you something and your laptop is closed. It wants a `sudo`
-password, hit a login prompt, or just finished and you want to see the
-output. serverjack is a web front door to a home server, reached over
+Start Claude Code in the right project directory, paste the `sudo` command an
+agent asked you to run, or close the tmux sessions you're done with, from
+your phone. serverjack is a web front door to a home server, reached over
 Tailscale, your private network, from a phone or a laptop. Open a URL and you
 get:
 
