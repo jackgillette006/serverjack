@@ -16,16 +16,19 @@
 #
 # What's different from make.sh: instead of three static screenshots, this
 # drives gif_record.py to record a Playwright video (WebKit, iPhone 14
-# emulation) of the demo flow -- land on the phone-emulated landing page,
-# pick the Claude Code pill and ~/projects/3d-lab, tap Start, sit on the
-# live terminal while this script types `ls` into the new session directly
-# over tmux (see gif_record.py's docstring for why host-side, not live
-# browser typing), tap back to the list -- then converts the recording to a
-# GIF and an MP4 with ffmpeg in a container.
+# emulation, device_scale_factor=2) of the demo flow -- land on the
+# phone-emulated landing page, pick the Claude Code pill, type
+# ~/projects/3d-lab into the "...or type a path" input (the <select>
+# picker never renders as a native popup under emulation, so typing is the
+# only part of it that's actually visible), tap Start, sit on the live
+# terminal while this script feeds the new session a short, honest,
+# neutral transcript directly over tmux (see gif_record.py's docstring for
+# why host-side, not live browser typing), tap back to the list -- then
+# converts the recording to a GIF and an MP4 with ffmpeg in a container.
 set -Eeuo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 IMG=mcr.microsoft.com/playwright/python:v1.62.0-noble@sha256:aa81288e738725378becba5b3e06cb0f3a7f012a610e87e8d767a090ea3f740d
-FFIMG=jrottenberg/ffmpeg:4.4-alpine
+FFIMG=jrottenberg/ffmpeg:6-alpine
 REAL_REPO=$(cd ../.. && pwd)                # docs/shots -> repo root, read-only
 
 TEST_TMP_BASE=${TMPDIR:-/tmp}
@@ -70,7 +73,6 @@ chmod +x "$NEUTRAL_REPO"/bin/*
 FAKE_HOME="$RUN_ROOT/home"
 mkdir -p "$FAKE_HOME"/projects/3d-lab/{models,renders} "$FAKE_HOME"/projects/game/{src,assets} \
   "$FAKE_HOME"/projects/media-stack "$FAKE_HOME"/src
-: > "$FAKE_HOME/projects/3d-lab/render.py"
 : > "$FAKE_HOME/projects/game/Cargo.toml"
 : > "$FAKE_HOME/projects/game/src/main.rs"
 : > "$FAKE_HOME/projects/media-stack/docker-compose.yml"
@@ -86,6 +88,72 @@ G=(git -C "$FAKE_HOME/projects/game" -c user.name=dev -c user.email=dev@example.
 : > "$FAKE_HOME/projects/game/src/terrain.rs"
 "${G[@]}" add -A && "${G[@]}" commit -q -m "Procedural terrain: first pass"
 
+# A handful of plausible-looking files in "3d-lab" too, and its own tiny git
+# history, so the recorded terminal has something real (if fake) to `ls` and
+# `git status` -- neutral content, no real names or paths.
+cat > "$FAKE_HOME/projects/3d-lab/render.py" <<'PY'
+#!/usr/bin/env python3
+"""Batch-render every scene in models/ to renders/, one PNG per frame."""
+import pathlib
+
+SCENES = sorted(pathlib.Path("models").glob("*.blend"))
+
+def render(scene):
+    print(f"rendering {scene}")
+
+if __name__ == "__main__":
+    for scene in SCENES:
+        render(scene)
+PY
+cat > "$FAKE_HOME/projects/3d-lab/README.md" <<'MD'
+# 3d-lab
+
+Scratch space for render experiments. `models/` holds scene files,
+`renders/` holds output frames. Run `render.py` to batch-render everything
+in `models/`.
+MD
+cat > "$FAKE_HOME/projects/3d-lab/requirements.txt" <<'TXT'
+numpy==2.1.1
+pillow==11.0.0
+TXT
+: > "$FAKE_HOME/projects/3d-lab/models/scene-01.blend"
+GL=(git -C "$FAKE_HOME/projects/3d-lab" -c user.name=dev -c user.email=dev@example.com
+    -c commit.gpgsign=false)
+"${GL[@]}" init -q
+"${GL[@]}" add -A && "${GL[@]}" commit -q -m "Initial commit"
+: > "$FAKE_HOME/projects/3d-lab/models/scene-02.blend"
+"${GL[@]}" add -A && "${GL[@]}" commit -q -m "Add second scene"
+cat >> "$FAKE_HOME/projects/3d-lab/requirements.txt" <<'TXT'
+tqdm==4.66.5
+TXT
+"${GL[@]}" add -A && "${GL[@]}" commit -q -m "Track render progress with tqdm"
+# One untracked file left sitting around, so a `git status` in the recording
+# shows something rather than a flat "nothing to commit".
+: > "$FAKE_HOME/projects/3d-lab/renders/frame-001.png"
+
+# A fixture "claude" on PATH -- an honest stand-in, not a fake product UI.
+# It just execs a plain interactive bash (reading the fake HOME's rcfiles
+# set up below), so the recorded terminal shows a real, if scripted, shell
+# session. Having a real `claude` executable resolvable via TOOL_PATH is
+# also what makes tool_kinds() offer the "Claude Code" pill at all, and
+# what the Start card's hint text ("Runs <code>") names.
+FIXTURE_BIN="$RUN_ROOT/bin"
+mkdir -m 700 "$FIXTURE_BIN"
+cat > "$FIXTURE_BIN/claude" <<'SH'
+#!/usr/bin/env bash
+# Fixture stand-in for the real Claude Code CLI, used only by this
+# throwaway demo instance. Honest: it just hands you a plain shell.
+exec bash "$@"
+SH
+chmod +x "$FIXTURE_BIN/claude"
+# Ahead of the real PATH so this fixture wins over any real `claude` CLI
+# installed on the host running this script. This export reaches the
+# server and ttyd processes (started below via `env`, which inherits the
+# rest of the calling shell's environment), but NOT the tmux session
+# started through the browser's Start button, below -- see the PATH line
+# added to .bash_profile/.bashrc next.
+export PATH="$FIXTURE_BIN:$PATH"
+
 # A generic prompt -- no real username or hostname. \w expands relative to
 # $HOME, and HOME below is this fake one, so it renders as "~" / "~/projects/game".
 printf '%s\n' "PS1='dev@homeserver:\\w\$ '" "unset HISTFILE" > "$FAKE_HOME/bashrc"
@@ -95,16 +163,22 @@ printf -v session_shell 'exec env HOME=%q bash --noprofile --rcfile %q -i' \
 # --rcfile), a session started through the browser's Start button runs
 # `bash -lc "<the tool's run command>"` (see command_args() in
 # bin/serverjack) -- an outer *login* bash (reads ~/.bash_profile) that then
-# runs the fake "Claude Code" tool's run command, which is itself plain
-# `bash` (see cfg/tools.json below): a nested, *interactive non-login* bash
-# (reads ~/.bashrc, via Debian's patched bash which sources /etc/bash.bashrc
-# first and ~/.bashrc after -- that system file is what was setting the
-# real \u@\h:\w prompt here despite HOME already being this fake one). PS1
-# is a plain, unexported shell variable, so the outer shell's doesn't reach
-# the inner one either way -- both files need it. Without these, this
-# session's prompt shows this machine's real username, hostname and /tmp
-# checkout path.
+# runs the fake "Claude Code" tool's run command, which is the fixture
+# `claude` wrapper above (see cfg/tools.json below), itself a nested,
+# *interactive non-login* bash (reads ~/.bashrc, via Debian's patched bash
+# which sources /etc/bash.bashrc first and ~/.bashrc after -- that system
+# file is what was setting the real \u@\h:\w prompt here despite HOME
+# already being this fake one). PS1 is a plain, unexported shell variable,
+# so the outer shell's doesn't reach the inner one either way -- both files
+# need it. And because it's a *login* shell, Debian's /etc/profile resets
+# PATH outright before ~/.bash_profile ever runs -- wiping the PATH this
+# script exported above -- so the fixture bin dir has to be re-added here
+# too, or the login shell can't find the fixture `claude` on PATH at all.
+# Without any of this, this session's prompt shows this machine's real
+# username, hostname and /tmp checkout path, and "claude: command not
+# found" instead of the fixture wrapper running.
 printf '%s\n' "PS1='dev@homeserver:\\w\$ '" "unset HISTFILE" \
+  "export PATH=\"$FIXTURE_BIN:\$PATH\"" \
   > "$FAKE_HOME/.bash_profile"
 cp "$FAKE_HOME/.bash_profile" "$FAKE_HOME/.bashrc"
 
@@ -112,8 +186,8 @@ cp "$FAKE_HOME/.bash_profile" "$FAKE_HOME/.bashrc"
 CFG="$RUN_ROOT/cfg"
 mkdir -m 700 "$CFG"
 cat > "$CFG/tools.json" <<'JSON'
-[{"id": "claude", "label": "Claude Code", "bin": "true", "login": "true",
-  "login_check": "true", "run": "bash"}]
+[{"id": "claude", "label": "Claude Code", "bin": "claude", "login": "true",
+  "login_check": "true", "run": "claude"}]
 JSON
 cat > "$CFG/shortcuts.json" <<'JSON'
 [{"id": "sc-media", "label": "Rebuild media stack",
@@ -211,9 +285,14 @@ CID=$(docker run -d --network host \
     python3 gif_record.py')
 
 # gif_record.py writes the new session name to $OUT/session_name.txt as soon
-# as Start lands it on the terminal page; type `ls` into it over the host's
-# own tmux (same binary/version as the server, unlike an apt-installed tmux
-# inside the container) the moment we see it, then unblock the recording.
+# as Start lands it on the terminal page; feed it a short, honest, neutral
+# transcript over the host's own tmux (same binary/version as the server,
+# unlike an apt-installed tmux inside the container) the moment we see it --
+# `ls --color=always` and `git status` land almost instantly, before the
+# browser has finished attaching to the terminal, so they read as a
+# pre-existing session rather than something typed live; the final `ls` is
+# sent the same way but is the one thing meant to look "live" in the
+# recording -- then unblock the recording.
 name=""
 for _ in $(seq 1 100); do
   if [[ -s "$OUT/session_name.txt" ]]; then
@@ -225,10 +304,14 @@ for _ in $(seq 1 100); do
 done
 
 if [[ -n $name ]]; then
+  "${T[@]}" send-keys -t "$name" "ls --color=always" Enter
+  sleep 0.3
+  "${T[@]}" send-keys -t "$name" "git status" Enter
+  sleep 0.4
   "${T[@]}" send-keys -t "$name" "ls" Enter
   : > "$OUT/typed_done"
 else
-  echo "warning: never got a session name from the recorder -- demo.gif will be missing the ls output" >&2
+  echo "warning: never got a session name from the recorder -- demo.gif will be missing the fed transcript" >&2
 fi
 
 docker wait "$CID" >/dev/null
@@ -244,19 +327,41 @@ FF="$RUN_ROOT/ff"
 mkdir -p "$FF"
 cp "$WEBM" "$FF/demo.webm"
 
-# 12fps, 390px wide (iPhone 14 CSS width) -- a two-pass palette gets a much
-# cleaner GIF out of screen-capture-style content than a single-pass convert.
-docker run --rm -v "$FF:/w" "$FFIMG" -y -i /w/demo.webm \
-  -vf "fps=12,scale=390:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=192[p];[s1][p]paletteuse=dither=bayer" \
-  /w/demo.gif >"$RUN_ROOT/ffmpeg-gif.log" 2>&1 || {
-  echo "ffmpeg gif conversion failed -- see $RUN_ROOT/ffmpeg-gif.log" >&2
-  tail -n 40 "$RUN_ROOT/ffmpeg-gif.log" >&2
-  exit 1
+# Two-pass palette (palettegen/paletteuse) gets a much cleaner GIF out of
+# screen-capture-style content than a single-pass convert. Starts at
+# 20fps/520px wide; if that's over the 4 MB budget, retries at 16fps, then
+# 16fps/480px, before giving up.
+gif_pass() {
+  local fps=$1 width=$2
+  docker run --rm -v "$FF:/w" "$FFIMG" -y -i /w/demo.webm \
+    -vf "fps=${fps},scale=${width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" \
+    /w/demo.gif >"$RUN_ROOT/ffmpeg-gif.log" 2>&1 || {
+    echo "ffmpeg gif conversion (${fps}fps, ${width}px) failed -- see $RUN_ROOT/ffmpeg-gif.log" >&2
+    tail -n 40 "$RUN_ROOT/ffmpeg-gif.log" >&2
+    exit 1
+  }
+  echo $(( $(stat -c%s "$FF/demo.gif") / 1024 ))
 }
 
-# A small H.264 MP4 too, for later social posts -- not linked from the README.
+gif_kb=$(gif_pass 20 520)
+if (( gif_kb > 4096 )); then
+  echo "demo.gif at 20fps/520px was ${gif_kb} KB -- retrying at 16fps/520px" >&2
+  gif_kb=$(gif_pass 16 520)
+fi
+if (( gif_kb > 4096 )); then
+  echo "demo.gif at 16fps/520px was ${gif_kb} KB -- retrying at 16fps/480px" >&2
+  gif_kb=$(gif_pass 16 480)
+fi
+if (( gif_kb > 4096 )); then
+  echo "demo.gif is still ${gif_kb} KB after dropping to 16fps/480px, over the 4 MB budget -- shorten the recording and re-run" >&2
+  exit 1
+fi
+
+# The MP4 at full recording resolution (780x1688 -- iPhone 14 CSS size at
+# device_scale_factor=2), for later social posts -- not linked from the
+# README.
 docker run --rm -v "$FF:/w" "$FFIMG" -y -i /w/demo.webm \
-  -vf "scale=390:-1" -c:v libx264 -preset veryslow -crf 30 -pix_fmt yuv420p \
+  -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p \
   -movflags +faststart -an /w/demo.mp4 >"$RUN_ROOT/ffmpeg-mp4.log" 2>&1 || {
   echo "ffmpeg mp4 conversion failed -- see $RUN_ROOT/ffmpeg-mp4.log" >&2
   tail -n 40 "$RUN_ROOT/ffmpeg-mp4.log" >&2
@@ -265,12 +370,6 @@ docker run --rm -v "$FF:/w" "$FFIMG" -y -i /w/demo.webm \
 
 [[ -s "$FF/demo.gif" ]] || { echo "missing $FF/demo.gif -- conversion failed" >&2; exit 1; }
 [[ -s "$FF/demo.mp4" ]] || { echo "missing $FF/demo.mp4 -- conversion failed" >&2; exit 1; }
-
-gif_kb=$(( $(stat -c%s "$FF/demo.gif") / 1024 ))
-if (( gif_kb > 4096 )); then
-  echo "demo.gif is ${gif_kb} KB, over the 4 MB budget -- shorten the recording or the fps/width and re-run" >&2
-  exit 1
-fi
 
 cp "$FF/demo.gif" ./demo.gif
 cp "$FF/demo.mp4" ./demo.mp4
