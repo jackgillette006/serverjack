@@ -1,6 +1,6 @@
 """Driver for docs/shots/make.sh, run inside the Playwright container.
 
-Takes the three README screenshots against an isolated, neutral serverjack
+Takes the README screenshots and logo closeups against an isolated, neutral serverjack
 instance (see make.sh for how it's set up): the landing page on a desktop
 viewport, the landing page on an emulated iPhone, and one open terminal
 session on an emulated iPhone. Nothing here asserts anything -- make.sh
@@ -8,7 +8,6 @@ already knows the instance came up (it polls /healthz) -- this file only
 frames and captures.
 """
 import os
-import time
 
 from playwright.sync_api import sync_playwright
 
@@ -22,8 +21,14 @@ with sync_playwright() as p:
     page = ctx.new_page()
     page.goto(f"{BASE}/", wait_until="networkidle")
     page.wait_for_selector("h2:text('Sessions')")
-    page.wait_for_timeout(400)          # let webfonts settle before capture
+    page.wait_for_timeout(400)          # let layout settle before capture
     page.screenshot(path=os.path.join(OUT, "desktop.png"), full_page=True)
+
+    # A close view of the real header and served app icon for the branding PR.
+    page.locator("h1").screenshot(path=os.path.join(OUT, "prompt-jack-header.png"))
+    page.goto(f"{BASE}/icon.svg?v=prompt-jack", wait_until="networkidle")
+    page.set_viewport_size({"width": 256, "height": 256})
+    page.screenshot(path=os.path.join(OUT, "prompt-jack-icon.png"))
     b.close()
     print("captured desktop.png")
 

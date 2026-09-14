@@ -81,6 +81,27 @@ with sync_playwright() as p:
     page.on("dialog", lambda d: d.accept())          # confirm() on delete/kill
     page.goto(f"{BASE}/")
 
+    # The browser and iPhone icons must render the same mark even though one
+    # is SVG and the other is generated with the Python stdlib.
+    icon_diff = page.evaluate("""async () => {
+      const urls = ['link[rel=icon]', 'link[rel=apple-touch-icon]']
+        .map(selector => document.querySelector(selector).href);
+      const pixels = await Promise.all(urls.map(url => new Promise((resolve, reject) => {
+        const image = new Image(); image.onerror = reject;
+        image.onload = () => {
+          const canvas = document.createElement('canvas'); canvas.width = canvas.height = 180;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#080f0e'; ctx.fillRect(0, 0, 180, 180);
+          ctx.drawImage(image, 0, 0, 180, 180);
+          resolve(ctx.getImageData(0, 0, 180, 180).data);
+        };
+        image.src = url;
+      })));
+      return pixels[0].reduce((sum, channel, i) => sum + Math.abs(channel-pixels[1][i]), 0)
+        / pixels[0].length;
+    }""")
+    ok("SVG favicon and iPhone PNG render the same logo", icon_diff < 0.5, str(icon_diff))
+
     # ---------------------------------------------------------- layout ----
     heads = page.eval_on_selector_all("main h2", "els => els.map(e => e.textContent.trim())")
     def at(t):
