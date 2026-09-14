@@ -5,6 +5,15 @@ All notable changes to serverjack are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- README "Why serverjack" opens with what serverjack does (start an agent in
+  the right directory, paste the command it asked for, close finished tmux
+  sessions) rather than with checking on a running agent, which is what the
+  vendors' remote-control features are for.
+
 ## 1.3.0 - 2026-09-14
 
 ### Changed
