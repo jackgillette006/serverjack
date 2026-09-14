@@ -390,5 +390,57 @@ class ValidateNameTests(unittest.TestCase):
         self.assertEqual(name, "a-plain-name")
 
 
+class DefaultSessionNameTests(unittest.TestCase):
+    """default_session_name(): the "<type>-<directory>" default, from the
+    spec's own examples -- HOME handling, skipping sudo/env/nohup/nice/time
+    to find the real command, sanitizing, and the auto_name() uniqueness
+    suffix (session_exists monkeypatched so no real tmux server is needed)."""
+
+    def setUp(self):
+        self._orig_home = mod.HOME
+        self._orig_exists = mod.session_exists
+        self._existing = set()
+        mod.HOME = "/home/x"
+        mod.session_exists = lambda name: name in self._existing
+
+    def tearDown(self):
+        mod.HOME = self._orig_home
+        mod.session_exists = self._orig_exists
+
+    def test_shell_in_home_has_no_directory_part(self):
+        self.assertEqual(mod.default_session_name("shell", "/home/x"), "shell")
+
+    def test_shell_in_a_subdirectory_adds_it(self):
+        self.assertEqual(
+            mod.default_session_name("shell", "/home/x/projects/3d-lab"), "shell-3d-lab")
+
+    def test_agent_kind_uses_the_tool_id(self):
+        self.assertEqual(
+            mod.default_session_name("claude", "/home/x/projects/game"), "claude-game")
+
+    def test_sudo_is_skipped_for_the_command_word(self):
+        self.assertEqual(
+            mod.default_session_name("shell", "/home/x", "sudo apt install ffmpeg"), "apt")
+
+    def test_sudo_skipped_with_a_directory_too(self):
+        self.assertEqual(
+            mod.default_session_name("shell", "/home/x/src", "sudo apt install ffmpeg"), "apt-src")
+
+    def test_only_wrapper_words_fall_back_to_shell(self):
+        self.assertEqual(mod.default_session_name("shell", "/home/x", "sudo env nohup"), "shell")
+
+    def test_no_command_falls_back_to_shell(self):
+        self.assertEqual(mod.default_session_name("shell", "/home/x"), "shell")
+
+    def test_directory_basename_is_sanitized(self):
+        self.assertEqual(
+            mod.default_session_name("shell", "/home/x/My Dir!"), "shell-my-dir")
+
+    def test_uniqueness_suffix_via_session_exists(self):
+        self._existing.add("apt-src")
+        self.assertEqual(
+            mod.default_session_name("shell", "/home/x/src", "sudo apt install ffmpeg"), "apt-src-2")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

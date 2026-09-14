@@ -113,6 +113,10 @@ Pick **Shell** or an installed agent, a directory (defaults to `~`), and tap
   choice here — those are background processes the phone apps connect to,
   and live in [Agent servers](#agent-servers) below.
 
+Naming the session is optional — leave it blank and it is named for the type
+and directory instead (a shell in `~/projects/3d-lab` becomes `shell-3d-lab`,
+`claude` in `~/projects/game` becomes `claude-game`).
+
 Tick "Save as a shortcut" (only offered with a Shell command) and it becomes
 a one-tap button in the Shortcuts list for next time. Shortcuts live in
 `~/.config/serverjack/shortcuts.json`.

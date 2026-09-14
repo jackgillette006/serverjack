@@ -7,6 +7,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Every way to start a session (the Start a session card, the terminal page's
+  "+" popover, `/start`, `/new`/`/api/new`, `/tools/open`, and a run shortcut)
+  now takes an optional name. Left blank, the session is named for its type
+  and directory instead of a bare kind — a shell in `~/projects/3d-lab`
+  becomes `shell-3d-lab`, `sudo apt install ffmpeg` becomes `apt` (or
+  `apt-src` run from `~/src`).
+
 ### Changed
 
 - Landing page: "Run a command" and "New shell" are replaced by one "Start a
