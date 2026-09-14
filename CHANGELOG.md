@@ -31,6 +31,43 @@ and this project uses [Semantic Versioning](https://semver.org/).
   instead of a hand-copied stylesheet and SVG path data that could drift from
   what actually ships; `gif_record.py`'s tap-ring color now reads `--accent`
   off the live page instead of a hardcoded hex.
+- README proof bullets qualified for accuracy: "no root" now says serverjack
+  runs as your own account with no root in daily use, and names the two
+  one-time root commands `install.sh` prints when they're needed; "only
+  reachable on your Tailscale network" now says reachable only over
+  Tailscale by default, with `SERVERJACK_ALLOW` for a shared tailnet; the
+  "one stdlib Python file" bullet now notes the installer also fetches a
+  prebuilt ttyd binary and fzf.
+- README quick start gets a short "Who can reach it" paragraph right after
+  the install block, covering the single-user, shared-tailnet and
+  shared-machine cases and linking to the security model.
+- README "Why this and not X" no longer claims VibeTunnel, Agentboard and
+  Codeman all require compiling `node-pty`: VibeTunnel ships prebuilt
+  binaries and an npm package, and only Codeman's Linux installer documents
+  installing Node.js and a build toolchain.
+- FAQ "Why not Claude's own remote control, or Codex's?" no longer says
+  remote control only drives an already-running session — Claude's server
+  mode can start multiple new sessions in a chosen directory. Reframed
+  around what the vendor features cover (starting and driving their own
+  agent) versus what serverjack is for (a shell, the `sudo` prompt, existing
+  tmux sessions, agents with no remote-control feature of their own, and the
+  vendor tools' own install/login/server steps).
+- README gets a new "Updating and rolling back" section: `main` as the
+  release channel, `git pull --ff-only && bash install.sh` to update,
+  config and tmux sessions surviving a restart, rolling back to a tagged
+  version, and how to recover if the web UI is down after an update.
+- README's Python requirement changed from "3.9+" to "3.10 or newer
+  recommended (3.9 still works but is end-of-life upstream)"; the badge now
+  reads 3.10+.
+- CONTRIBUTING.md: "small, finished tool" reworded to "intentionally small",
+  and a "Useful contributions" list added (mobile input, reconnection,
+  installation on more distributions, coexistence with desktop tmux
+  clients, following agent CLI command changes).
+- README install section gets a "Tested on" list of the platforms actually
+  exercised: the maintainer's Debian 13 server with iPhone Safari and a
+  Windows browser, an independent user's server with a Mac browser and
+  iPhone, a clean Debian 13 container install, and CI on Ubuntu 24.04 with
+  Chromium, Firefox and WebKit emulation.
 
 ### Fixed
 

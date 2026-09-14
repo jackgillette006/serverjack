@@ -7,7 +7,7 @@ Your coding agents, from your phone. Lightweight, private, self-hosted.
 [![CI](https://github.com/jackgillette006/serverjack/actions/workflows/ci.yml/badge.svg)](https://github.com/jackgillette006/serverjack/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jackgillette006/serverjack)](https://github.com/jackgillette006/serverjack/releases)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
 [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [FAQ](docs/FAQ.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
 
@@ -17,22 +17,34 @@ Your coding agents, from your phone. Lightweight, private, self-hosted.
 |---|---|---|
 | ![Landing page on a desktop](docs/shots/desktop.png) | ![Landing page on iPhone](docs/shots/iphone-landing.png) | ![Terminal on iPhone](docs/shots/iphone-term.png) |
 
-- One stdlib Python file.
-- No Node, no sudo, no root.
-- Only reachable on your Tailscale network.
+- One stdlib Python file — the app itself; the installer also fetches a
+  prebuilt ttyd binary and fzf.
+- Runs as your own account: no Node runtime, no root in daily use. The
+  installer prints at most two one-time root commands (enable linger for
+  boot start, the Tailscale operator grant for serve) when they're needed.
+- Reachable only over Tailscale by default (`tailscale serve`); on a shared
+  tailnet, set `SERVERJACK_ALLOW`.
 - Never phones home: no telemetry, no analytics, no update checks.
 - Installs in three lines.
 
 ## Quick start
 
-Requirements: Linux, systemd, tmux, Python 3.9+ and curl. Tailscale is optional
-but recommended.
+Requirements: Linux, systemd, tmux, curl, and Python 3.10 or newer
+recommended (3.9 still works but is end-of-life upstream). Tailscale is
+optional but recommended.
 
 ```sh
 git clone https://github.com/jackgillette006/serverjack
 cd serverjack
 bash install.sh
 ```
+
+**Who can reach it.** Single-user tailnet: nothing to set. Shared tailnet, or
+devices shared with people outside your tailnet: set `SERVERJACK_ALLOW` to
+the login(s) you want in — identity headers come from `tailscale serve` and
+aren't set for tagged devices, and a shared device can put someone else on
+the route. Machine shared with other local accounts: `install.sh --unix`.
+See the [security model](#security-model-read-this-first).
 
 Clone it anywhere you keep code. The installer records that path in the user
 units, and the built-in "Update serverjack" shortcut runs `git pull` there, so
@@ -98,6 +110,7 @@ remote control, why Tailscale and not a password, and whether it phones home.
 - [Install (no sudo)](#install-no-sudo)
   - [Two accounts on one machine](#two-accounts-on-one-machine)
   - [Upgrading an existing install](#upgrading-an-existing-install)
+  - [Updating and rolling back](#updating-and-rolling-back)
 - [Configure](#configure)
   - [Tools](#tools)
 - [Status line and /api/status](#status-line-and-apistatus)
@@ -272,10 +285,13 @@ server. It gets those daemons installed, logged in and running in the first
 place, and gives you a real terminal for everything that isn't an agent —
 docker, systemd, logs, disks, the `sudo` prompt the agent can't answer.
 
-**[VibeTunnel](https://github.com/amantus-ai/vibetunnel), agentboard, Codeman**
-— genuinely good, and if you already run Node on the box, look at them. They
-need Node or Bun and compile `node-pty`, which is a real dependency chain on a
-minimal home server. serverjack is a Python file and a downloaded binary.
+**[VibeTunnel](https://github.com/amantus-ai/vibetunnel), Agentboard,
+[Codeman](https://github.com/Ark0N/Codeman)** — genuinely good, and worth a
+look. VibeTunnel ships prebuilt binaries (an npm package or a macOS app);
+Codeman's Linux installer documents installing Node.js and a build toolchain,
+because `node-pty` ships no Linux prebuilds and compiles from source.
+serverjack needs neither: no Node runtime, and nothing to compile — a Python
+file and a downloaded binary.
 
 **Plain ttyd** — serverjack is ttyd plus the parts ttyd doesn't have: a
 session list, a launcher, phone keys, and a page that survives a screen lock.
@@ -416,6 +432,11 @@ and publishes serverjack with `tailscale serve` on
 `https://<machine>.<tailnet>.ts.net/`. That is a single mount, `/`: ttyd is not
 published at all, because serverjack proxies the terminal to it.
 
+**Tested on:** the maintainer's Debian 13 server (x86_64), with iPhone Safari
+(Add to Home Screen) and a Windows desktop browser; one independent user's
+server, with a Mac browser and iPhone; a clean Debian 13 container install;
+and CI on Ubuntu 24.04 with Chromium, Firefox and WebKit emulation.
+
 Flags (all optional):
 
 | Flag | Effect |
@@ -521,6 +542,28 @@ still has one: the terminal now goes through serverjack, so a mount pointing
 straight at ttyd's port would be a way around every check. The installer says
 so when it takes one down. `uninstall.sh` turns off the `/` mount (and that old
 `/term` one, for installs that predate the change).
+
+### Updating and rolling back
+
+`main` is the release channel: every merge is CI-tested, and tags mark
+versions with a matching [CHANGELOG.md](CHANGELOG.md) entry.
+`git pull --ff-only && bash install.sh` — what the built-in **Update
+serverjack** shortcut runs — updates in place: it preserves
+`~/.config/serverjack/env`, and tmux sessions survive the restart.
+
+To roll back, check out a tag and reinstall:
+
+```
+git checkout vX.Y.Z
+bash install.sh
+```
+
+The built-in Update shortcut then refuses to run again until you
+`git checkout main` — it only pulls on a branch, not a detached tag.
+
+If the web UI is down after an update, `journalctl --user -u serverjack -e`
+is the first thing to check, then `bin/serverjack --check` (alias
+`--doctor`) for a read-only diagnosis.
 
 ## Configure
 
