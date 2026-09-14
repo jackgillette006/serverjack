@@ -126,6 +126,12 @@ The brand line is **“Jack into your server.”** Keep this flavor mostly in br
 
 ## Icons
 
+The logo is **Prompt Jack**: a J-shaped cable with a two-prong plug and a
+separate terminal chevron. Keep the chevron detached and preserve the rounded
+J hook. Use the accent green on dark surfaces and one color for monochrome
+use. The shared outlines in `bin/serverjack` produce both inline SVG branding
+and the PNG home-screen icon; the wordmark stays live system-monospace text.
+
 Use simple outline icons with consistent stroke weight. Terminal prompt, folder, agent/bot, play, grid, gear, plus, search, overflow, link/attach, and status-dot motifs fit well. Avoid franchise-specific iconography.
 
 ## Agent implementation rules

@@ -1599,7 +1599,41 @@ def _svg(body, size=16, cls="i"):
             f'stroke-linejoin="round" aria-hidden="true">{body}</svg>')
 
 
-I_PROMPT = _svg('<path d="M4 6l6 6-6 6"/><path d="M13 18h7"/>', 20, "glyph")
+# Prompt Jack: the original separate chevron and two-prong J connector.
+# Absolute M/L/Q/Z commands are shared by the SVG and the stdlib PNG renderer.
+PROMPT_JACK_PATHS = (
+    (("M", 35, 15), ("Q", 35, 14, 36, 14), ("L", 38, 14), ("L", 38, 8),
+     ("Q", 38, 7, 39, 7), ("L", 41, 7), ("Q", 42, 7, 42, 8), ("L", 42, 14),
+     ("L", 45, 14), ("L", 45, 8), ("Q", 45, 7, 46, 7), ("L", 48, 7),
+     ("Q", 49, 7, 49, 8), ("L", 49, 14), ("L", 51, 14),
+     ("Q", 52, 14, 52, 15), ("L", 52, 23), ("Q", 52, 24, 51, 24),
+     ("L", 48, 24), ("L", 48, 42), ("Q", 48, 56, 34, 56), ("L", 23, 56),
+     ("Q", 12, 56, 12, 45), ("L", 12, 41), ("Q", 12, 40, 13, 40),
+     ("L", 20, 40), ("Q", 21, 40, 21, 41), ("L", 21, 44),
+     ("Q", 21, 47, 24, 47), ("L", 34, 47), ("Q", 39, 47, 39, 42),
+     ("L", 39, 24), ("L", 36, 24), ("Q", 35, 24, 35, 23), ("Z",)),
+    (("M", 21, 22), ("Q", 22.5, 20.5, 24, 22), ("L", 30.5, 28.5),
+     ("Q", 32, 30, 30.5, 31.5), ("L", 24, 38), ("Q", 22.5, 39.5, 21, 38),
+     ("Q", 19.5, 36.5, 21, 35), ("L", 26, 30), ("L", 21, 25),
+     ("Q", 19.5, 23.5, 21, 22), ("Z",)),
+)
+PROMPT_JACK_SVG = "".join(
+    '<path d="' + " ".join(" ".join(map(str, command)) for command in path) + '"/>'
+    for path in PROMPT_JACK_PATHS)
+
+
+def logo_svg(size=32):
+    return (f'<svg class="glyph" viewBox="0 0 64 64" width="{size}" height="{size}" '
+            f'fill="currentColor" aria-hidden="true" focusable="false">{PROMPT_JACK_SVG}</svg>')
+
+
+I_LOGO = logo_svg()
+# The old icons were cached for a day. A new URL refreshes existing browsers.
+ICON_REV = "prompt-jack"
+PWA_LINKS = (f'<link rel="manifest" href="/manifest.webmanifest?v={ICON_REV}">\n'
+             f'<link rel="apple-touch-icon" href="/icon-180.png?v={ICON_REV}">\n'
+             f'<link rel="icon" href="/icon.svg?v={ICON_REV}" type="image/svg+xml">')
+
 I_HERE = _svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 10l2.5 2.5L7 15"/>')
 I_POPOUT = _svg('<path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/>'
                 '<path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>')
@@ -1611,7 +1645,6 @@ I_TRASH = _svg('<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/>'
                '<path d="M6.5 7l.9 12.1A1 1 0 0 0 8.4 20h7.2a1 1 0 0 0 1-.9L17.5 7"/>'
                '<path d="M9.5 7V4.5h5V7"/>')
 I_EDIT = _svg('<path d="M4 20h4l10-10a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l4 4"/>')
-I_LIST = _svg('<path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/>', 18)
 I_PLUS = _svg('<path d="M12 5.5v13"/><path d="M5.5 12h13"/>', 18)
 I_KEYBOARD = _svg('<rect x="2.5" y="6" width="19" height="12" rx="2"/>'
                   '<path d="M7 10h.01M11 10h.01M15 10h.01M17.5 10h.01M7.5 14h9"/>', 18)
@@ -1636,9 +1669,10 @@ h1{margin:0;font:600 20px/28px var(--font-mono);letter-spacing:-.01em;
   display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
 h1 .glyph{color:var(--accent);flex:none}
 h1 small{color:var(--text-secondary);font:400 13px/20px var(--font-mono);letter-spacing:0}
-.tagline{margin:var(--space-1) 0 2px 30px;color:var(--text-muted);font-size:12px}
+.tagline{margin:var(--space-1) 0 2px calc(var(--space-5) + var(--space-2));
+  color:var(--text-muted);font-size:12px}
 /* one quiet line of machine state, under the tagline */
-.sysline{margin:0 0 var(--space-4) 30px;color:var(--text-muted);
+.sysline{margin:0 0 var(--space-4) calc(var(--space-5) + var(--space-2));color:var(--text-muted);
   font:400 11px/16px var(--font-mono);letter-spacing:.01em}
 h2{margin:var(--space-5) 0 var(--space-2);color:var(--text-muted);
   font:600 11px/16px var(--font-mono);letter-spacing:.14em;text-transform:uppercase}
@@ -1852,9 +1886,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="theme-color" content="#080f0e">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="manifest" href="/manifest.webmanifest">
-<link rel="apple-touch-icon" href="/icon-180.png">
-<link rel="icon" href="/icon.svg" type="image/svg+xml">
+{pwa_links}
 <style>{css}</style></head><body class="{fx_class}">
 <div id="crt" aria-hidden="true"></div><main>
 <h1>{glyph}serverjack <small>{title}</small></h1>
@@ -2059,9 +2091,7 @@ TERM_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="theme-color" content="#080f0e">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="manifest" href="/manifest.webmanifest">
-<link rel="apple-touch-icon" href="/icon-180.png">
-<link rel="icon" href="/icon.svg" type="image/svg+xml">
+{pwa_links}
 <style>{tokens}{fx_css}{fx_css_term}
 *{{box-sizing:border-box}}
 html,body{{margin:0;height:100%;background:#000;color:var(--text-primary);
@@ -2079,6 +2109,7 @@ body{{display:flex;flex-direction:column;height:100vh;height:100dvh;position:rel
 .ib:focus-visible{{outline:2px solid var(--accent);outline-offset:-2px}}
 .ib.x:hover{{color:var(--danger);background:var(--danger-wash)}}
 .ib.on{{color:var(--accent)}}
+.ib.home{{color:var(--accent);padding:0 8px}}
 #tabs{{flex:1 1 auto;display:flex;overflow-x:auto;scrollbar-width:none;min-width:0}}
 #tabs::-webkit-scrollbar{{display:none}}
 .tab{{border:0;border-bottom:2px solid transparent;background:transparent;color:var(--text-muted);
@@ -2193,7 +2224,7 @@ body.popout #popout,body.touch #popout{{display:none}}
 <div id="crt" aria-hidden="true"></div>
 <button id="handle" title="Show menu" aria-label="Show menu">{i_dots}</button>
 <div id="bar">
-  <a class="ib" href="/" title="All sessions" aria-label="All sessions">{i_list}</a>
+  <a class="ib home" href="/" title="All sessions" aria-label="All sessions">{logo}</a>
   <div id="tabs"></div>
   <button class="ib" id="add" title="New session" aria-label="New session">{i_plus}</button>
   <button class="ib" id="keysbtn" title="Show/hide extra keys" aria-label="Show/hide extra keys">{i_keys}</button>
@@ -2967,15 +2998,16 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
         agents,
     ])
     err = "".join(f'<div class="err">{esc(e)}</div>' for e in (error, tools_error) if e)
-    return PAGE.format(css=CSS, error=err, body=body, title=esc(TITLE), glyph=I_PROMPT,
+    return PAGE.format(css=CSS, error=err, body=body, title=esc(TITLE), glyph=I_LOGO,
+                       pwa_links=PWA_LINKS,
                        sysline=system_line(), fx_class=FX_CLASS, version=esc(VERSION))
 
 
 def render_term(name, popout=False):
     return TERM_PAGE.format(
         name=esc(name), src=esc(ttyd_src(name)), dirs=dir_options(), kinds=kind_options(),
-        title=esc(TITLE), tokens=TOKENS,
-        i_dots=I_DOTS, i_list=I_LIST, i_plus=I_PLUS, i_keys=I_KEYBOARD, i_popout=I_POPOUT,
+        title=esc(TITLE), tokens=TOKENS, pwa_links=PWA_LINKS, logo=logo_svg(28),
+        i_dots=I_DOTS, i_plus=I_PLUS, i_keys=I_KEYBOARD, i_popout=I_POPOUT,
         i_close=I_CLOSE, i_send=I_SEND, i_refresh=I_REFRESH,
         fx_css=FX_CSS, fx_css_term=FX_CSS_TERM,
         term_path_json=js(TERM_PATH), name_json=js(name), title_json=js(TITLE),
@@ -2987,6 +3019,7 @@ TERM_DOWN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Terminal unavailable &middot; {title}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#080f0e">
+{pwa_links}
 <style>{css}</style></head><body><main>
 <h1>{glyph}serverjack <small>{title}</small></h1>
 <div class="err">The terminal isn’t answering.</div>
@@ -3001,13 +3034,15 @@ Your tmux sessions are untouched — nothing here can kill them.</p>
 
 
 def render_term_down(why):
-    return TERM_DOWN_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_PROMPT, why=esc(why))
+    return TERM_DOWN_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_LOGO,
+                                 pwa_links=PWA_LINKS, why=esc(why))
 
 
 DENY_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>{title}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#080f0e">
+{pwa_links}
 <style>{css}</style></head><body><main>
 <h1>{glyph}serverjack <small>{title}</small></h1>
 <div class="err">Not your serverjack.</div>
@@ -3023,7 +3058,7 @@ Your own account on this machine can run its own serverjack on its own HTTPS por
 def render_deny(login):
     # Deliberately does NOT name the logins in SERVERJACK_ALLOW: a stranger who
     # gets this page should learn nothing about who the owner is.
-    return DENY_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_PROMPT,
+    return DENY_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_LOGO, pwa_links=PWA_LINKS,
                             you=esc(login or "nobody"))
 
 
@@ -3034,40 +3069,54 @@ MANIFEST = {
     "name": f"{TITLE} terminal", "short_name": TITLE,
     "start_url": "/", "scope": "/", "display": "standalone",
     "background_color": "#080f0e", "theme_color": "#080f0e",
-    "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"},
-              {"src": "/icon-180.png", "sizes": "180x180", "type": "image/png"}],
+    "icons": [{"src": f"/icon.svg?v={ICON_REV}", "sizes": "any", "type": "image/svg+xml"},
+              {"src": f"/icon-180.png?v={ICON_REV}", "sizes": "180x180", "type": "image/png"}],
 }
 
 ICON_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
             '<rect width="64" height="64" rx="14" fill="#080f0e"/>'
-            '<path d="M16 20l14 12-14 12" fill="none" stroke="#39ff88" stroke-width="6" '
-            'stroke-linecap="round" stroke-linejoin="round"/>'
-            '<rect x="34" y="40" width="16" height="6" rx="3" fill="#e6f7e9"/></svg>')
+            f'<g fill="#39ff88">{PROMPT_JACK_SVG}</g></svg>')
 
 
 def icon_png(size=180):
-    """Same glyph as ICON_SVG, rasterised with stdlib only (iOS wants PNG)."""
+    """Rasterise the shared logo outlines; iOS applies its own background mask."""
+    import math
     import struct, zlib
-    bg, green, white = (8, 15, 14), (57, 255, 136), (230, 247, 233)
-    px = [[bg] * size for _ in range(size)]
-    u = size / 64.0
-    # chevron: two thick strokes from (16,20)->(30,32)->(16,44), width ~6
-    def seg(x0, y0, x1, y1, w, col):
-        w *= u
-        for y in range(size):
-            for x in range(size):
-                X, Y = x / u, y / u
-                dx, dy = x1 - x0, y1 - y0
-                t = max(0.0, min(1.0, ((X - x0) * dx + (Y - y0) * dy) / (dx * dx + dy * dy)))
-                d = ((X - (x0 + t * dx)) ** 2 + (Y - (y0 + t * dy)) ** 2) ** 0.5
-                if d * u <= w / 2:
-                    px[y][x] = col
-    seg(16, 20, 30, 32, 6, green)
-    seg(30, 32, 16, 44, 6, green)
-    for y in range(int(40 * u), int(46 * u)):
-        for x in range(int(34 * u), int(50 * u)):
-            px[y][x] = white
-    raw = b"".join(b"\x00" + bytes(c for p in row for c in p) for row in px)
+    bg, green = (8, 15, 14), (57, 255, 136)
+    # Four samples per axis give smooth edges without a graphics dependency.
+    side, scale = size * 4, size * 4 / 64.0
+    mask = bytearray(side * side)
+    for commands in PROMPT_JACK_PATHS:
+        points = []
+        for command in commands:
+            if command[0] in ("M", "L"):
+                points.append(command[1:])
+            elif command[0] == "Q":
+                x0, y0 = points[-1]
+                cx, cy, x1, y1 = command[1:]
+                for step in range(1, 17):
+                    t = step / 16
+                    points.append(((1-t)**2*x0 + 2*(1-t)*t*cx + t*t*x1,
+                                   (1-t)**2*y0 + 2*(1-t)*t*cy + t*t*y1))
+        edges = list(zip(points, points[1:] + points[:1]))
+        for y in range(side):
+            sample_y = (y + .5) / scale
+            crossings = sorted(x0 + (sample_y-y0)*(x1-x0)/(y1-y0)
+                               for (x0, y0), (x1, y1) in edges
+                               if min(y0, y1) <= sample_y < max(y0, y1))
+            for left, right in zip(crossings[::2], crossings[1::2]):
+                start = max(0, math.ceil(left * scale - .5))
+                end = min(side, math.ceil(right * scale - .5))
+                mask[y*side+start:y*side+end] = b"\x01" * (end-start)
+    colors = [bytes(round(b + (g-b)*coverage/16) for b, g in zip(bg, green))
+              for coverage in range(17)]
+    raw = bytearray()
+    for y in range(size):
+        raw.append(0)  # PNG filter: none
+        for x in range(size):
+            offset = y*4*side + x*4
+            coverage = sum(sum(mask[offset+dy*side:offset+dy*side+4]) for dy in range(4))
+            raw.extend(colors[coverage])
     def chunk(t, d):
         return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))

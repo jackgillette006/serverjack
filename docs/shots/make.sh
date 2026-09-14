@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Regenerates the three README screenshots in this directory (desktop.png,
-# iphone-landing.png, iphone-term.png) from a throwaway, neutral serverjack
+# Regenerates the README screenshots and logo closeups in this directory
+# from a throwaway, neutral serverjack
 # instance -- never the real one on this machine, never real sessions or
 # paths. Needs docker; nothing else has to be running.
 #
@@ -178,13 +178,13 @@ docker run --rm --network host -v "$PWD/shots.py:/w/shots.py:ro" -v "$OUT:/out" 
     pip install -q --timeout 15 --retries 1 playwright==1.62.0 >/dev/null 2>&1
     python3 shots.py' 2>&1 | grep -v 'GL Driver\|maybe unknown option'
 
-for f in desktop.png iphone-landing.png iphone-term.png; do
+for f in desktop.png iphone-landing.png iphone-term.png prompt-jack-header.png prompt-jack-icon.png; do
   [[ -s "$OUT/$f" ]] || { echo "missing $OUT/$f -- capture failed" >&2; exit 1; }
   cp "$OUT/$f" "./$f"
 done
 
 echo
 echo "wrote:"
-for f in desktop.png iphone-landing.png iphone-term.png; do
+for f in desktop.png iphone-landing.png iphone-term.png prompt-jack-header.png prompt-jack-icon.png; do
   echo "  $PWD/$f"
 done

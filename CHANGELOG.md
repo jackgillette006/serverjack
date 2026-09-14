@@ -5,6 +5,15 @@ All notable changes to serverjack are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- Prompt Jack branding: the J-shaped plug and separate terminal chevron now
+  appear in page headers, the terminal's All sessions link, and browser and
+  home-screen icons. SVG and antialiased PNG icons share the same geometry;
+  refreshed icon URLs replace the previously cached artwork.
+
 ## 1.2.1 - 2026-09-14
 
 ### Fixed

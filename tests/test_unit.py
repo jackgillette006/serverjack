@@ -22,8 +22,10 @@ import json
 import os
 import shutil
 import stat
+import struct
 import tempfile
 import unittest
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVERJACK_PATH = os.path.join(HERE, "..", "bin", "serverjack")
@@ -116,6 +118,44 @@ class IdentityHandlerStub:
 
 
 # ------------------------------------------------------------------ tests --
+
+class IconPngTests(unittest.TestCase):
+    def test_png_decodes_to_the_plug_and_separate_prompt(self):
+        for size in (64, 180):
+            with self.subTest(size=size):
+                png = mod.icon_png(size)
+                self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
+                offset, compressed = 8, bytearray()
+                while offset < len(png):
+                    length = struct.unpack(">I", png[offset:offset+4])[0]
+                    kind = png[offset+4:offset+8]
+                    data = png[offset+8:offset+8+length]
+                    crc = struct.unpack(">I", png[offset+8+length:offset+12+length])[0]
+                    self.assertEqual(crc, zlib.crc32(kind + data) & 0xffffffff)
+                    if kind == b"IHDR":
+                        self.assertEqual(struct.unpack(">IIBBBBB", data), (size, size, 8, 2, 0, 0, 0))
+                    elif kind == b"IDAT":
+                        compressed.extend(data)
+                    offset += length + 12
+                raw = zlib.decompress(compressed)
+                stride = 1 + size*3
+                self.assertEqual(len(raw), size*stride)
+                self.assertTrue(all(raw[y*stride] == 0 for y in range(size)))
+
+                def pixel(x, y):
+                    start = int(y*size/64)*stride + 1 + int(x*size/64)*3
+                    return tuple(raw[start:start+3])
+
+                # Two prongs, connector, stem, hook, and the detached chevron.
+                for point in ((40, 9), (47, 9), (36, 17), (43, 30), (14, 44), (27, 53), (28, 30)):
+                    self.assertEqual(pixel(*point), (57, 255, 136))
+                # The prong gap, open bowl, and space beside the prompt stay clear.
+                for point in ((43, 10), (25, 42), (35, 30), (5, 5)):
+                    self.assertEqual(pixel(*point), (8, 15, 14))
+                pixels = {tuple(raw[y*stride+x:y*stride+x+3])
+                          for y in range(size) for x in range(1, stride, 3)}
+                self.assertGreater(len(pixels), 2, "edges should be antialiased")
+
 
 class ProcAddrTests(unittest.TestCase):
     """_proc_addr() decodes /proc/net/tcp's hex, little-endian fields."""
