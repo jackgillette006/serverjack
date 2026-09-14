@@ -980,6 +980,33 @@ def auto_name(base="shell"):
     return f"{base}-{n}"
 
 
+CMD_WRAPPERS = ("sudo", "env", "nohup", "nice", "time")
+
+
+def default_session_name(kind, cwd, cmd=None):
+    """The name a session gets when nothing was typed: "<type>-<directory>",
+    either half optional. Type: the tool id for an agent session; for a shell
+    session, the first word of `cmd` (basename only) that isn't a wrapper
+    like sudo/env/nohup/nice/time -- so "sudo apt install ffmpeg" names
+    itself after "apt", not "sudo" -- or "shell" if nothing sensible remains
+    (or there's no command at all). Directory: cwd's basename, omitted when
+    cwd is HOME. The combined base is sanitized with auto_name's own rules
+    and made unique the same way it already makes any base unique."""
+    if kind == "shell":
+        kind_part = "shell"
+        for word in (cmd or "").split():
+            word = os.path.basename(word)
+            if word not in CMD_WRAPPERS:
+                kind_part = word
+                break
+    else:
+        kind_part = kind
+    cwd = (cwd or HOME).rstrip("/")
+    dir_part = "" if cwd == HOME.rstrip("/") else os.path.basename(cwd)
+    base = "-".join(p for p in (kind_part, dir_part) if p).lower()
+    return auto_name(base[:60])
+
+
 def validate_name(name, required=True, base="shell"):
     name = name.strip()
     if not name:
@@ -1945,6 +1972,7 @@ START_CARD = """<h2>Start a session</h2>
   <div class="dirline">
     <select id="dir" name="dir">{dirs}</select>
     <input name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="…or type a path (created if new)" value="{dir_custom}"></div>
+  <input id="name" name="name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Name (optional), e.g. 3d-lab" value="{name}">
   <div id="cmdwrap">
     <textarea id="cmd" name="cmd" rows="2" autocapitalize="off" spellcheck="false"
       placeholder="Optional: a command to run, e.g. sudo apt install ffmpeg">{cmd}</textarea>
@@ -1955,7 +1983,7 @@ START_CARD = """<h2>Start a session</h2>
   </div>
   <p class="hint" id="toolhint" hidden></p>
   <button class="btn wide" type="submit">Start</button>
-  <p class="hint">Opens a new terminal session. A shell stays open after its command finishes, so password prompts work.</p>
+  <p class="hint">Opens a new terminal session, named after the type and directory unless you name it. A shell stays open after its command finishes, so password prompts work.</p>
 </form></div>"""
 
 ADD_SHORTCUT_CARD = """<details class="card" id="addsc"{addsc_open}><summary>Add a shortcut</summary>
@@ -2174,7 +2202,7 @@ body.popout #popout,body.touch #popout{{display:none}}
 </div>
 <form id="pop" autocomplete="off">
   <div class="kinds">{kinds}</div>
-  <div><label>Name</label><input name="name" autocapitalize="off" spellcheck="false" placeholder="e.g. fit-app"></div>
+  <div><label>Name</label><input name="name" autocapitalize="off" spellcheck="false" placeholder="Name (optional), e.g. fit-app"></div>
   <div><label>Directory</label><select name="dir">{dirs}</select></div>
   <div><label>…or type a path (created if new)</label><input name="dir_custom" autocapitalize="off" spellcheck="false" placeholder="~/new-or-existing/dir"></div>
   <div class="err" id="err"></div>
@@ -2868,7 +2896,7 @@ def wants_agent_card(t, st):
     return bool(t.get("server") or t.get("daemon") or t.get("actions"))
 
 
-def render(error=None, dir_custom="", cmd="", label="", sc_label="", sc_cmd="",
+def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc_cmd="",
            addsc_open=False, save_open=False, open_tool="", what="shell"):
     dirs = dir_options()
     sess = sessions()
@@ -2927,7 +2955,7 @@ def render(error=None, dir_custom="", cmd="", label="", sc_label="", sc_cmd="",
 
     body = "\n".join([
         START_CARD.format(dirs=dirs, dir_custom=esc(dir_custom), cmd=esc(cmd), label=esc(label),
-                          save_open=" open" if save_open else "",
+                          name=esc(name), save_open=" open" if save_open else "",
                           what_options="\n".join(what_opts)),
         "<h2>Shortcuts</h2>", shortcuts,
         ADD_SHORTCUT_CARD.format(dirs=dirs, sc_label=esc(sc_label), sc_cmd=esc(sc_cmd),
@@ -3417,30 +3445,35 @@ class Handler(BaseHTTPRequestHandler):
         kind = f.get("kind", "shell")
         if kind not in tool_kinds():
             return None, "Unknown session type."
-        name, err = validate_name(f.get("name", ""), required=(kind != "shell"), base="shell")
-        if err:
-            return None, err
         cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
         if err:
-            return name, err
-        err = create_session(kind, name, cwd, command=f.get("cmd") if kind == "shell" else None)
+            return None, err
+        cmd = f.get("cmd") if kind == "shell" else None
+        name, err = validate_name(f.get("name", ""), required=False,
+                                  base=default_session_name(kind, cwd, cmd))
+        if err:
+            return None, err
+        err = create_session(kind, name, cwd, command=cmd)
         return name, err
 
     def do_start(self, f):
         """The Start a session card: what=shell runs an optional command in
         front of a login shell (exactly /run, plus a plain shell when there is
         no command); any other what is a tool id from tool_kinds() and opens
-        it (exactly /tools/open), auto-named. Any error re-renders the page
-        with the form's own state -- what, dir, the typed command -- so the
-        right radio is still checked and nothing typed is lost."""
+        it (exactly /tools/open). The name field is optional either way --
+        left blank, the session is named for its type and directory (see
+        default_session_name()). Any error re-renders the page with the
+        form's own state -- what, dir, the typed command, the typed name --
+        so the right radio is still checked and nothing typed is lost."""
         what = f.get("what") or "shell"
         cmd = f.get("cmd", "").strip()
         label = f.get("label", "")
+        name_in = f.get("name", "")
         save_open = bool(f.get("save"))
 
         def fail(msg, status=400):
             return self.send_html(render(msg, dir_custom=f.get("dir_custom", ""), cmd=cmd,
-                                         label=label, save_open=save_open, what=what), status)
+                                         label=label, name=name_in, save_open=save_open, what=what), status)
 
         if what != "shell" and what not in tool_kinds():
             return fail("Unknown session type.")
@@ -3451,14 +3484,18 @@ class Handler(BaseHTTPRequestHandler):
 
         if what == "shell":
             if cmd:
-                name = auto_name(cmd.split()[0])
+                name, err = validate_name(name_in, required=False,
+                                          base=default_session_name("shell", cwd, cmd))
+                if err:
+                    return fail(err)
                 err = create_session("shell", name, cwd, command=cmd)
                 if err:
                     return fail(err, 500)
                 if f.get("save"):
                     add_shortcut(label, cmd, cwd)
             else:
-                name, err = validate_name("", required=False, base="shell")
+                name, err = validate_name(name_in, required=False,
+                                          base=default_session_name("shell", cwd))
                 if err:
                     return fail(err)
                 err = create_session("shell", name, cwd, command=None)
@@ -3466,7 +3503,9 @@ class Handler(BaseHTTPRequestHandler):
                     return fail(err, 500)
             return self.redirect(term_href(name))
 
-        name = auto_name(what)
+        name, err = validate_name(name_in, required=False, base=default_session_name(what, cwd))
+        if err:
+            return fail(err)
         err = create_session(what, name, cwd)
         clear_tool_cache(what)
         if err:
@@ -3580,7 +3619,7 @@ class Handler(BaseHTTPRequestHandler):
             cwd = sc.get("dir") or HOME
             if not os.path.isdir(cwd):
                 return self.send_html(render(f"Shortcut directory is gone: {cwd}"), 400)
-            name = auto_name(sc.get("label") or "shortcut")
+            name = default_session_name("shell", cwd, sc["cmd"])
             err = create_session("shell", name, cwd, command=sc["cmd"])
             if err:
                 return self.send_html(render(err), 500)
@@ -3641,10 +3680,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/tools/open":
             if tid not in tool_kinds():
                 return fail(f"{t['label']} isn’t installed, or has no command to run.")
-            name, err = validate_name(f.get("name", ""), required=False, base=tid)
+            cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
             if err:
                 return fail(err)
-            cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
+            name, err = validate_name(f.get("name", ""), required=False,
+                                      base=default_session_name(tid, cwd))
             if err:
                 return fail(err)
             err = create_session(tid, name, cwd)

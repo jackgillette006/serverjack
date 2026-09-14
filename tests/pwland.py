@@ -125,6 +125,8 @@ with sync_playwright() as p:
     MADE.append(run_sess)
     ok("Start lands on the terminal page for a new session",
        bool(run_sess) and exists(run_sess), f"url={page.url}")
+    ok("...named for the command's first word (no name typed, ~ has no directory part)",
+       bool(re.fullmatch(r"echo(-\d+)?", run_sess or "")), f"run_sess={run_sess}")
     out = wait_for(lambda: pane(run_sess) if "[exited with status" in pane(run_sess) else "")
     ok("the pasted command ran in that session", f"LAND_{TAG}" in out, out[-300:])
     ok("...and the login shell reports its exit status",
@@ -139,6 +141,52 @@ with sync_playwright() as p:
     ok("empty command + Start opens a plain shell session",
        bool(re.fullmatch(r"shell(-\d+)?", shell_sess or "")) and exists(shell_sess),
        f"url={page.url}")
+
+    # ------------------------------------------------- optional session name ----
+    named_target = f"pwnamed-{TAG}"
+    page.goto(f"{BASE}/")
+    page.fill('#name', named_target)
+    page.click('form[action="/start"] button[type=submit]')
+    page.wait_for_selector("#tabs .tab.on")
+    named_sess = sess_from_url(page)
+    MADE.append(named_sess)
+    ok("a typed name is used verbatim",
+       named_sess == named_target and exists(named_sess), f"url={page.url}")
+
+    # no name, a custom directory: <type>-<basename> (/tmp always exists, no setup needed)
+    page.goto(f"{BASE}/")
+    page.fill('form[action="/start"] input[name=dir_custom]', "/tmp")
+    page.click('form[action="/start"] button[type=submit]')
+    page.wait_for_selector("#tabs .tab.on")
+    dircust_sess = sess_from_url(page)
+    MADE.append(dircust_sess)
+    ok("no name in a custom directory defaults to <type>-<directory>",
+       bool(re.fullmatch(r"shell-tmp(-\d+)?", dircust_sess or "")) and exists(dircust_sess),
+       f"url={page.url}")
+
+    # same, but the fake agent instead of a shell: <tool id>-<basename>
+    page.goto(f"{BASE}/")
+    page.fill('form[action="/start"] input[name=dir_custom]', "/tmp")
+    pick_what(page, "fake")
+    page.click('form[action="/start"] button[type=submit]')
+    page.wait_for_selector("#tabs .tab.on")
+    fakedir_sess = sess_from_url(page)
+    MADE.append(fakedir_sess)
+    ok("no name for an agent in a custom directory defaults to <tool>-<directory>",
+       bool(re.fullmatch(r"fake-tmp(-\d+)?", fakedir_sess or "")) and exists(fakedir_sess),
+       f"url={page.url}")
+
+    # a name already in use is refused, and the rest of the form is kept
+    page.goto(f"{BASE}/")
+    dupcmd = f"echo DUP_{TAG}"
+    page.fill("#cmd", dupcmd)
+    page.fill('#name', run_sess)
+    page.click('form[action="/start"] button[type=submit]')
+    page.wait_for_load_state()
+    dup_err = page.locator(".err").first.inner_text() if page.locator(".err").count() else ""
+    ok("a name already in use re-renders with an error, command box kept",
+       "already exists" in dup_err and page.locator("#cmd").input_value() == dupcmd,
+       dup_err or "no error shown")
 
     # ------------------------------------------------------------ rename ----
     newname = f"landren-{TAG}"
