@@ -90,7 +90,7 @@ done
   || { echo "--title cannot contain a newline" >&2; exit 1; }
 
 TTYD_VER=1.7.7
-FZF_VER=0.74.3
+FZF_VER=0.74.4
 # sha256 of every asset we might download, copied from the projects' own
 # published SHA256SUMS / checksums files. Pinned HERE on purpose: fetching the
 # checksum file from the same host as the binary proves only that the two
@@ -100,9 +100,9 @@ declare -A SHA256=(
   [ttyd.x86_64]=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
   [ttyd.aarch64]=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
   [ttyd.armhf]=8240c8438b68d3b10b0e1a4e7c914d70fca6a7606b516f40bf40adfa1044d801
-  [fzf-0.74.3-linux_amd64.tar.gz]=3501a595e4b5c40a6b047340a0e8f805c46fd4e61ef95ef8a136ba8c61cf6f22
-  [fzf-0.74.3-linux_arm64.tar.gz]=4a17a17b46bd0c4873e995533de508995c11572c0be0664a5dbcf13f60463046
-  [fzf-0.74.3-linux_armv7.tar.gz]=d290204a7e901cf18067d338f53876aa0ab5d666eb626addb4dcc97f9fd2dfa5
+  [fzf-0.74.4-linux_amd64.tar.gz]=05e6813a337cc722c3ed07e54a764b75cc5d671e2e60459db0ba696ee5fa7504
+  [fzf-0.74.4-linux_arm64.tar.gz]=5d673b849f494f0d64ec471d8640b153ca8849e3846a31da17abdcfce8df6b46
+  [fzf-0.74.4-linux_armv7.tar.gz]=0c6e61c89e0932e65b89e6db414c67803b5c10c374ed6a3ab1e14e805eea8486
 )
 # Every download in this script: HTTPS only, and no redirect may leave it.
 fetch() { curl -fsSL --proto '=https' --proto-redir '=https' "$@"; }
