@@ -13,6 +13,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
   the right directory, paste the command it asked for, close finished tmux
   sessions) rather than with checking on a running agent, which is what the
   vendors' remote-control features are for.
+- fzf 0.74.4 (was 0.74.3): pinned checksums bumped for the linux_amd64,
+  linux_arm64 and linux_armv7 assets in `install.sh`.
 
 ## 1.3.0 - 2026-09-14
 
