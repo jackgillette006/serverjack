@@ -1,6 +1,6 @@
 # Contributing
 
-serverjack is a small, finished tool. Contributions are welcome when they keep
+serverjack is intentionally small. Contributions are welcome when they keep
 it that way.
 
 ## Scope
@@ -15,6 +15,14 @@ In scope:
   lines in `BUILTIN_TOOLS`.
 - Anything that keeps the "one stdlib Python file, one downloaded ttyd, no
   root" install true on more Linux machines.
+
+Useful contributions, if you're looking for a place to start:
+
+- Reliable mobile input (keyboard quirks, paste, the phone soft-key row).
+- Reconnection after a dropped network or a sleeping phone.
+- Installation on more Linux distributions.
+- Coexistence with desktop tmux clients attached to the same session.
+- Following a coding agent CLI's own command changes (install, login, server).
 
 Out of scope, on purpose:
 

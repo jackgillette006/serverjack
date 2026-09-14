@@ -18,15 +18,16 @@ launcher and the session list.
 
 ## Why not Claude's own remote control, or Codex's?
 
-Use them. They are better at driving an agent from a phone than a web
-terminal will ever be, and serverjack doesn't compete with them: no agent
-status, no notifications, no chat UI. What it does instead is get those
-tools installed, logged in, and their background servers running in the
-first place — doing that from a phone screen is the painful part — and it
-gives you a real terminal for everything that isn't an agent: docker,
-systemd, logs, disks, the `sudo` prompt an agent can't answer for itself.
-In practice most of what you open with it is a shell or a paste-and-run
-command.
+Use them. Claude Code's Remote Control and Codex's remote pairing cover
+starting and driving *their* agent from *their* app — Claude's server mode
+can open several new sessions in a directory you pick, not just follow one
+already running — and serverjack doesn't try to compete: no agent status,
+no notifications, no chat UI. serverjack is a small private front door for
+everything around that: a shell, the `sudo` prompt an agent can't answer for
+itself, an existing tmux session, a coding CLI that has no remote-control
+feature of its own, and the vendor tools' own install/login/server steps —
+doing those from a phone screen is the painful part. In practice most of
+what you open with it is a shell or a paste-and-run command.
 
 ## Why Tailscale and not a password?
 
