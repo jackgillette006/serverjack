@@ -5,6 +5,15 @@ All notable changes to serverjack are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## 1.2.1 - 2026-09-14
+
+### Fixed
+
+- The first card under "Agent servers" had square top corners: the rounding
+  rule keyed off the card following the heading directly, and an intro line
+  now sits between them. The first card of a run is rounded regardless of
+  what precedes it (same for the Sessions list).
+
 ## 1.2.0 - 2026-09-14
 
 ### Added
