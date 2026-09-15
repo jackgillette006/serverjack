@@ -113,9 +113,11 @@ jobs:
             bin/serverjack-ctl bin/serverjack-setup bin/serverjack-lib.sh \
             bin/tmux-attach.sh bin/tmux-picker.sh \
             tests/run.sh tests/security-wrapper.sh tests/managed-install.sh \
-            tests/guided-install.sh tests/fixtures/fake-tailscale.sh \
-            tests/fixtures/fake-sudo-wrapper.sh scripts/build-release.sh \
-            bootstrap/serverjack-bootstrap.sh.in scripts/fetch-ttyd.sh
+            tests/guided-install.sh tests/launcher.sh \
+            tests/fixtures/fake-tailscale.sh tests/fixtures/fake-sudo-wrapper.sh \
+            tests/fixtures/prestart-hook.sh scripts/build-release.sh \
+            scripts/export-launcher.sh bootstrap/serverjack-bootstrap.sh.in \
+            bootstrap/launcher.sh scripts/fetch-ttyd.sh
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
