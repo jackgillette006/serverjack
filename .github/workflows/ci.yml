@@ -52,6 +52,50 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  install-suites:
+    name: Install suites (managed + guided)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    # Deliberately NOT added to required status checks yet (round 3, cut-tier
+    # item 13) -- these two container suites need real systemd inside a
+    # --privileged container, which no other job here exercises, so this
+    # earns its own job rather than piggybacking on browser-security-tests.
+    # Unlike `bash tests/run.sh managed-install`/`guided-install` run
+    # locally (which skip with exit 0 when docker can't do privileged
+    # containers at all -- a normal, graceful thing on a laptop with no
+    # docker, or podman-only, etc.), THIS job must fail loudly instead: a
+    # GitHub-hosted ubuntu-24.04 runner losing that capability is itself
+    # worth knowing about, not something to quietly report green over.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Confirm this runner can start a privileged systemd container
+        run: |
+          if ! docker run --rm --privileged -e container=docker debian:13-slim true; then
+            echo "::error::this runner cannot start a --privileged container -- managed-install/guided-install need real systemd inside one, and this job fails loudly instead of silently skipping (unlike tests/run.sh's own local skip path)." >&2
+            exit 1
+          fi
+
+      - name: Managed install suite
+        run: bash tests/run.sh managed-install
+
+      - name: Guided install suite
+        run: bash tests/run.sh guided-install
+
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: install-suites-diagnostics
+          path: |
+            tests/shots/managed-install.log
+            tests/shots/guided-install.log
+          if-no-files-found: warn
+          retention-days: 7
+
   lint:
     name: Lint
     runs-on: ubuntu-24.04
@@ -66,9 +110,11 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/w -w /w koalaman/shellcheck-alpine:stable \
             shellcheck -S warning install.sh uninstall.sh bin/serverjack-ttyd \
-            bin/serverjack-ctl bin/serverjack-setup bin/tmux-attach.sh bin/tmux-picker.sh \
+            bin/serverjack-ctl bin/serverjack-setup bin/serverjack-lib.sh \
+            bin/tmux-attach.sh bin/tmux-picker.sh \
             tests/run.sh tests/security-wrapper.sh tests/managed-install.sh \
-            tests/guided-install.sh scripts/build-release.sh \
+            tests/guided-install.sh tests/fixtures/fake-tailscale.sh \
+            tests/fixtures/fake-sudo-wrapper.sh scripts/build-release.sh \
             bootstrap/serverjack-bootstrap.sh.in scripts/fetch-ttyd.sh
 
       - name: Set up Python
