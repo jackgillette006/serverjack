@@ -20,7 +20,15 @@ set -Eeuo pipefail
 # and bin/serverjack-setup's SERVERJACK_SETUP_TEST_OS_RELEASE.
 readonly RELEASE_URL=${SERVERJACK_TEST_RELEASE_URL:-https://github.com/jackgillette006/serverjack/releases/latest/download/serverjack-bootstrap.sh}
 TMP=""
-cleanup() { [[ -n $TMP ]] && rm -f "$TMP"; }
+# `return 0` explicitly, not just `[[ -n $TMP ]] && rm -f "$TMP"` on its
+# own: that expression is FALSE (a real, nonzero exit status) whenever
+# $TMP is still empty (every exit path before fetch_bootstrap ever sets it
+# -- require_not_root, require_curl, check_prerequisite_floor) -- and under
+# `set -e`, an EXIT trap whose own last command fails can override the
+# script's actual pending exit status with the trap's, silently turning a
+# deliberate `exit 2` into `exit 1`. Found by exactly that: C1's own new
+# `exit 2` path came out as 1 until this was fixed.
+cleanup() { [[ -n $TMP ]] && rm -f "$TMP"; return 0; }
 trap cleanup EXIT
 
 fail() {
@@ -31,6 +39,70 @@ fail() {
   echo "  less serverjack-bootstrap.sh" >&2
   echo "  bash serverjack-bootstrap.sh" >&2
   exit 1
+}
+
+# C1. The bootstrap this launcher downloads checks the SAME floor itself
+# (bootstrap/serverjack-bootstrap.sh.in's check_prerequisite_floor(), same
+# logic, deliberately duplicated here rather than shared -- this script has
+# to run BEFORE the bootstrap exists on disk at all) -- checking it here
+# too means a machine missing something as basic as python3 fails before
+# even downloading anything, with the exact install command and an offer
+# to run it, rather than a wasted round-trip followed by the same failure
+# one layer in.
+check_prerequisite_floor() {
+  local -a missing_bins=() missing_pkgs=()
+  local bin pkg
+  for bin in bash curl python3 tar sha256sum systemctl flock; do
+    command -v "$bin" >/dev/null 2>&1 || missing_bins+=("$bin")
+  done
+  local have_ca=1
+  if command -v dpkg >/dev/null 2>&1; then
+    dpkg -s ca-certificates >/dev/null 2>&1 || have_ca=0
+  elif [[ ! -e /etc/ssl/certs/ca-certificates.crt && ! -e /etc/pki/tls/certs/ca-bundle.crt ]]; then
+    have_ca=0
+  fi
+  for bin in "${missing_bins[@]}"; do
+    case "$bin" in
+      bash)      pkg=bash ;;
+      curl)      pkg=curl ;;
+      python3)   pkg=python3 ;;
+      tar)       pkg=tar ;;
+      sha256sum) pkg=coreutils ;;
+      systemctl) pkg=systemd ;;
+      flock)     pkg=util-linux ;;
+      *)         pkg=$bin ;;
+    esac
+    [[ " ${missing_pkgs[*]:-} " == *" $pkg "* ]] || missing_pkgs+=("$pkg")
+  done
+  (( have_ca )) || missing_pkgs+=(ca-certificates)
+  (( ${#missing_pkgs[@]} == 0 )) && return 0
+
+  local install_cmd
+  if command -v apt-get >/dev/null 2>&1; then
+    install_cmd="sudo apt-get update && sudo apt-get install -y ${missing_pkgs[*]}"
+  elif command -v dnf >/dev/null 2>&1; then
+    install_cmd="sudo dnf install -y ${missing_pkgs[*]}"
+  else
+    install_cmd="install these yourself (no apt-get or dnf found): ${missing_pkgs[*]}"
+  fi
+  echo "Missing prerequisites: ${missing_pkgs[*]}" >&2
+  echo "  $install_cmd" >&2
+
+  if [[ $install_cmd == sudo* ]] && { exec 8<>/dev/tty; } 2>/dev/null; then
+    local reply=
+    printf 'Install them now with sudo? [y/N] ' >&8
+    IFS= read -r reply <&8 || reply=""
+    exec 8>&-
+    case "${reply,,}" in
+      y|yes)
+        if eval "$install_cmd"; then
+          return 0
+        fi
+        echo "that failed -- install the missing prerequisites yourself, then re-run this." >&2
+        ;;
+    esac
+  fi
+  exit 2
 }
 
 require_not_root() {
@@ -118,6 +190,7 @@ run_bootstrap() {
 main() {
   require_not_root
   require_curl
+  check_prerequisite_floor
   fetch_bootstrap
   run_bootstrap "$@"
 }

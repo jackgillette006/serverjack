@@ -170,6 +170,31 @@ result "(g) exits non-zero" "1" "$RC"
 contains "(g) reports the download failure" "$OUT" "download failed"
 result "(g) temp files cleaned up" "0" "$(leftover_tmp)"
 
+echo "================================================================"
+echo "(h) C1: the prerequisite floor is checked before anything is fetched"
+# A restricted PATH standing in for a machine missing python3 -- symlink
+# only the OTHER floor binaries plus apt-get (so the sudo-command branch is
+# exercised), never python3 itself. No /dev/tty here either (this is a
+# plain, non-piped `bash` subshell, no `script` wrapper), so this also
+# proves the no-terminal path: print the command, exit 2, never hang.
+FAKEPATH="$WORK/fakepath"
+mkdir -p "$FAKEPATH"
+for b in bash curl tar sha256sum systemctl flock apt-get dpkg id; do
+  real=$(command -v "$b" 2>/dev/null) || continue
+  ln -sf "$real" "$FAKEPATH/$b"
+done
+set +e
+out=$(env -i PATH="$FAKEPATH" HOME="$WORK" \
+      SERVERJACK_TEST_RELEASE_URL="http://127.0.0.1:$PORT/good/serverjack-bootstrap.sh" \
+      bash "$LAUNCHER" </dev/null 2>&1)
+rc=$?
+set -e
+result "(h) exits 2 (not 0 or 1)" "2" "$rc"
+contains "(h) names the missing prerequisite" "$out" "python3"
+contains "(h) shows the apt-get install command" "$out" "sudo apt-get install"
+[[ $out != *"Fetching bootstrap from"* ]] && echo "  PASS (h) never even tried to download anything" \
+  || { echo "  FAIL (h) tried to download despite the missing prerequisite -- got: $out"; failures=$((failures + 1)); }
+
 echo
 if (( failures > 0 )); then
   echo "$failures launcher check(s) failed" >&2
