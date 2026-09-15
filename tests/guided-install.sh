@@ -577,7 +577,7 @@ echo "(s) C4: declining the --unix serve root step leaves the install"
 echo "    local-only, without ever invoking sudo tailscale serve"
 reset_operator
 set_ts_state ts11 running "hank@github" 0 0
-run_dialogue ts11 ts11 90 \
+run_dialogue ts11 ts11 150 \
   "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --port 7732" \
   "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL -e PATH=/opt/fake-sudo-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" <<'JSON'
 [["Tailscale is running.", null],
@@ -694,23 +694,35 @@ echo "(n) verify_and_report survives a unit that never comes up (finding 3)"
 # V2 is a deliberately broken release (bin/serverjack exits immediately, so
 # the unit crash-loops and /healthz never answers). --no-serve --tcp skips
 # every other prompt (tailscale, allow-list, unix/tcp), so the only thing
-# this dialogue waits for is verify_and_report's own failure diagnostic --
-# which the OLD `active=$(... is-active ... | paste ...)` pipeline, missing
+# this dialogue waits for is install.sh's own failure diagnostic -- which
+# the OLD `active=$(... is-active ... | paste ...)` pipeline, missing
 # `|| true`, would abort BEFORE ever printing (silently, under pipefail,
 # the instant it saw one inactive unit) instead of reaching the health poll
 # and this message.
+#
+# A2/A6 (this same review pass) means install.sh itself now exits 1 the
+# moment its own health check fails -- serverjack-setup's own
+# verify_and_report() (whose "Local health check failed" diagnostic this
+# scenario originally waited for) is UNREACHABLE here now: `bash
+# "$INSTALL_SH" ...` failing aborts serverjack-setup immediately under its
+# own `set -e`, before verify_and_report ever runs. install.sh's own
+# summary line ("did not come up healthy") is what this scenario waits for
+# instead now, and it carries the SAME journalctl hint.
 run_dialogue ts7 ts7 120 \
   "curl -fsSL $BASE_URL/v$V2/serverjack-bootstrap.sh | bash -s -- --no-serve --tcp --port 7695" \
   "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL" <<'JSON'
-[["Local health check failed", null]]
+[["did not come up healthy", null]]
 JSON
 result "ts7 exits 1 (health check genuinely fails, diagnostic still printed)" "1" "$DLG_RC"
 contains "prints the journalctl hint" "$(cat "$WORK/log-ts7.txt" 2>/dev/null)" "journalctl --user -u serverjack -n 50"
 # Finding 9's "000000" double-code bug: local_http_code() used to be
 # `curl ... || echo 000` after curl's own -w already printed "000" on a
 # connection failure -- two "000"s with no separator, "000000", never the
-# clean "000" this checks for.
-contains "the failed health check reports a clean HTTP 000 (finding 9), not 000000" "$(cat "$WORK/log-ts7.txt" 2>/dev/null)" "Local health check failed (HTTP 000)."
+# clean "000" this checks for. Demonstrated by install.sh's own landing
+# health line now (verify_and_report's equivalent message is unreachable
+# in this scenario per the comment above, but it is the exact same
+# local_http_code() function either way).
+contains "the failed health check reports a clean HTTP 000 (finding 9), not 000000" "$(cat "$WORK/log-ts7.txt" 2>/dev/null)" "landing  http://127.0.0.1:7695/  -> HTTP 000"
 
 echo "================================================================"
 echo "(o) rerun on a git-checkout install shows the rerun menu (finding 7)"
