@@ -38,7 +38,9 @@ Out of scope, on purpose:
 - `bin/serverjack` stays one file, Python 3.9+ syntax, stdlib only.
 - The visual layer follows `docs/design/DESIGN.md`. Don't add one-off colors,
   radii or fonts; add a token if a genuinely new semantic role is missing.
-- The terminal is ttyd's xterm.js. Don't theme it from serverjack.
+- The terminal is ttyd's xterm.js. Its color theme is generated from the app
+  tokens (`bin/serverjack`'s `_term_theme()`, see `docs/design/DESIGN.md`'s
+  "Terminal theme" section) -- change `TOKENS`, not the terminal.
 - Real-browser tests live in `tests/`. `bash tests/run.sh` needs docker and
   nothing else -- it starts its own serverjack and ttyd. Keep the selectors
   those tests use, or update the tests with the change.

@@ -6,7 +6,7 @@
 #   bash docs/shots/make-gif.sh
 #
 # The fixture setup (neutral repo copy, fake $HOME with example project dirs
-# and a tiny git history, the real OpenCode binary copied in, scratch
+# and a tiny git history, the real OpenCode binary linked in, scratch
 # SERVERJACK_CONFIG, isolated tmux server, three seeded sessions,
 # serverjack + ttyd startup and health checks) lives in fixture.sh, shared
 # with make.sh so the README stills and this GIF always come from the same
@@ -57,13 +57,21 @@ PY
 )
 BASE="http://127.0.0.1:$PORT"
 
+# $FAKE_HOME/.opencode/bin is prepended so the fixture's own OpenCode is what
+# a bare `opencode` resolves to, even on a machine whose ambient PATH (which
+# bin/serverjack's TOOL_PATH searches before a tool's own "paths" entries --
+# see fixture.sh's OpenCode section) already has a real one on it.
 common=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE="Home server" SERVERJACK_FX=off
         SERVERJACK_CONFIG="$CFG" SERVERJACK_TOOLS=opencode SERVERJACK_SSH=off
         SERVERJACK_DIRS="~/projects/3d-lab:~/projects/game:~/projects/media-stack:~/src:~"
-        HOME="$FAKE_HOME" XDG_RUNTIME_DIR="$RT")
+        HOME="$FAKE_HOME" XDG_RUNTIME_DIR="$RT" PATH="$FAKE_HOME/.opencode/bin:$PATH")
 env "${common[@]}" SERVERJACK_PORT="$PORT" \
   python3 "$NEUTRAL_REPO/bin/serverjack" >"$RUN_ROOT/web.log" 2>&1 & pids+=($!)
-env "${common[@]}" \
+# screenReaderMode=true mirrors the terminal's text into a real DOM tree
+# (.xterm-accessibility-tree) purely so gif_record.py can wait for OpenCode's
+# actual "Ask anything" ready text instead of a fixed sleep -- xterm.js
+# renders to canvas by default, so that text isn't otherwise in the DOM.
+env "${common[@]}" TTYD_EXTRA_ARGS='-t screenReaderMode=true' \
   bash "$NEUTRAL_REPO/bin/serverjack-ttyd" >"$RUN_ROOT/ttyd.log" 2>&1 & pids+=($!)
 
 for _ in $(seq 1 50); do curl -sf -o /dev/null "$BASE/healthz" && break; sleep 0.2; done
@@ -116,13 +124,37 @@ if [[ -z $name ]]; then
   exit 1
 fi
 
+# Same readiness check as gif_record.py's, from the host side via tmux
+# instead of the browser: OpenCode's "Ask anything" ready text must actually
+# be on screen before either check below trusts what the pane shows. Plain
+# capture-pane (no -a) reads whatever is *currently displayed* -- OpenCode's
+# own alternate-screen TUI once it's running -- which is what this needs;
+# it's the -a form below, not this one, that reaches behind it into the
+# shell's own screen and scrollback.
+ready=0
+for _ in $(seq 1 100); do
+  if "${T[@]}" capture-pane -p -t "=$name:" | grep -q 'Ask anything'; then
+    ready=1
+    break
+  fi
+  sleep 0.2
+done
+if [[ $ready -ne 1 ]]; then
+  echo "error: OpenCode's \"Ask anything\" ready text never appeared in the pane" >&2
+  echo "-- last capture --" >&2
+  "${T[@]}" capture-pane -p -t "=$name:" >&2 || true
+  exit 1
+fi
+
 # Regression check for command_args() in bin/serverjack: the recorded pane's
 # echoed "$ <cmd>" line (printed just before OpenCode's TUI takes over the
-# screen, so it's still in tmux's scrollback) must show the plain configured
-# command ("opencode"), never a resolved TOOL_PATH location -- that would
-# bake this throwaway run's own /tmp path into a public asset (the demo
-# GIF). Fail loudly rather than ship a GIF that leaks it.
-pane_text=$("${T[@]}" capture-pane -p -J -t "=$name:" -S -200)
+# screen, so it's only reachable now via -a, which reads the shell's own
+# screen and scrollback instead of OpenCode's current alternate screen) must
+# show the plain configured command ("opencode"), never a resolved
+# TOOL_PATH location -- that would bake this throwaway run's own /tmp path
+# into a public asset (the demo GIF). Fail loudly rather than ship a GIF
+# that leaks it.
+pane_text=$("${T[@]}" capture-pane -p -J -a -t "=$name:")
 if grep -q '/tmp/' <<<"$pane_text"; then
   echo "error: the recorded pane shows a /tmp/ path -- command_args() must leave the" >&2
   echo "configured command text untouched (see bin/serverjack)" >&2

@@ -169,15 +169,17 @@ with sync_playwright() as p:
 
     term = page.frame_locator("#frame").locator(".xterm-helper-textarea")
     term.wait_for(state="attached", timeout=15000)
-    # OpenCode is a real ~180 MB binary, not an instant fake shell -- give it
-    # a real beat to start and draw its ready-state TUI (its own ASCII
-    # banner, the "Ask anything..." input, the /connect tip) before the hold
-    # below that's meant to show it fully rendered. Measured against a cold
-    # container (first run, no page/fs cache warm) it took ~4s after the
-    # textarea attached for the TUI to actually finish painting -- 3000ms
-    # here left the earlier version of this recording mostly showing a
-    # blank pane. 5000ms leaves real margin.
-    page.wait_for_timeout(5000)
+    # OpenCode is a real ~180 MB binary, not an instant fake shell -- wait for
+    # its actual ready-state TUI text ("Ask anything...") instead of a fixed
+    # sleep guessed from one cold-container timing. make-gif.sh starts this
+    # fixture's ttyd with screenReaderMode=true (TTYD_EXTRA_ARGS), which
+    # mirrors the terminal's text into a real DOM tree
+    # (.xterm-accessibility-tree) purely for this wait -- xterm.js renders to
+    # canvas by default and that text isn't otherwise in the DOM to wait on.
+    # Generous timeout: a cold container with no page/fs cache warm has taken
+    # ~4s after the textarea attached for the TUI to finish painting.
+    page.frame_locator("#frame").locator(".xterm-accessibility-tree", has_text="Ask anything") \
+        .wait_for(state="attached", timeout=30000)
     page.wait_for_timeout(3000)   # hold on the rendered terminal
 
     # ---------------------------------------------------------- back out --

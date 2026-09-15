@@ -149,21 +149,26 @@ When implementing or refactoring UI:
 
 ## Terminal theme
 
-The terminal itself is ttyd's xterm.js, not this UI layer -- the wrapper bar, soft keys, compose bar and the landing page are what actually follow this document's components. But by default (`SERVERJACK_TERM_THEME` unset or not `off`) `bin/serverjack-ttyd` passes ttyd a `-t theme=...` built straight from the color tokens above, so the terminal blends with the surrounding page instead of showing xterm.js's stock look next to it:
+The terminal itself is ttyd's xterm.js, not this UI layer -- the wrapper bar, soft keys, compose bar and the landing page are what actually follow this document's components. But by default (`SERVERJACK_TERM_THEME` unset or not `off`) `bin/serverjack` builds a color theme straight from the tokens above (`_term_theme()`, generated once -- the single place these colors are written down, not hand-typed a second time anywhere) and passes it on the terminal iframe's own URL as `?theme=<json>` (`ttyd_src()`), so the terminal blends with the surrounding page instead of showing xterm.js's stock look next to it. ttyd's client applies a URL query's `theme` last -- after anything it was started with -- so this always wins; `bin/serverjack-ttyd` itself no longer sets a theme at all.
 
-| xterm.js theme key | Token | Reasoning |
+| xterm.js theme key | Token / value | Reasoning |
 |---|---|---|
 | `background` | `--bg-primary` | The page's own background, so the iframe has no visible seam |
 | `foreground` | `--text-primary` | Same as the rest of the UI's primary text |
-| `cursor` / `cursorAccent` | `--accent` | The one precious green, same rule as everywhere else in this doc |
-| `selectionBackground` | translucent `--accent` (`rgba(57,255,136,0.3)`) | Visible highlight without competing with the cursor |
-| ANSI `green` / `brightGreen` | `--accent` / a brightened tint of it | Keeps the app's green consistent inside the terminal too |
+| `cursor` | `--accent` | The one precious green, same rule as everywhere else in this doc |
+| `cursorAccent` | `--bg-primary` | **Not** `--accent`. xterm.js paints the non-blinking block cursor as a `cursor`-colored cell with the character drawn in `cursorAccent` on top; making the two equal (a bug shipped briefly) drew the glyph in the same color as its own cursor -- invisible while the cursor sat on it. The background token gives the character the same contrast it has everywhere else on the page |
+| `selectionBackground` | translucent `--accent`, computed as `rgba(<accent rgb>,0.3)` | Visible highlight without competing with the cursor |
+| `black` | `--surface-alt` | A near-background tone, not pure black, so ANSI black stays visible against `--bg-primary` |
+| `white` | `--text-secondary` | Matches the UI's secondary-text tone rather than xterm.js's stock light gray |
+| `brightWhite` | `--text-primary` | Full-contrast text, same token as `foreground` |
+| ANSI `green` | `--accent` | Keeps the app's green consistent inside the terminal too |
 | ANSI `red` / `yellow` / `blue` / `magenta` | `--danger` / `--warning` / `--info` / `--agent-purple` | Reuses the semantic tokens rather than inventing terminal-only colors |
-| ANSI `black` / `white` and the `bright*` variants | brightened tints of the above | Standard hues stay recognizable, but readable against `--bg-primary` -- xterm.js's own stock dark colors read as near-invisible on a background this dark |
+| ANSI `cyan` / `brightCyan` | Not a token -- terminal-only colors | The app has no cyan role; xterm.js needs all 16 ANSI slots filled, so these two are hand-picked in `_term_theme()` and live only there |
+| The remaining `bright*` keys (`brightBlack`/`brightRed`/`brightGreen`/`brightYellow`/`brightBlue`/`brightMagenta`) | Hand-picked lighter tints of the paired color above, not derived from a token | Standard hues stay recognizable, but readable against `--bg-primary` -- xterm.js's own stock dark colors read as near-invisible on a background this dark |
 
 `fontSize` and `fontFamily` are left at ttyd's own defaults (13px, `Consolas, Liberation Mono, Menlo, Courier, monospace`). A larger `fontSize` (xterm.js's own default is 15, which reads better on a phone) was tried, but it changes the terminal's row/column grid enough to break mouse-drag text selection (confirmed against `tests/pwtest.py`'s "Ctrl+C with selection copies" check) -- not worth it for a font a couple of px bigger.
 
-Set `SERVERJACK_TERM_THEME=off` to skip all of this and get ttyd's stock xterm.js theme back; a `-t theme=...` of your own in `TTYD_EXTRA_ARGS` always overrides the default regardless of that setting (see the README's config table).
+Set `SERVERJACK_TERM_THEME=off` to skip generating this and get ttyd's stock xterm.js theme back. Note the behavior change from when this lived in `bin/serverjack-ttyd`: a `-t theme=...` of your own in `TTYD_EXTRA_ARGS` no longer overrides the generated theme on its own -- the URL query (this one) is what ttyd's client applies last, so it now wins over `-t theme=...` regardless of which one started first. To use a fully custom theme, set `SERVERJACK_TERM_THEME=off` *and* pass your own `-t theme=...` in `TTYD_EXTRA_ARGS` (see the README's config table).
 
 ## Implementation constraints for serverjack
 

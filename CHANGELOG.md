@@ -10,7 +10,16 @@ and this project uses [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Terminal uses the app's color theme by default (`SERVERJACK_TERM_THEME=off`
-  to keep ttyd's default).
+  to keep ttyd's default). The theme is generated once, in `bin/serverjack`,
+  from the same `TOKENS` the rest of the app uses (`_term_theme()`), and
+  passed to ttyd on the terminal iframe's own URL (`?theme=...`) instead of
+  being hand-typed into `bin/serverjack-ttyd`'s `-t theme=...`, which no
+  longer sets a theme at all.
+- Tests no longer inherit `SERVERJACK_TERM_THEME` or `TTYD_EXTRA_ARGS` from
+  the maintainer's own shell (both have been found already set there):
+  `tests/run.sh` and `tests/security-wrapper.sh` now pin both explicitly so
+  an opted-out or customized ambient environment can't make the suite fail
+  for a reason unrelated to the change under test.
 - README "Why serverjack" opens with what serverjack does (start an agent in
   the right directory, paste the command it asked for, close finished tmux
   sessions) rather than with checking on a running agent, which is what the
@@ -57,6 +66,28 @@ and this project uses [Semantic Versioning](https://semver.org/).
   call the script made; HOME is now scoped to the tmux session's environment
   instead. A missing session name from the recorder now fails the script
   instead of silently overwriting `demo.gif` with a blank capture.
+- The terminal's default (non-blinking, block) cursor drew the character
+  under it in the same color as its own cursor cell (`cursorAccent` equalled
+  `cursor`), making the glyph invisible while the cursor sat on it and the
+  terminal had focus. `cursorAccent` is now the page background token
+  instead, matching how the cursor reads everywhere else it appears on top
+  of app-colored surfaces.
+- `docs/shots` fixture robustness: `make-gif.sh`'s `/tmp`-leak guard read a
+  plain `capture-pane`, which (once OpenCode's TUI is up) sees only its
+  current alternate screen, never the shell's own scrollback the leak check
+  actually needs -- it now passes `-a` to read that instead. Recording and
+  the host-side regression check both now wait for OpenCode's real "Ask
+  anything" ready text (a generous timeout, `screenReaderMode=true` mirroring
+  it into the DOM for `gif_record.py` to wait on; plain `capture-pane` --
+  what's *currently* on screen -- for `make-gif.sh`'s own check) instead of a
+  fixed 5-second sleep. The fixture's OpenCode is now found reliably even
+  when the host also has one on `PATH` (`~/.opencode/bin` is prepended in
+  `make.sh`/`make-gif.sh`, and preferred outright over `PATH` when resolving
+  which binary to use), it's symlinked in rather than copied (no reason to
+  duplicate a ~180 MB binary into a throwaway run), the version probe runs
+  against the fixture's own `HOME` under a timeout and fails loudly instead
+  of silently, and a missing OpenCode binary is now caught before the
+  fixture creates its run directory instead of leaking it on exit.
 
 ## 1.3.0 - 2026-09-14
 

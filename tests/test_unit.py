@@ -26,6 +26,7 @@ import struct
 import tempfile
 import unittest
 import zlib
+from urllib.parse import unquote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVERJACK_PATH = os.path.join(HERE, "..", "bin", "serverjack")
@@ -361,6 +362,50 @@ class DirOptionsTests(unittest.TestCase):
         first_line = mod.dir_options().split("\n", 1)[0]
         self.assertIn(f'value="{mod.esc(mod.HOME)}"', first_line)
         self.assertIn(" selected", first_line)
+
+
+class TermThemeTests(unittest.TestCase):
+    """_term_theme()/TERM_THEME/ttyd_src(): the terminal color theme is
+    generated from TOKENS (single source of truth -- see docs/design/
+    DESIGN.md's "Terminal theme" section), and the cursorAccent/cursor bug
+    (glyph drawn in the same color as its own cursor cell, invisible) stays
+    fixed."""
+
+    def test_cursor_accent_is_the_background_not_the_cursor_color(self):
+        # The bug this replaced: cursorAccent == cursor made the character
+        # under a non-blinking block cursor invisible (same color as its own
+        # fill). Regression guard at the value level; tests/pwtest.py proves
+        # it in a real rendered terminal.
+        self.assertNotEqual(mod.TERM_THEME["cursorAccent"], mod.TERM_THEME["cursor"])
+        self.assertEqual(mod.TERM_THEME["cursorAccent"], mod._token("bg-primary"))
+
+    def test_theme_colors_come_from_the_named_tokens(self):
+        t = mod.TERM_THEME
+        self.assertEqual(t["background"], mod._token("bg-primary"))
+        self.assertEqual(t["foreground"], mod._token("text-primary"))
+        self.assertEqual(t["cursor"], mod._token("accent"))
+        self.assertEqual(t["green"], mod._token("accent"))
+        self.assertEqual(t["black"], mod._token("surface-alt"))
+        self.assertEqual(t["white"], mod._token("text-secondary"))
+        self.assertEqual(t["brightWhite"], mod._token("text-primary"))
+        self.assertEqual(t["red"], mod._token("danger"))
+        self.assertEqual(t["yellow"], mod._token("warning"))
+        self.assertEqual(t["blue"], mod._token("info"))
+        self.assertEqual(t["magenta"], mod._token("agent-purple"))
+
+    def test_selection_background_is_translucent_accent(self):
+        r, g, b = mod._hex_rgb(mod._token("accent"))
+        self.assertEqual(mod.TERM_THEME["selectionBackground"], f"rgba({r},{g},{b},0.3)")
+
+    def test_missing_token_raises(self):
+        with self.assertRaises(SystemExit):
+            mod._token("not-a-real-token")
+
+    def test_ttyd_src_carries_the_theme_as_json_on_the_url(self):
+        src = mod.ttyd_src("mysession")
+        self.assertTrue(src.startswith(mod.TERM_PATH + "?arg=mysession&theme="))
+        theme_qs = src.split("&theme=", 1)[1]
+        self.assertEqual(json.loads(unquote(theme_qs)), mod.TERM_THEME)
 
 
 class ShortcutsAtomicityTests(unittest.TestCase):
