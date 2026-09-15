@@ -852,6 +852,32 @@ class ServerjackCtlUsageTests(unittest.TestCase):
         self.assertNotIn("XDG_RUNTIME_DIR", out)
 
 
+class ServerjackSetupUsageTests(unittest.TestCase):
+    """A13: bin/serverjack-setup's usage() had the same hardcoded-range bug
+    as bin/serverjack-ctl's (ServerjackCtlUsageTests above, fixed first) --
+    a fixed `sed -n '2,52p'` silently truncates the printed header by
+    however many lines it grows past 52, with nothing to catch it. Fixed to
+    the same awk-derived-from-the-header's-own-end approach."""
+
+    SETUP = os.path.join(os.path.dirname(HERE), "bin", "serverjack-setup")
+
+    def _help_output(self):
+        result = subprocess.run(
+            ["bash", self.SETUP, "--help"],
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_help_includes_the_last_line_of_the_header_comment(self):
+        out = self._help_output()
+        self.assertIn("-h/--help prints this.", out)
+
+    def test_help_stops_before_the_first_line_of_real_code(self):
+        out = self._help_output()
+        self.assertNotIn("set -Eeuo pipefail", out)
+        self.assertNotIn("XDG_RUNTIME_DIR", out)
+
+
 class GuidedInstallDriverTests(unittest.TestCase):
     """tests/guided-install-driver.py's own core loop, driven against a tiny
     real child process (not the container) -- fast, and exercises the exact

@@ -106,7 +106,14 @@ lock_release() {
 }
 
 usage() {
-  sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # A13: prints the header comment block (everything from line 2 up to the
+  # first non-"#" line -- `set -Eeuo pipefail` below) rather than a
+  # hardcoded line range: a fixed `sed -n '2,Np'` silently truncates by
+  # however many lines the header grows past N, with nothing to catch it.
+  # Same fix, same reasoning, as bin/serverjack-ctl's own usage() (which
+  # found exactly this happening there first).
+  awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' \
+    "${BASH_SOURCE[0]}" 2>/dev/null
   exit "${1:-0}"
 }
 
