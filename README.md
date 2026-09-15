@@ -516,7 +516,7 @@ refusing outright.
 
 Managing it afterwards — updates, rollback, uninstall — is `serverjack-ctl`
 (installed to `~/.local/bin/serverjack-ctl`): see
-[Updating and rolling back](#update-serverjack) above.
+[Updating and rolling back](#updating-and-rolling-back) below.
 
 ### Development install (git checkout)
 
