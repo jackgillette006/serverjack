@@ -259,7 +259,12 @@ def _install_channel():
         try:
             with open(install_json, "r", encoding="utf-8") as fh:
                 doc = json.load(fh)
-            if doc.get("channel") == "release":
+            # Valid JSON but not an object (a bare number, string, list, ...)
+            # is a corrupted install.json, not one this process wrote -- treat
+            # it the same as missing/unreadable rather than crashing this
+            # process at import (doc.get() below would otherwise raise
+            # AttributeError, which is NOT one of the exceptions caught here).
+            if isinstance(doc, dict) and doc.get("channel") == "release":
                 return "release", doc.get("version")
         except (OSError, ValueError, UnicodeDecodeError):
             pass

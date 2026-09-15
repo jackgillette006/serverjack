@@ -52,6 +52,17 @@
 #       inside a managed release directory
 #   (q) a git-checkout install with "%" and a space in its path is still
 #       correctly detected as channel=git, not misparsed via ExecStart=
+#   (r) `serverjack-ctl status` survives one unit being stopped
+#   (s) fetch() (bootstrap and serverjack-ctl) keeps the HTTPS pin unless
+#       SERVERJACK_RELEASE_BASE_URL literally starts with "http://" -- an
+#       https:// mirror never has --proto-redir dropped
+#   (t) `serverjack-ctl update` interrupted (SIGINT) mid-activation leaves
+#       install.json already correct (written before the swap, not only
+#       after success), and rollback afterward still works
+#   (u) a dangling "current" (uninstall.sh unreachable): `uninstall --yes`
+#       still removes the units via the fallback, and reports it
+#   (v) a unit that genuinely can't be removed: `uninstall --yes` exits
+#       non-zero and leaves $SHARE in place, rather than reporting success
 #
 # ttyd and fzf are pre-fetched on the HOST (which has real internet, proven
 # earlier by the setup steps) at the exact pinned versions install.sh
@@ -85,6 +96,35 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+
+# --------------------------------------------------- fetch() proto pin (s)
+# Host-side, no docker needed: extracts each fetch() function verbatim from
+# its source file and calls it with a fake `curl` that just echoes its argv,
+# so we can see directly whether --proto/--proto-redir made it through for a
+# given SERVERJACK_RELEASE_BASE_URL. This is the exact mechanism that used
+# to be wrong (finding: "drops the pin for ANY value, including https
+# mirrors") -- an https:// mirror that 302s a download down to plain http is
+# what --proto-redir refuses; dropping it silently follows the downgrade.
+echo "== (s) fetch() keeps the HTTPS pin unless SERVERJACK_RELEASE_BASE_URL literally starts with http://"
+check_fetch_pin() {  # $1 label, $2 file, $3 SERVERJACK_RELEASE_BASE_URL value, $4 expect "pinned"|"unpinned"
+  local label=$1 file=$2 base_url=$3 expect=$4
+  local fn; fn=$(sed -n '/^fetch() {/,/^}/p' "$file")
+  local argv got=unpinned
+  argv=$(SERVERJACK_RELEASE_BASE_URL="$base_url" bash -c "
+curl() { printf '%s\n' \"\$@\"; }
+$fn
+fetch -o /dev/null http://example.invalid/x
+")
+  [[ $argv == *"--proto-redir"* ]] && got=pinned
+  result "$label" "$expect" "$got"
+}
+for f in ctl:bin/serverjack-ctl bootstrap:bootstrap/serverjack-bootstrap.sh.in; do
+  label=${f%%:*}; path=${f#*:}
+  check_fetch_pin "$label fetch(): SERVERJACK_RELEASE_BASE_URL unset -> pinned" "$REPO/$path" "" pinned
+  check_fetch_pin "$label fetch(): a real http:// mirror -> unpinned (the documented opt-in)" "$REPO/$path" "http://mirror.example/x" unpinned
+  check_fetch_pin "$label fetch(): an https:// mirror -> STILL pinned (the bug: used to drop it for ANY set value)" "$REPO/$path" "https://mirror.example/x" pinned
+  check_fetch_pin "$label fetch(): a scheme-less mirror -> pinned (doesn't literally start with http://)" "$REPO/$path" "mirror.example/x" pinned
+done
 
 # ------------------------------------------------------------- capability
 if ! command -v docker >/dev/null 2>&1; then
@@ -129,20 +169,27 @@ rm -f /tmp/"$RUNID"-build.log
 # still carries the correct pinned sha256, so the mismatch is what must be
 # caught. V5 = a "flaky" release whose install.sh fails on its first run and
 # succeeds on a second, identical one -- proves a bootstrap install that
-# fails partway is resumable with a second `curl | bash` (finding 3).
+# fails partway is resumable with a second `curl | bash` (finding 3). V6 =
+# a "slow" release whose install.sh sleeps for a while right at the start
+# (after touching a marker file) -- gives a real `serverjack-ctl update` a
+# wide, reliable window to interrupt with SIGINT mid-flight (second-review
+# finding 1: an interrupt between the pre-swap install.json write and the
+# health-confirmed finalize must leave a resumable, rollback-able record).
 V1=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$REPO/bin/serverjack")
 V2="9.9.9-test"
 V3="9.9.10-broken-test"
 V4="9.9.6-corrupt-test"
 V5="9.9.7-resume-test"
+V6="9.9.3-slow-test"
 [[ -n $V1 ]] || { echo "could not read VERSION from bin/serverjack" >&2; exit 1; }
 V3_CTL_MARKER="SJMI_TEST_MARKER_V3_CTL"
+V6_SLOW_MARKER="/tmp/sjmi-slow-marker"
 
 WEBROOT="$WORK/webroot"
 mkdir -p "$WEBROOT/v$V1" "$WEBROOT/v$V2" "$WEBROOT/v$V3" "$WEBROOT/v$V4" "$WEBROOT/v$V5" \
-  "$WEBROOT/trunc" "$WEBROOT/tools"
+  "$WEBROOT/v$V6" "$WEBROOT/trunc" "$WEBROOT/tools"
 
-build_variant() {  # $1 version  $2 dir-to-copy-from  $3 mode: real|bump|broken|flaky
+build_variant() {  # $1 version  $2 dir-to-copy-from  $3 mode: real|bump|broken|flaky|slow
   local version=$1 src=$2 mode=$3
   local vdir="$WORK/src-$version"
   cp -a "$src" "$vdir"
@@ -185,6 +232,28 @@ with open(path, "w", encoding="utf-8") as fh:
     fh.writelines(lines)
 PY
   fi
+  if [[ $mode == slow ]]; then
+    # Touches a marker (so the test can wait for "definitely inside the
+    # sleep now" instead of racing a fixed delay) then sleeps well past any
+    # reasonable time-to-interrupt, every run -- unlike "flaky" this never
+    # fails or speeds up; the test kills it from outside.
+    python3 - "$vdir/install.sh" "$V6_SLOW_MARKER" <<'PY'
+import sys
+
+path, marker = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as fh:
+    lines = fh.readlines()
+inject = 'touch "%s"; sleep 25\n' % marker
+for i, line in enumerate(lines):
+    if line.strip() == "set -euo pipefail":
+        lines.insert(i + 1, inject)
+        break
+else:
+    raise SystemExit("could not find insertion point in install.sh")
+with open(path, "w", encoding="utf-8") as fh:
+    fh.writelines(lines)
+PY
+  fi
   ( cd "$vdir" && bash scripts/build-release.sh "$version" ) >/tmp/"$RUNID"-build.log 2>&1 \
     || { echo "build_variant $version failed:" >&2; cat /tmp/"$RUNID"-build.log >&2; exit 1; }
   rm -f /tmp/"$RUNID"-build.log
@@ -192,12 +261,13 @@ PY
     "$WEBROOT/v$version/"
 }
 
-say "Building test releases V1=$V1 (real) V2=$V2 (bump) V3=$V3 (broken) V4=$V4 (to be corrupted) V5=$V5 (flaky)"
+say "Building test releases V1=$V1 (real) V2=$V2 (bump) V3=$V3 (broken) V4=$V4 (to be corrupted) V5=$V5 (flaky) V6=$V6 (slow)"
 build_variant "$V1" "$REPO" real
 build_variant "$V2" "$REPO" bump
 build_variant "$V3" "$REPO" broken
 build_variant "$V4" "$REPO" bump
 build_variant "$V5" "$REPO" flaky
+build_variant "$V6" "$REPO" slow
 
 # One byte flipped in the SERVED archive only -- the bootstrap's own embedded
 # sha256 (and SHA256SUMS) still say what the archive should have hashed to.
@@ -278,10 +348,15 @@ docker exec "$TESTER" useradd -m -s /bin/bash tester2
 # so those don't have to interleave with an unrelated install/version
 # sequence.
 docker exec "$TESTER" useradd -m -s /bin/bash tester3
+# tester4: dedicated to the uninstall/partial-removal scenarios (finding 3)
+# so a dangling "current" or a permission-blocked unit dir doesn't leave
+# tester/tester2/tester3 in a weird state for whatever runs after them.
+docker exec "$TESTER" useradd -m -s /bin/bash tester4
 docker exec "$TESTER" loginctl enable-linger tester
 docker exec "$TESTER" loginctl enable-linger tester2
 docker exec "$TESTER" loginctl enable-linger tester3
-for u in tester tester2 tester3; do
+docker exec "$TESTER" loginctl enable-linger tester4
+for u in tester tester2 tester3 tester4; do
   for _ in $(seq 1 30); do
     docker exec "$TESTER" test -S "/run/user/$(docker exec "$TESTER" id -u "$u")/bus" 2>/dev/null && break
     sleep 0.5
@@ -289,15 +364,17 @@ for u in tester tester2 tester3; do
 done
 
 # Cache each user's uid once -- looking it up per call (docker exec id -u)
-# works but is needless overhead across the ~40+ calls below.
+# works but is needless overhead across the ~50+ calls below.
 TESTER_UID=$(docker exec "$TESTER" id -u tester)
 TESTER2_UID=$(docker exec "$TESTER" id -u tester2)
 TESTER3_UID=$(docker exec "$TESTER" id -u tester3)
-run_as() {  # $1 = user ("tester"/"tester2"/"tester3"), remaining args = one command string
+TESTER4_UID=$(docker exec "$TESTER" id -u tester4)
+run_as() {  # $1 = user ("tester".."tester4"), remaining args = one command string
   local user=$1 uid; shift
   case "$user" in
     tester2) uid=$TESTER2_UID ;;
     tester3) uid=$TESTER3_UID ;;
+    tester4) uid=$TESTER4_UID ;;
     *)       uid=$TESTER_UID ;;
   esac
   docker exec --user "$user" -e XDG_RUNTIME_DIR="/run/user/$uid" \
@@ -359,6 +436,10 @@ provision_ttyd_fzf tester
 # SERVERJACK_ALLOW scenarios below both end with a genuinely running
 # release, not just a refused/truncated attempt).
 provision_ttyd_fzf tester3
+# tester4: the uninstall/partial-removal scenarios need real, running
+# installs (twice -- one gets fully uninstalled, a second one tests partial
+# removal), so it needs ttyd/fzf too.
+provision_ttyd_fzf tester4
 
 # ---------------------------------------------------------- (j) root refusal
 echo "== (j) running the bootstrap as root is refused"
@@ -657,6 +738,147 @@ result "status exits 0 even with one unit stopped" "0" "$rc"
 [[ $out == *"units:"* && $out == *"serverjack-ttyd=inactive"* ]] && echo "  PASS full status output printed, showing serverjack-ttyd inactive" \
   || { echo "  FAIL full status output printed, showing serverjack-ttyd inactive -- got: $out"; failures=$((failures + 1)); }
 run_as tester3 "systemctl --user start serverjack-ttyd" >/dev/null
+
+# ------------------- (t) an interrupted update: resumable, rollback works
+# V6's install.sh touches a marker file then sleeps 25s right at the start
+# -- a wide, reliable window to land a real SIGINT mid-activation. Launched
+# detached (docker exec -d) so the test can send it a signal from outside;
+# `echo $$ > pidfile; exec serverjack-ctl ...` records the PID of the
+# exec'd serverjack-ctl process itself (exec replaces the image, keeps the
+# pid), not some wrapper shell around it.
+echo "== (t) an interrupted update leaves a resumable, rollback-able record"
+UPDATE_PID_FILE=/tmp/sjmi-update-pid
+run_as tester3 "rm -f $V6_SLOW_MARKER $UPDATE_PID_FILE"
+docker exec -d --user tester3 -e XDG_RUNTIME_DIR="/run/user/$TESTER3_UID" \
+  -e SERVERJACK_RELEASE_BASE_URL="$BASE_URL" -e PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" \
+  -w /tmp "$TESTER" bash -c \
+  "echo \$\$ > $UPDATE_PID_FILE; exec ~/.local/bin/serverjack-ctl update --version $V6 --yes > /tmp/sjmi-update.log 2>&1"
+
+marker_seen=0
+for _ in $(seq 1 30); do
+  run_as tester3 "test -f $V6_SLOW_MARKER" && { marker_seen=1; break; }
+  sleep 1
+done
+[[ $marker_seen -eq 1 ]] && echo "  PASS install.sh's injected sleep started (definitely mid-activation now)" \
+  || { echo "  FAIL install.sh's injected sleep started -- timed out waiting for the marker file"; failures=$((failures + 1)); }
+
+# The core of finding 1: install.json must ALREADY be correct at this point
+# -- written before the swap, not only after a successful health check.
+ij=$(run_as tester3 "cat ~/.local/share/serverjack/install.json" 2>/dev/null)
+[[ $ij == *'"state": "activating"'* ]] && echo "  PASS install.json already shows state=activating (written before the swap, not after)" \
+  || { echo "  FAIL install.json already shows state=activating -- got: $ij"; failures=$((failures + 1)); }
+[[ $ij == *"\"version\": \"$V6\""* ]] && echo "  PASS ...naming the new version" \
+  || { echo "  FAIL ...naming the new version -- got: $ij"; failures=$((failures + 1)); }
+[[ $ij == *"\"previous\": \"$V2\""* ]] && echo "  PASS ...and the CORRECT previous version (not stale/desynced)" \
+  || { echo "  FAIL ...and the correct previous version -- got: $ij"; failures=$((failures + 1)); }
+cur=$(run_as tester3 "readlink ~/.local/share/serverjack/current")
+result "\"current\" already points at the new release" "releases/$V6" "$cur"
+
+# Signal the PROCESS GROUP, not just the recorded pid: bash blocked in a
+# synchronous wait() for a foreground child (here, install.sh, itself
+# blocked on its own `sleep`) does not act on a caught signal promptly --
+# empirically confirmed it waits for the child to finish first, only then
+# runs the trap. That's just an artifact of signaling a single pid, though:
+# a real Ctrl-C in a terminal (or a session-ending SIGHUP, or a reboot's
+# signal to the whole unit) hits the WHOLE foreground process group at
+# once, which also kills the child directly and unblocks the parent's
+# wait() immediately -- confirmed empirically too. `docker exec -d` gives
+# the launched process its own session, so its pgid equals its own pid.
+run_as tester3 "kill -INT -\$(cat $UPDATE_PID_FILE) 2>/dev/null; true"
+dead=0
+for _ in $(seq 1 15); do
+  run_as tester3 "kill -0 \$(cat $UPDATE_PID_FILE) 2>/dev/null" || { dead=1; break; }
+  sleep 1
+done
+[[ $dead -eq 1 ]] && echo "  PASS the update process actually died after SIGINT" \
+  || { echo "  FAIL the update process actually died after SIGINT"; failures=$((failures + 1)); }
+log=$(run_as tester3 "cat /tmp/sjmi-update.log" 2>/dev/null)
+[[ $log == *"interrupted while activating"* ]] && echo "  PASS the interrupt trap printed its diagnostic" \
+  || echo "  (note: interrupt trap message not seen in the log -- not fatal, install.json is the real proof) -- got: $log"
+
+# The property that actually matters: rollback (or another update) must
+# work correctly afterward, not refuse or misreport -- this is what the OLD
+# write-after-swap ordering broke (status showed the old version with
+# previous=null, and rollback refused with nothing to roll back to).
+out=$(run_as tester3 "~/.local/bin/serverjack-ctl rollback --yes" 2>&1); rc=$?
+result "rollback after the interrupt exits 0" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+code=$(run_as tester3 "~/.local/bin/serverjack-ctl status | sed -n 's/^current:  //p'")
+result "current version is back to V2 after the post-interrupt rollback" "$V2" "$code"
+code=$(run_as tester3 "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7680/healthz")
+result "/healthz is 200 after the post-interrupt rollback" "200" "$code"
+ij2=$(run_as tester3 "cat ~/.local/share/serverjack/install.json" 2>/dev/null)
+[[ $ij2 != *'"state"'* ]] && echo "  PASS install.json's activating marker is gone after a clean rollback" \
+  || { echo "  FAIL install.json's activating marker is gone after a clean rollback -- got: $ij2"; failures=$((failures + 1)); }
+
+# --------------------------------- (u) dangling current, uninstall --yes
+# $CURRENT/uninstall.sh is unreachable through a dangling symlink (its
+# release directory gone) -- the OLD code had NOTHING that removed the
+# units in this case (just a warning, then rm -rf $SHARE, still reporting
+# "removed: units..." and exit 0 while the units kept running). The fix's
+# fallback (remove_units_and_serve_route()) doesn't depend on $CURRENT at
+# all, so it must still get the units down and report accurately.
+# tester/tester2/tester3 and tester4 are separate Linux accounts but share
+# ONE network namespace (the container's) -- unlike separate machines, they
+# are NOT isolated from each other's ports. tester3 stays up and running
+# (SERVERJACK_PORT default 7680) for the rest of this file after scenario
+# (t), so tester4 needs its own port or install.sh's own port-clash check
+# correctly refuses it (found by exactly that happening here). --port also
+# sidesteps needing a fake/blocked tailscale serve setup for these two.
+TESTER4_PORT=7690
+bootstrap_install_retry() {  # $1 = user
+  local user=$1 out rc n
+  for n in 1 2 3; do
+    out=$(run_as "$user" "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --no-serve --port $TESTER4_PORT" 2>&1); rc=$?
+    (( rc == 0 )) && { printf '%s' "$out"; return 0; }
+    echo "  (fresh install for $user failed, retrying: $n/3)" >&2
+    sleep 2
+  done
+  printf '%s' "$out"
+  return "$rc"
+}
+
+echo "== (u) dangling \"current\": uninstall --yes still removes the units"
+out=$(bootstrap_install_retry tester4); rc=$?
+result "tester4: fresh install for (u) exits 0" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+run_as tester4 "ln -sfn releases/does-not-exist ~/.local/share/serverjack/current"
+out=$(run_as tester4 "~/.local/bin/serverjack-ctl uninstall --yes" 2>&1); rc=$?
+result "uninstall --yes with a dangling current exits 0 (fallback fully succeeded)" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+[[ $out == *"removing the units and serve route directly"* ]] && echo "  PASS output says it used the fallback (uninstall.sh was unreachable)" \
+  || { echo "  FAIL output says it used the fallback -- got: $out"; failures=$((failures + 1)); }
+unit_gone=$(run_as tester4 "systemctl --user list-unit-files serverjack.service serverjack-ttyd.service 2>/dev/null | grep -c '\\.service' || true")
+result "both unit files are actually gone (not just \$SHARE)" "0" "$unit_gone"
+share_gone=$(run_as tester4 "test -d ~/.local/share/serverjack && echo present || echo gone")
+result "\$SHARE removed (the fallback fully succeeded)" "gone" "$share_gone"
+
+# ------------------ (v) partial removal: exit non-zero, $SHARE preserved
+# A second, fresh install -- this time the unit directory itself is made
+# unwritable (owner's own write bit removed) so `rm -f` on the unit files
+# genuinely fails (a directory needs write+execute to remove entries from
+# it; being the file's owner isn't enough). The fallback must detect that
+# and refuse to call it done: no $SHARE removal, non-zero exit.
+echo "== (v) a unit that could not be removed: exit non-zero, \$SHARE kept"
+out=$(bootstrap_install_retry tester4); rc=$?
+result "tester4: fresh install for (v) exits 0" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+run_as tester4 "ln -sfn releases/does-not-exist ~/.local/share/serverjack/current"
+run_as tester4 "chmod 500 ~/.config/systemd/user"
+out=$(run_as tester4 "~/.local/bin/serverjack-ctl uninstall --yes" 2>&1); rc=$?
+[[ $rc -ne 0 ]] && echo "  PASS uninstall exits non-zero when a unit could not actually be removed" \
+  || { echo "  FAIL uninstall exits non-zero when a unit could not actually be removed -- got 0"; failures=$((failures + 1)); }
+[[ $out == *"could not be fully removed"* ]] && echo "  PASS output says removal was incomplete, not \"removed\"" \
+  || { echo "  FAIL output says removal was incomplete -- got: $out"; failures=$((failures + 1)); }
+run_as tester4 "chmod 700 ~/.config/systemd/user"
+still_there=$(run_as tester4 "systemctl --user list-unit-files serverjack.service serverjack-ttyd.service 2>/dev/null | grep -c '\\.service' || true")
+[[ $still_there -gt 0 ]] && echo "  PASS at least one unit file is still there (removal genuinely failed, not just misreported)" \
+  || { echo "  FAIL at least one unit file is still there -- got count: $still_there"; failures=$((failures + 1)); }
+share_kept=$(run_as tester4 "test -d ~/.local/share/serverjack && echo present || echo gone")
+result "\$SHARE was NOT removed when removal was incomplete" "present" "$share_kept"
+# Clean up so this doesn't count as a leaked/broken install for anything
+# that might run after it -- best effort, this is the last use of tester4.
+run_as tester4 "~/.local/bin/serverjack-ctl uninstall --yes" >/dev/null 2>&1 || true
 
 echo
 if (( failures > 0 )); then
