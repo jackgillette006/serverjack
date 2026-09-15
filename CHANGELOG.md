@@ -15,6 +15,44 @@ and this project uses [Semantic Versioning](https://semver.org/).
   vendors' remote-control features are for.
 - fzf 0.74.4 (was 0.74.3): pinned checksums bumped for the linux_amd64,
   linux_arm64 and linux_armv7 assets in `install.sh`.
+- The deny page (wrong tailnet user) and the "terminal unavailable" page no
+  longer link a manifest and icons a client in either state can't use — both
+  are error interstitials, not something to "Add to Home Screen".
+- `ICON_REV`, the icon/manifest cache-buster, is now a hash of the Prompt
+  Jack artwork and `VERSION` instead of a hand-maintained string, so any
+  future artwork change refreshes cached browsers on its own; icon and
+  manifest responses also carry an `ETag`.
+- `docs/shots/fixture.sh` factors out the isolated-instance setup previously
+  duplicated between `docs/shots/make.sh` and `make-gif.sh`, so the README
+  stills and the demo GIF are built from identical fixture data (down to the
+  Start card's "Runs `claude`" hint, now shown in both).
+- `docs/shots/make-social.sh` renders `social-preview.tmpl.html` using the
+  real color tokens and Prompt Jack mark loaded from `bin/serverjack` itself,
+  instead of a hand-copied stylesheet and SVG path data that could drift from
+  what actually ships; `gif_record.py`'s tap-ring color now reads `--accent`
+  off the live page instead of a hardcoded hex.
+
+### Fixed
+
+- A coding CLI installed under a private PATH entry (nvm's versioned bin
+  dir, a tool's own `"paths"` glob in `tools.json`) showed as installed and
+  its Start card pill appeared, but starting it failed with "command not
+  found": Debian's `/etc/profile` resets `PATH` inside the login shell that
+  runs the command. `command_args()` now resolves the launched command to an
+  absolute path before starting it, and also re-exports the resolved
+  `TOOL_PATH` inside that login shell, so a subprocess the tool itself
+  starts sees it too.
+- The demo GIF had a flat grey letterbox band across the bottom fifth of
+  every frame: the recorded video's pixel size didn't match the emulated
+  iPhone's real viewport. `gif_record.py` now derives the recording size
+  from the device's own viewport and scale factor instead of a stale
+  hardcoded size, and `make-gif.sh` verifies the rendered video isn't
+  letterboxed (with a detected-crop fallback) before converting it.
+- `docs/shots/make-gif.sh`: a process-wide `export HOME` meant for tmux
+  sessions was also stripping Docker's own config from every later `docker`
+  call the script made; HOME is now scoped to the tmux session's environment
+  instead. A missing session name from the recorder now fails the script
+  instead of silently overwriting `demo.gif` with a blank capture.
 
 ## 1.3.0 - 2026-09-14
 

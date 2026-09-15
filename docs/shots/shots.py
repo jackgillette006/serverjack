@@ -21,12 +21,21 @@ with sync_playwright() as p:
     page = ctx.new_page()
     page.goto(f"{BASE}/", wait_until="networkidle")
     page.wait_for_selector("h2:text('Sessions')")
+    # Pick the Claude Code pill so the Start card's hint reads "Runs claude"
+    # here too, same as the demo GIF (see gif_record.py) -- the README still
+    # and the GIF should show the exact same Start card, not the bare
+    # Shell-selected default.
+    page.click('.seg label:has(input[name=what][value="claude"])')
+    page.wait_for_selector("#toolhint:has-text('Runs')")
     page.wait_for_timeout(400)          # let layout settle before capture
     page.screenshot(path=os.path.join(OUT, "desktop.png"), full_page=True)
 
     # A close view of the real header and served app icon for the branding PR.
+    # The URL comes off the page itself -- ICON_REV is a content hash now, not
+    # a literal "?v=prompt-jack" -- so this never drifts from what's served.
     page.locator("h1").screenshot(path=os.path.join(OUT, "prompt-jack-header.png"))
-    page.goto(f"{BASE}/icon.svg?v=prompt-jack", wait_until="networkidle")
+    icon_href = page.locator('link[rel=icon]').get_attribute("href")
+    page.goto(f"{BASE}{icon_href}", wait_until="networkidle")
     page.set_viewport_size({"width": 256, "height": 256})
     page.screenshot(path=os.path.join(OUT, "prompt-jack-icon.png"))
     b.close()

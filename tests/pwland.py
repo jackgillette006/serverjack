@@ -4,8 +4,10 @@ Chromium desktop only -- the landing page has no engine-specific code, and the
 things worth proving here are server-side (a command really ran in a real tmux
 session, a shortcut was stored and removed, an agent card's buttons hit the
 right route). run.sh points the app at shots/cfg with a single fake tool
-(bin=true, login_check=true, run=bash, one action `hello`) and a second one
-with nothing but a run command, so nothing here touches a real coding CLI.
+(bin=true, login_check=true, run=bash, one action `hello`), a second one with
+nothing but a run command, and a third whose `bin` exists only in a directory
+named by its own tools.json "paths" entry (never on PATH) -- so nothing here
+touches a real coding CLI.
 """
 import json
 import os
@@ -282,6 +284,26 @@ with sync_playwright() as p:
     out = wait_for(lambda: pane(fake_sess) if re.search(r"[$#]\s*$", pane(fake_sess).rstrip("\n")) else "")
     ok("...and the pane sits at a shell prompt",
        bool(re.search(r"[$#]\s*$", out.rstrip("\n"))), repr(out[-120:]))
+
+    # A tool whose `bin` is reachable only through its own tools.json "paths"
+    # entry, never through PATH -- regression test for command_args()
+    # resolving the launched command to an absolute path (and re-exporting
+    # TOOL_PATH inside the login shell), so a tool nvm or a private install
+    # dir hides from a plain PATH lookup still actually starts instead of
+    # failing with "command not found" once bash -lc's login shell resets
+    # PATH out from under it.
+    page.goto(f"{BASE}/")
+    pick_what(page, "pathfake")
+    page.click('form[action="/start"] button[type=submit]')
+    page.wait_for_selector("#tabs .tab.on")
+    pathfake_sess = sess_from_url(page)
+    MADE.append(pathfake_sess)
+    ok("choosing the PATH-only tool radio + Start opens a session for it",
+       bool(re.fullmatch(r"pathfake(-\d+)?", pathfake_sess or "")) and exists(pathfake_sess),
+       f"url={page.url}")
+    out = wait_for(lambda: pane(pathfake_sess) if "TOOL_RAN" in pane(pathfake_sess) else "")
+    ok("...and the pane shows the fixture bin actually ran, not \"command not found\"",
+       "TOOL_RAN" in out, repr(out[-200:]))
 
     # -------------------------------------------------- agent accordion ----
     page.goto(f"{BASE}/")

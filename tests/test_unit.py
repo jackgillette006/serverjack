@@ -430,6 +430,56 @@ class ValidateNameTests(unittest.TestCase):
         self.assertEqual(name, "a-plain-name")
 
 
+class CommandArgsTests(unittest.TestCase):
+    """command_args(): a tool only reachable via TOOL_PATH (nvm's bin dir, a
+    tool's private "paths" entry) must still start, because Debian's
+    /etc/profile resets PATH inside the `bash -lc` login shell that runs the
+    command. Fixed by resolving the first word to an absolute path up front
+    and by exporting TOOL_PATH again inside the login shell itself."""
+
+    def setUp(self):
+        self._orig_tool_path = mod.TOOL_PATH
+        self._tmp = tempfile.mkdtemp(prefix="sj-unit-toolpath-")
+        _tmpdirs.append(self._tmp)
+        bin_path = os.path.join(self._tmp, "onlyintoolpath")
+        with open(bin_path, "w") as f:
+            f.write("#!/bin/sh\necho TOOL_RAN\n")
+        os.chmod(bin_path, 0o755)
+        mod.TOOL_PATH = self._tmp
+
+    def tearDown(self):
+        mod.TOOL_PATH = self._orig_tool_path
+
+    def _env(self, args):
+        """The "-e SERVERJACK_CMD=..." value out of a command_args() list."""
+        return args[args.index("-e") + 1].split("=", 1)[1]
+
+    def test_resolves_a_bin_only_reachable_via_tool_path(self):
+        args = mod.command_args("onlyintoolpath --flag")
+        cmd = self._env(args)
+        self.assertEqual(cmd, os.path.join(self._tmp, "onlyintoolpath") + " --flag")
+
+    def test_window_name_stays_the_short_command_word(self):
+        args = mod.command_args("onlyintoolpath --flag")
+        self.assertEqual(args[args.index("-n") + 1], "onlyintoolpath")
+
+    def test_unresolvable_command_is_left_alone(self):
+        args = mod.command_args("not-a-real-tool --flag")
+        self.assertEqual(self._env(args), "not-a-real-tool --flag")
+
+    def test_only_the_first_word_is_replaced(self):
+        args = mod.command_args("onlyintoolpath onlyintoolpath --two words")
+        cmd = self._env(args)
+        self.assertEqual(
+            cmd, os.path.join(self._tmp, "onlyintoolpath") + " onlyintoolpath --two words")
+
+    def test_login_shell_also_gets_tool_path_exported(self):
+        script = mod.command_args("onlyintoolpath")[-1]
+        self.assertIn("export PATH=", script)
+        self.assertIn(self._tmp, script)
+        self.assertIn('eval "$SERVERJACK_CMD"', script)
+
+
 class DefaultSessionNameTests(unittest.TestCase):
     """default_session_name(): the "<type>-<directory>" default, from the
     spec's own examples -- HOME handling, skipping sudo/env/nohup/nice/time
