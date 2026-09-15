@@ -42,15 +42,24 @@ from serverjack itself.
 
 ## Does it phone home?
 
-No. serverjack sends no telemetry, no analytics, no crash reports, and no
-update checks — there is no code path in it that makes an outbound request
-on its own. The only two outbound requests anywhere in this project happen
-once, during install: `install.sh` downloads the ttyd and fzf binaries from
-GitHub over HTTPS and checks them against sha256 hashes pinned in the
-install script itself, not fetched from the same host as the binaries. After
-that, the only network traffic is what you generate: your browser talking to
-serverjack over your Tailscale network, and whatever the coding agents you
-start do on their own.
+No. serverjack sends no telemetry, no analytics, no crash reports, and it
+never checks for updates on its own — the running app (`bin/serverjack`
+itself) has no code path that makes an outbound request. The outbound
+requests that do exist are the ones you trigger yourself, all over HTTPS
+with pinned/checksum-verified downloads:
+
+- the installer (`install.sh`, run once by `curl | bash` or a git checkout)
+  downloading the ttyd and fzf binaries from GitHub, checked against sha256
+  hashes pinned in the install script itself, not fetched from the same
+  host as the binaries;
+- `serverjack-ctl update`/`rollback`, when you run them, downloading a
+  release archive from GitHub (or a mirror you configured);
+- the "Update serverjack" shortcut on a git checkout running `git pull`,
+  same as running it yourself.
+
+Beyond that, the only network traffic is what you generate: your browser
+talking to serverjack over your Tailscale network, and whatever the coding
+agents you start do on their own.
 
 ## Does it work without Tailscale?
 
