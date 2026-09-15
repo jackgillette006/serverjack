@@ -22,11 +22,14 @@
 #
 # The terminal's color theme is NOT set here. bin/serverjack builds it from
 # its own TOKENS (_term_theme()) and passes it as ?theme=<json> on the iframe
-# URL it points at this ttyd (ttyd_src()) -- the client applies a URL query's
-# theme last, after anything -t sent it, so that always wins anyway. Keeping
-# it out of this file means there is exactly one place the colors are
-# written down. SERVERJACK_TERM_THEME (README's config table) opts out, read
-# in bin/serverjack, not here.
+# URL it points at this ttyd (ttyd_src()) -- the client applies a URL
+# query's theme last, after anything -t sent it, so it would otherwise
+# always win over a -t theme=... in TTYD_EXTRA_ARGS below. bin/serverjack
+# detects one there (_ttyd_extra_args_has_theme()) and skips its own theme
+# in that case, so this file's -t theme=... is what actually applies.
+# Keeping the default theme out of this file means there is exactly one
+# place the colors are written down. SERVERJACK_TERM_THEME (README's config
+# table) opts out, read in bin/serverjack, not here.
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
 

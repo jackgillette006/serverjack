@@ -14,7 +14,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
   from the same `TOKENS` the rest of the app uses (`_term_theme()`), and
   passed to ttyd on the terminal iframe's own URL (`?theme=...`) instead of
   being hand-typed into `bin/serverjack-ttyd`'s `-t theme=...`, which no
-  longer sets a theme at all.
+  longer sets a theme at all. A `-t theme=...` (or `--client-option[=]theme=...`)
+  of your own in `TTYD_EXTRA_ARGS` is now detected automatically
+  (`_ttyd_extra_args_has_theme()`) and skips generating the default in
+  favor of it -- without that, the generated theme would silently win,
+  since it's the URL query that ttyd's client applies last.
 - Tests no longer inherit `SERVERJACK_TERM_THEME` or `TTYD_EXTRA_ARGS` from
   the maintainer's own shell (both have been found already set there):
   `tests/run.sh` and `tests/security-wrapper.sh` now pin both explicitly so
