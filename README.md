@@ -441,8 +441,12 @@ stopped.
 
 **`SERVERJACK_LISTEN=unix` is immune to this**: the socket lives in a `0700`
 directory, so no other account can create it in serverjack's place. On a
-machine you share with anyone, run `install.sh --unix` and paste the one
-`sudo tailscale serve` line it prints. On a single-user box, tcp is fine.
+machine you share with anyone, the guided flow (`bin/serverjack-setup` /
+`serverjack-ctl setup`) offers to run the one `sudo tailscale serve` line
+itself (default no, same as every other root step) once it knows this is a
+shared machine; running `install.sh --unix` directly still just prints that
+line for you to paste, since install.sh itself never touches sudo. On a
+single-user box, tcp is fine.
 
 Every button on the page runs a command as your user. The Agent rows run
 vendor install scripts from the internet; the exact command is shown before
@@ -615,7 +619,10 @@ proxy to a Unix socket for an unprivileged caller, even the operator —
 
 — so in that mode the installer prints two `sudo tailscale serve … unix:…`
 lines for you to paste. Serve config is persistent, so it is still once per
-machine.
+machine. The guided flow (`bin/serverjack-setup`) completes this step for
+you, with the same consent prompt as the other two; declining it, or
+running `install.sh --unix` directly, just leaves it printed for you to
+paste — the install stays local-only until either happens.
 
 Then re-run `install.sh`. From here on, nothing needs sudo:
 
