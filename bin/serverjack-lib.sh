@@ -134,6 +134,26 @@ local_http_code() {
 # immediate curl right after `systemctl restart` raced the app's own startup
 # time and could report failure on an install that was actually fine a
 # moment later.
+# A16: applies the SAME %/\/" escaping install.sh's own python3 templating
+# uses to embed a repo/release path inside a systemd ExecStart= line's
+# quotes (see install.sh's unit-rendering step). Needed wherever a KNOWN
+# path (the managed "current" symlink target, most importantly) has to be
+# compared against what an EXISTING unit file's ExecStart= line actually
+# says: that text is ALREADY escaped that way, so comparing it against an
+# unescaped path silently never matches whenever the path contains a
+# literal %, \ or " -- a real managed install on such a $HOME used to
+# misdetect as channel=unknown (bin/serverjack-ctl's detect_channel()) or
+# fail to recognize its own rerun (bin/serverjack-setup's
+# handle_existing_install()).
+systemd_escape_path() {
+  python3 - "$1" <<'PY'
+import sys
+s = sys.argv[1]
+s = s.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
+print(s)
+PY
+}
+
 wait_local_healthz() {  # $1 = timeout seconds, $2.. = curl args (as local_http_code)
   local timeout=$1; shift
   local deadline=$((SECONDS + timeout)) code
