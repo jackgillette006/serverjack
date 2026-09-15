@@ -421,11 +421,21 @@ contains "tmux still not installed after refusal" "$out" "no tmux"
 
 echo "================================================================"
 echo "(b) missing prerequisites accepted, then Tailscale missing + skip serve"
+# C1's bootstrap-level floor check (scenario (a) above, accepted) already
+# installed ca-certificates SYSTEM-WIDE (apt-get is machine-wide, not
+# per-account) -- so by the time THIS scenario's bootstrap runs, ca-
+# certificates is no longer missing and its own "...with sudo?" prompt
+# never fires at all; only setup's own step-3 prompt (tmux, iproute2) does.
+# (Found the hard way: expecting the bootstrap's prompt here too made the
+# driver wait the full timeout for text that was never going to appear,
+# get SIGKILLed, and its orphaned `apt-get install` kept running in the
+# background -- cascading into failures on every later, unrelated
+# scenario. If scenario (a) is ever removed or reordered, this needs its
+# own "Install them now with sudo?" step back.)
 run_dialogue prereq_b prereq_b 150 \
   "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --port 7680" \
   "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL -e PATH=/usr/sbin:/usr/bin:/sbin:/bin" <<'JSON'
-[["Install them now with sudo?", "y"],
- ["Install them now?", "y"],
+[["Install them now?", "y"],
  ["Installed: ", null],
  ["Tailscale is not installed.", null],
  ["Publish with tailscale serve", "n"],
