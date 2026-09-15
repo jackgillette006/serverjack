@@ -15,6 +15,11 @@
 #                                   port and page name; a second Linux account
 #                                   on this machine needs its own port,
 #                                   --https-port and --title
+#   bash install.sh --allow LIST    set SERVERJACK_ALLOW (comma-separated
+#                                   tailnet logins), persisted to the env
+#                                   file BEFORE anything is started or
+#                                   published -- mainly for bin/serverjack-setup,
+#                                   which resolves this before calling here
 #
 # What it does, all inside your own account:
 #   1. puts ttyd and fzf static binaries in ~/.local/bin (verified against
@@ -52,7 +57,11 @@ OPT_LISTEN=
 # Empty unless passed on the command line. A flag sets the value in a NEW env
 # file, and rewrites that one line in an existing one -- everything else kept.
 OPT_PORT=; OPT_HTTPS_PORT=; OPT_TITLE=
-usage() { sed -n '2,17p' "$0"; exit "${1:-0}"; }
+# --allow needs to distinguish "not passed" from "passed as an empty string"
+# (an explicit, deliberate "no restriction"), so it gets its own _SET flag
+# rather than the empty-string-means-unset convention the others use.
+OPT_ALLOW_SET=0; OPT_ALLOW=
+usage() { sed -n '2,20p' "$0"; exit "${1:-0}"; }
 while (( $# )); do
   case "$1" in
     --no-serve)   NO_SERVE=1 ;;
@@ -64,6 +73,8 @@ while (( $# )); do
     --ttyd-port=*) echo "--ttyd-port: no longer needed, ttyd is behind serverjack now (ignored)" >&2 ;;
     --https-port) OPT_HTTPS_PORT=${2:?--https-port needs a number}; shift ;;
     --title)      OPT_TITLE=${2:?--title needs a name}; shift ;;
+    --allow)      OPT_ALLOW_SET=1; OPT_ALLOW=${2:-}; shift ;;
+    --allow=*)    OPT_ALLOW_SET=1; OPT_ALLOW=${1#*=} ;;
     --port=*)       OPT_PORT=${1#*=} ;;
     --https-port=*) OPT_HTTPS_PORT=${1#*=} ;;
     --title=*)      OPT_TITLE=${1#*=} ;;
@@ -74,6 +85,8 @@ while (( $# )); do
   esac
   shift
 done
+[[ $OPT_ALLOW != *$'\n'* && $OPT_ALLOW != *$'\r'* ]] \
+  || { echo "--allow cannot contain a newline" >&2; exit 1; }
 # Asking for a port only makes sense if we are listening on ports.
 if [[ -n $OPT_PORT ]]; then
   [[ $OPT_LISTEN == unix ]] && { echo "--unix and --port contradict each other" >&2; exit 1; }
@@ -367,6 +380,19 @@ fi
 [[ -n $OPT_PORT       ]] && setcfg SERVERJACK_PORT       "$OPT_PORT"
 [[ -n $OPT_HTTPS_PORT ]] && setcfg SERVERJACK_HTTPS_PORT "$OPT_HTTPS_PORT"
 [[ -n $OPT_TITLE      ]] && setcfg SERVERJACK_TITLE      "$OPT_TITLE"
+# Written here -- before the port-clash checks below and long before the
+# units are started or anything is published with tailscale serve -- on
+# purpose: bin/serverjack-setup resolves SERVERJACK_ALLOW from its own
+# prompts and passes it as --allow, and a restriction decided during the
+# guided flow must be in force for the FIRST moment this instance can answer
+# a request, not applied via a restart after the fact (a fresh install would
+# otherwise run with no per-login restriction for the whole window between
+# the units coming up and that follow-up write, and an interruption in that
+# window could leave the restriction never written at all). Only ever
+# touched when --allow was actually passed (OPT_ALLOW_SET) -- an ordinary
+# re-run with no --allow must never reset an already-configured allow-list
+# back to empty.
+(( OPT_ALLOW_SET )) && setcfg SERVERJACK_ALLOW "$OPT_ALLOW"
 RUNTIME=${XDG_RUNTIME_DIR}/serverjack
 mkdir -p "$RUNTIME"; chmod 700 "$RUNTIME"
 if [[ $LISTEN == tcp ]]; then
@@ -446,6 +472,15 @@ PY
   install -m 644 "$tmp/$u.service" "$UNIT_DIR/$u.service"
 done
 systemctl --user daemon-reload
+
+# Test-only: SERVERJACK_TEST_PRESTART_HOOK, if set, names an executable run
+# right here -- the first moment a unit is (re)started or anything could be
+# published -- with $ENV_FILE as $1. Lets a test observe the on-disk env
+# file's exact state at that instant (e.g. that SERVERJACK_ALLOW is already
+# written) without needing a real running instance to probe. Same idea as
+# serverjack-setup's SERVERJACK_SETUP_TEST_OS_RELEASE override; unset in
+# every normal invocation, so this is a no-op outside tests.
+[[ -n ${SERVERJACK_TEST_PRESTART_HOOK:-} ]] && "$SERVERJACK_TEST_PRESTART_HOOK" "$ENV_FILE"
 
 say "Starting user units"
 systemctl --user enable serverjack serverjack-ttyd >/dev/null 2>&1

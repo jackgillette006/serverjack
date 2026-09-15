@@ -142,6 +142,7 @@ say() { printf '\033[1m%s\033[0m\n' "$*"; }
 say "Building the test image"
 cp "$REPO/tests/fixtures/fake-tailscale.sh" "$WORK/fake-tailscale.sh"
 cp "$REPO/tests/fixtures/fake-sudo-wrapper.sh" "$WORK/fake-sudo-wrapper.sh"
+cp "$REPO/tests/fixtures/prestart-hook.sh" "$WORK/prestart-hook.sh"
 cat > "$WORK/Dockerfile" <<'EOF'
 FROM debian:13-slim
 ENV DEBIAN_FRONTEND=noninteractive
@@ -155,6 +156,8 @@ RUN chmod 755 /usr/local/bin/tailscale
 # that needs it prepends /opt/fake-sudo-bin.
 COPY fake-sudo-wrapper.sh /opt/fake-sudo-bin/sudo
 RUN chmod 755 /opt/fake-sudo-bin/sudo
+COPY prestart-hook.sh /usr/local/bin/prestart-hook.sh
+RUN chmod 755 /usr/local/bin/prestart-hook.sh
 STOPSIGNAL SIGRTMIN+3
 CMD ["/lib/systemd/systemd"]
 EOF
@@ -430,7 +433,7 @@ reset_operator
 set_ts_state ts1 needslogin "alice@github" 0 0
 run_dialogue ts1 ts1 90 \
   "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --port 7690" \
-  "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL" <<'JSON'
+  "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL -e SERVERJACK_TEST_PRESTART_HOOK=/usr/local/bin/prestart-hook.sh" <<'JSON'
 [["Tailscale is installed but not signed in", null],
  ["Publish with tailscale serve", "y"],
  ["Open this URL to finish signing in:", null],
@@ -447,6 +450,22 @@ result "ts1 exits 0" "0" "$DLG_RC"
 [[ $(env_val ts1 SERVERJACK_PORT) == 7690 ]] && echo "  PASS ts1 port = 7690" \
   || { echo "  FAIL ts1 port -- got $(env_val ts1 SERVERJACK_PORT)"; failures=$((failures + 1)); }
 check_serve_mapping ts1 ts1 443 "http://127.0.0.1:7690"
+# B1: the allow-list must already be on disk at the moment install.sh first
+# starts a unit or could publish anything -- not written afterward by a
+# separate restart, which left a window with no restriction in force.
+hook_out=$(docker exec --user ts1 "$TESTER" bash -c 'cat ~/.prestart-hook-result 2>&1')
+result "ts1 B1: SERVERJACK_ALLOW already on disk before units start" "ALLOW_PRESENT" "$hook_out"
+# B1: a request from this account's own loopback still 403s once ALLOW is
+# set -- the peer isn't tailscaled (root), so the identity header is never
+# even read (see bin/serverjack's identity_ok()); this proves the freshly
+# published instance is NOT answering everyone the moment it's up, which is
+# exactly the window B1 closes. (This is also why the app's own report can
+# only ever say "the app answers locally", not "unauthorized users are
+# denied" -- see C3: a tagged/self request tells you nothing about what a
+# phone sees.)
+code=$(docker exec --user ts1 "$TESTER" curl -s -o /dev/null -w '%{http_code}' \
+  -H 'Tailscale-User-Login: mallory@github' http://127.0.0.1:7690/)
+result "ts1 B1: request with an identity header still 403s (ALLOW enforced immediately)" "403" "$code"
 
 echo "================================================================"
 echo "(g) fake tailscale running and TAGGED: allow-list required"
