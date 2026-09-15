@@ -514,12 +514,36 @@ fi
 # own startup time and could report a failing landing check on an install
 # that was actually fine a moment later -- poll instead, same helper
 # bin/serverjack-setup's own final check uses.
+# A2 + A6: captured here, used at the very end of this script (after
+# everything else has had a chance to print, serve included) to decide
+# whether install.sh actually succeeded. It used to always `exit 0`: the
+# `|| true` needed to survive the is-active display line above (a real,
+# necessary fix on its own -- see its own comment) had also quietly removed
+# the only statement that could have made this script fail on dead units,
+# and nothing ever checked landing/terminal health at all. A caller with no
+# way to tell success from failure (the bootstrap, serverjack-ctl's update/
+# rollback, a script) is exactly what let a broken managed install silently
+# report "installed" -- and, via the finalizer below, cleared the resumable
+# "state": "installing" marker on a run that never actually worked.
+HEALTH_OK=1
 if wait_local_healthz 30 "${healthz_args[@]}"; then
   echo "  landing  $landing_label  -> HTTP 200"
 else
+  HEALTH_OK=0
   echo "  landing  $landing_label  -> HTTP $(local_http_code "${healthz_args[@]}")"
 fi
 echo "  terminal $term_label  -> HTTP $(local_http_code "${term_args[@]}")"
+# Independent of HEALTH_OK: /healthz is served by the `serverjack` unit
+# alone and says nothing about serverjack-ttyd. `systemctl is-active` with
+# MULTIPLE unit names is a logical OR (systemctl(1): "0 if at least one is
+# active"), not AND -- confirmed against a real systemctl -- so this is two
+# separate calls, ANDed by the shell, not the single multi-name call the
+# display line above uses (that one is fine: it only ever feeds `paste` for
+# printing, under a `|| true` that exists solely to stop `set -e` aborting
+# on ANY unit being inactive, and never gated success on the result).
+UNITS_OK=1
+systemctl --user is-active --quiet serverjack || UNITS_OK=0
+systemctl --user is-active --quiet serverjack-ttyd || UNITS_OK=0
 
 # ---------------------------------------------------------------- boot persistence
 if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]]; then
@@ -633,15 +657,20 @@ TXT
   # with "state": "installing" BEFORE handing off to this script (it execs
   # us, so it has no way to run code again afterward to confirm we
   # succeeded) -- clear that marker now that install.sh has actually
-  # finished. refuse_if_existing_install() in the bootstrap treats that
-  # marker as a half-finished install a second `curl | bash` may resume,
-  # rather than an existing install to refuse; leaving it set after a REAL
-  # success would make a later bootstrap run redo the whole install for no
-  # reason. serverjack-ctl's own update/rollback never set this marker (they
-  # only write install.json after install.sh already succeeded), so this is
-  # a no-op for them.
+  # finished -- ONLY when it actually finished HEALTHY (A2). Leaving it set
+  # after a REAL success would make a later bootstrap run redo the whole
+  # install for no reason; clearing it after a FAILURE is what used to lose
+  # the resume path entirely -- refuse_if_existing_install() in the
+  # bootstrap treats "installing" as a half-finished install a second
+  # `curl | bash` may resume, so clearing it on a run that never actually
+  # worked left nothing to resume: the account looked uninstalled to a
+  # fresh bootstrap (no unit, no "installing" marker) while
+  # ~/.local/share/serverjack/current and install.json's "version" still
+  # named the broken release. serverjack-ctl's own update/rollback never set
+  # this marker (they only write install.json after install.sh already
+  # succeeded), so this stays a no-op for them either way.
   MANAGED_INSTALL_JSON=$HOME/.local/share/serverjack/install.json
-  if [[ -f $MANAGED_INSTALL_JSON ]]; then
+  if [[ -f $MANAGED_INSTALL_JSON ]] && (( HEALTH_OK )) && (( UNITS_OK )); then
     python3 - "$MANAGED_INSTALL_JSON" <<'PY'
 import json
 import os
@@ -662,4 +691,18 @@ if isinstance(doc, dict) and doc.get("state") == "installing":
     os.replace(tmp, path)
 PY
   fi
+fi
+
+# A2 + A6: the real exit status, checked LAST so every diagnostic above
+# (unit states, the health lines, the serve section, the one-time-root-step
+# and daily-command summaries) still prints either way -- a failure here is
+# exactly when that output is most useful. `bash install.sh` used to always
+# exit 0 regardless of whether the units ever came up; a caller with no way
+# to distinguish "installed" from "installed but broken" (the bootstrap, a
+# script, serverjack-ctl's update/rollback -- which gates its OWN health
+# independently via wait_healthy(), but still expects install.sh's exit
+# status to mean something) is the whole reason this mattered.
+if (( ! UNITS_OK )) || (( ! HEALTH_OK )); then
+  echo "install.sh: serverjack/serverjack-ttyd did not come up healthy (units OK: $UNITS_OK, landing health OK: $HEALTH_OK) -- see: journalctl --user -u serverjack -n 50 / journalctl --user -u serverjack-ttyd -n 50" >&2
+  exit 1
 fi

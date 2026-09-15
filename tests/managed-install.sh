@@ -412,13 +412,20 @@ docker exec "$TESTER" useradd -m -s /bin/bash tester5
 # finding 6), which deliberately leaves a fake listener/unit file behind --
 # kept off every other account so a leftover can't shadow their own ports.
 docker exec "$TESTER" useradd -m -s /bin/bash tester6
+# tester7: dedicated to A2's fresh-bootstrap-install-that-never-comes-up-
+# healthy scenario (the V3 "broken" release, which every other use of V3 in
+# this file only ever reaches via `serverjack-ctl update`'s auto-rollback
+# path, never a FRESH bootstrap install) -- kept off every other account so
+# its deliberately-never-healthy units can't shadow anything else.
+docker exec "$TESTER" useradd -m -s /bin/bash tester7
 docker exec "$TESTER" loginctl enable-linger tester
 docker exec "$TESTER" loginctl enable-linger tester2
 docker exec "$TESTER" loginctl enable-linger tester3
 docker exec "$TESTER" loginctl enable-linger tester4
 docker exec "$TESTER" loginctl enable-linger tester5
 docker exec "$TESTER" loginctl enable-linger tester6
-for u in tester tester2 tester3 tester4 tester5 tester6; do
+docker exec "$TESTER" loginctl enable-linger tester7
+for u in tester tester2 tester3 tester4 tester5 tester6 tester7; do
   for _ in $(seq 1 30); do
     docker exec "$TESTER" test -S "/run/user/$(docker exec "$TESTER" id -u "$u")/bus" 2>/dev/null && break
     sleep 0.5
@@ -433,7 +440,8 @@ TESTER3_UID=$(docker exec "$TESTER" id -u tester3)
 TESTER4_UID=$(docker exec "$TESTER" id -u tester4)
 TESTER5_UID=$(docker exec "$TESTER" id -u tester5)
 TESTER6_UID=$(docker exec "$TESTER" id -u tester6)
-run_as() {  # $1 = user ("tester".."tester6"), remaining args = one command string
+TESTER7_UID=$(docker exec "$TESTER" id -u tester7)
+run_as() {  # $1 = user ("tester".."tester7"), remaining args = one command string
   local user=$1 uid; shift
   case "$user" in
     tester2) uid=$TESTER2_UID ;;
@@ -441,6 +449,7 @@ run_as() {  # $1 = user ("tester".."tester6"), remaining args = one command stri
     tester4) uid=$TESTER4_UID ;;
     tester5) uid=$TESTER5_UID ;;
     tester6) uid=$TESTER6_UID ;;
+    tester7) uid=$TESTER7_UID ;;
     *)       uid=$TESTER_UID ;;
   esac
   docker exec --user "$user" -e XDG_RUNTIME_DIR="/run/user/$uid" \
@@ -463,6 +472,7 @@ run_as_answering() {  # $1 = user, $2 = the line to send once, remaining args = 
     tester4) uid=$TESTER4_UID ;;
     tester5) uid=$TESTER5_UID ;;
     tester6) uid=$TESTER6_UID ;;
+    tester7) uid=$TESTER7_UID ;;
     *)       uid=$TESTER_UID ;;
   esac
   printf '%s\n' "$answer" | docker exec -i --user "$user" -e XDG_RUNTIME_DIR="/run/user/$uid" \
@@ -1099,6 +1109,32 @@ result "tester6: ~/.config/serverjack/env (actual user data) still kept" "yes" "
 out=$(run_as tester6 "~/.local/bin/serverjack-ctl update" 2>&1); rc=$?
 [[ $rc -ne 0 ]] && echo "  PASS update after a full uninstall exits non-zero (no resurrection)" \
   || { echo "  FAIL update after a full uninstall exits non-zero -- got 0: $out"; failures=$((failures + 1)); }
+
+echo "================================================================"
+echo "== (y) A2: a fresh install that never becomes healthy keeps the"
+echo "     resumable \"installing\" marker -- a second curl|bash resumes,"
+echo "     not \"already installed\""
+provision_ttyd_fzf tester7
+# V3 (the same "broken" release used above for the auto-rollback scenario):
+# bin/serverjack exits 1 immediately, so the unit crash-loops and /healthz
+# never answers -- install.sh (this branch's A2/A6 fix) must exit non-zero
+# and must NOT clear install.json's "state": "installing", or a second
+# bootstrap run has no way left to tell this was a half-finished install
+# instead of an existing, working one.
+out=$(run_as tester7 "curl -fsSL $BASE_URL/v$V3/serverjack-bootstrap.sh | bash -s -- --no-serve --port 7720" 2>&1); rc=$?
+[[ $rc -ne 0 ]] && echo "  PASS tester7: fresh install of the broken release exits non-zero" \
+  || { echo "  FAIL tester7: fresh install of the broken release exits 0 -- got: $out"; failures=$((failures + 1)); }
+state=$(run_as tester7 "grep -c '\"state\": \"installing\"' ~/.local/share/serverjack/install.json 2>/dev/null || true")
+result "tester7: install.json still says \"installing\" after the failed health check" "1" "$state"
+
+out2=$(run_as tester7 "curl -fsSL $BASE_URL/v$V3/serverjack-bootstrap.sh | bash -s -- --no-serve --port 7720" 2>&1); rc2=$?
+[[ $rc2 -ne 0 ]] && echo "  PASS tester7: second run against the same broken release still fails" \
+  || { echo "  FAIL tester7: second run unexpectedly exited 0 -- got: $out2"; failures=$((failures + 1)); }
+contains_resume=0
+[[ $out2 == *"Resuming an install that did not finish last time"* ]] && contains_resume=1
+result "tester7: second curl|bash resumes the half-finished install" "1" "$contains_resume"
+[[ $out2 != *"already installed"* ]] && echo "  PASS tester7: does not refuse with \"already installed\"" \
+  || { echo "  FAIL tester7: incorrectly refused as already installed -- got: $out2"; failures=$((failures + 1)); }
 
 echo
 if (( failures > 0 )); then
