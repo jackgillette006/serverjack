@@ -126,6 +126,13 @@ bash ./security-wrapper.sh
 echo "== unit tests (host-side)"
 python3 ./test_unit.py
 
+# B3: the physical launcher (bootstrap/launcher.sh) served from
+# jackgillette.com/serverjack/install.sh. No Docker needed (curl, python3
+# for a local fixture server, and `script` for a real pty) -- runs
+# host-side, same as the two suites just above.
+echo "== launcher (host-side)"
+bash ./launcher.sh
+
 # A throwaway HOME, created before anything below reads it: bin/serverjack's
 # channel detection (_install_channel()) resolves ~/.local/share/serverjack
 # off the REAL HOME unless told otherwise, so on a machine that has (or ever
