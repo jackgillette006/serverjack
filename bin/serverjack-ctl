@@ -386,6 +386,15 @@ backup_current_state() {  # prints the backup dir it created
   # even after everything else is rolled back.
   [[ -f "$HOME/.local/bin/serverjack-ctl" ]] && cp -a "$HOME/.local/bin/serverjack-ctl" "$backup_dir/serverjack-ctl"
   [[ -f "$HOME/.local/bin/serverjack-setup" ]] && cp -a "$HOME/.local/bin/serverjack-setup" "$backup_dir/serverjack-setup"
+  # B5: install.sh (run inside THIS call, right after this function returns)
+  # also replaces ~/.local/bin/ttyd and fzf whenever the new release bumps
+  # either pinned version -- neither was backed up before, so a failed
+  # update whose FAILURE cause WAS the new ttyd/fzf (a bad binary, a version
+  # with a real regression) still restored everything else and then
+  # restarted the units against that same broken binary, rolling back the
+  # release but not what actually broke it.
+  [[ -f "$HOME/.local/bin/ttyd" ]] && cp -a "$HOME/.local/bin/ttyd" "$backup_dir/ttyd"
+  [[ -f "$HOME/.local/bin/fzf" ]] && cp -a "$HOME/.local/bin/fzf" "$backup_dir/fzf"
   printf '%s' "$backup_dir"
 }
 
@@ -413,6 +422,12 @@ restore_from_backup() {  # $1 version being restored, $2 symlink target, $3 back
   fi
   [[ -f "$backup_dir/serverjack-setup" ]] \
     && install -m 755 "$backup_dir/serverjack-setup" "$HOME/.local/bin/serverjack-setup"
+  # B5: restore the binaries install.sh may have just replaced too --
+  # `install`, not `cp`, for the same reason as serverjack-ctl/serverjack-setup
+  # above (a fresh inode, not an in-place overwrite of a file a just-started
+  # unit may already have open/mapped).
+  [[ -f "$backup_dir/ttyd" ]] && install -m 755 "$backup_dir/ttyd" "$HOME/.local/bin/ttyd"
+  [[ -f "$backup_dir/fzf" ]] && install -m 755 "$backup_dir/fzf" "$HOME/.local/bin/fzf"
   systemctl --user daemon-reload
   # Never restart tmux -- only the two units. KillMode=process on both keeps
   # every tmux session (and the terminal a browser has attached to) alive.
