@@ -496,10 +496,17 @@ handle_existing_install() {
   # verbatim for a managed install, so a plain substring match is exact and
   # needs no parsing; a git checkout's absolute path is install.sh's own
   # plain-text $CFG_DIR/install-path, not ExecStart= at all.
+  #
+  # $exec_line IS still systemd-escaped, though (A16): $SHARE is under
+  # $HOME, and install.sh's templating escapes whatever %/\/" characters
+  # end up in the path it bakes in, stable "current" path or not -- escape
+  # $SHARE/current the same way before comparing, via
+  # bin/serverjack-lib.sh's systemd_escape_path() (sourced in main() below).
   local install_json="$SHARE/install.json"
-  local exec_line
+  local exec_line escaped_share_current
   exec_line=$(grep -m1 '^ExecStart=' "$unit" 2>/dev/null || true)
-  if [[ -f $install_json ]] && [[ $exec_line == *"\"$SHARE/current/bin/serverjack\""* ]]; then
+  escaped_share_current=$(systemd_escape_path "$SHARE/current")
+  if [[ -f $install_json ]] && [[ $exec_line == *"\"$escaped_share_current/bin/serverjack\""* ]]; then
     rerun_managed
     exit 0
   fi
