@@ -146,6 +146,15 @@ bash ./ctl-health.sh
 echo "== read_tailscale_self (host-side)"
 bash ./read-tailscale-self.sh
 
+# is_wsl() in bin/serverjack-lib.sh -- the WSL_DISTRO_NAME/osrelease/
+# proc-version detection bin/serverjack-setup's step7b_wsl_port and
+# install.sh's final summary both use to warn about port 7680 colliding
+# with Windows Delivery Optimization. No Docker needed (throwaway fake
+# osrelease/proc-version files, via the SERVERJACK_TEST_OSRELEASE_FILE/
+# SERVERJACK_TEST_PROCVERSION_FILE overrides) -- host-side.
+echo "== is_wsl detection (host-side)"
+bash ./wsl-detect.sh
+
 # A throwaway HOME, created before anything below reads it: bin/serverjack's
 # channel detection (_install_channel()) resolves ~/.local/share/serverjack
 # off the REAL HOME unless told otherwise, so on a machine that has (or ever

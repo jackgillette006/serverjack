@@ -806,6 +806,41 @@ step7_shared_machine() {
   fi
 }
 
+# ---------------------------------------------------- 7b. WSL port 7680
+# Found 2026-09-15, first real WSL run: under WSL2, serverjack installs and
+# answers fine on 127.0.0.1:7680 INSIDE the VM, but the Windows side can
+# never reach it there -- Windows Delivery Optimization (DoSvc) already
+# listens on 0.0.0.0:7680 on the WINDOWS side, so WSL2's localhost relay
+# can't bind that port for the VM. check_foreign_port() above can't catch
+# this itself: it runs (like everything else in this script) INSIDE the
+# VM, where `ss` sees port 7680 as free -- the clash is only visible from
+# the Windows side. Only offered when is_wsl() AND the port is still the
+# untouched default: an explicit `--port` already answers the question
+# (nothing to add), and a rerun that already resolved this once (env file
+# already says something other than 7680) must not ask again.
+step7b_wsl_port() {
+  [[ $LISTEN == tcp ]] || return 0
+  [[ -z $OPT_PORT ]] || return 0
+  is_wsl || return 0
+  local port; port=$(env_get SERVERJACK_PORT 7680)
+  [[ $port == 7680 ]] || return 0
+  say "This looks like WSL: Windows Delivery Optimization already listens on"
+  say "TCP port 7680 on the Windows side, so a Windows browser can't reach it there."
+  if ! tty_available; then
+    # Never guess: no controlling terminal to ask on, so keep the default
+    # (install.sh's own final summary prints the same note again, with the
+    # fix, for whoever reads the output later -- see its own comment).
+    say "No controlling terminal -- keeping port 7680 (pass --port 7690 yourself if the Windows browser can't reach it)."
+    return 0
+  fi
+  if ask_yn "Use port 7690 instead?" y; then
+    OPT_PORT=7690
+    say "Using port 7690 instead."
+  else
+    say "Keeping port 7680."
+  fi
+}
+
 # ------------------------------------------------------------- 8. root steps
 run_privileged() {  # $1 = reason, remaining = argv to run with sudo
   local reason=$1; shift
@@ -1342,6 +1377,7 @@ main() {
   step5_tailscale
   step6_allow_list
   step7_shared_machine
+  step7b_wsl_port
   step8_root_steps
   step9_install_and_verify
 }

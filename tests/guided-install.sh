@@ -61,6 +61,11 @@
 #   (o) rerunning setup on a real git-checkout install (installed directly
 #       via install.sh, never through the bootstrap) shows the same rerun
 #       menu as a managed install, instead of the old unconditional refusal
+#   (p) WSL (faked via WSL_DISTRO_NAME): the untouched default port (7680)
+#       gets step7b_wsl_port's offer, and a bare Enter (its "y" default)
+#       switches the real install to --port 7690
+#   (q) WSL again, but --port given explicitly: no offer at all, and the
+#       requested port is what's actually installed
 #
 # (f)-(i) each also assert the tailscale serve MAPPING itself exists
 # afterward (`tailscale serve status`, via the fake's now-real, mutable
@@ -233,7 +238,7 @@ for _ in $(seq 1 30); do
   sleep 0.5
 done
 
-USERS=(prereq_a prereq_b notty ts1 ts2 ts3 ts4 ts5 ts6 ts7 ts8 ts9 ts10 ts11)
+USERS=(prereq_a prereq_b notty ts1 ts2 ts3 ts4 ts5 ts6 ts7 ts8 ts9 ts10 ts11 wslacc wslflag)
 for u in "${USERS[@]}"; do
   docker exec "$TESTER" useradd -m -s /bin/bash "$u"
   docker exec "$TESTER" loginctl enable-linger "$u"
@@ -448,6 +453,57 @@ contains "tmux now installed (container-wide)" "$out" "/usr/bin/tmux"
 contains "iproute2 (ss) now installed" "$out" "ss"
 [[ $(env_val prereq_b SERVERJACK_LISTEN) == tcp ]] && echo "  PASS prereq_b installed tcp" \
   || { echo "  FAIL prereq_b installed tcp"; failures=$((failures + 1)); }
+# prereq_b is never referenced again after the two checks just above --
+# free the port it holds (7680) now, by hand, since (p) below needs to see
+# 7680 genuinely free to exercise step7b_wsl_port's real "still the
+# untouched default" condition (check_foreign_port() runs first, ahead of
+# any prompt, and checks the OS-level bind, not any per-account state).
+docker exec --user prereq_b "$TESTER" bash -c '~/.local/bin/serverjack-ctl uninstall --yes' >/dev/null 2>&1 \
+  || { echo "  FAIL could not free prereq_b's port 7680 for scenario (p)"; failures=$((failures + 1)); }
+
+echo "================================================================"
+echo "(p) WSL (faked via WSL_DISTRO_NAME): offers 7690 for the untouched default port"
+# Prerequisites (tmux/ss/ca-certificates) are already fixed system-wide by
+# (a)/(b) above, so this account's bootstrap goes straight to serverjack-
+# setup's own prompts -- --tcp/--no-serve are given so the ONLY remaining
+# question is step7b_wsl_port's, isolating exactly the thing this proves.
+# --port is deliberately NOT given: the whole point is the untouched
+# default (7680), which is why prereq_b's port had to be freed just above.
+run_dialogue wslacc wslacc 60 \
+  "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --no-serve --tcp" \
+  "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL -e WSL_DISTRO_NAME=Debian" <<'JSON'
+[["This looks like WSL", null],
+ ["Use port 7690 instead?", ""],
+ ["not yet reachable from your phone", null]]
+JSON
+result "wslacc exits 0" "0" "$DLG_RC"
+contains "wslacc: names Windows Delivery Optimization" "$(cat "$WORK/log-wslacc.txt" 2>/dev/null)" "Windows Delivery Optimization"
+contains "wslacc: install.sh was actually run with --port 7690" "$(cat "$WORK/log-wslacc.txt" 2>/dev/null)" "Running: bash install.sh --tcp --no-serve --port 7690"
+[[ $(env_val wslacc SERVERJACK_PORT) == 7690 ]] && echo "  PASS wslacc port = 7690" \
+  || { echo "  FAIL wslacc port -- got $(env_val wslacc SERVERJACK_PORT)"; failures=$((failures + 1)); }
+# Never referenced again -- free its port (7690) now, the same reasoning as
+# prereq_b just above: (f)'s ts1, below, needs 7690 too.
+docker exec --user wslacc "$TESTER" bash -c '~/.local/bin/serverjack-ctl uninstall --yes' >/dev/null 2>&1 \
+  || { echo "  FAIL could not free wslacc's port 7690 for scenario (f)"; failures=$((failures + 1)); }
+
+echo "================================================================"
+echo "(q) WSL again, but --port given explicitly: no offer, no --port rewrite"
+# Fully resolved by flags (--no-serve --tcp --port 7681), so this never
+# touches /dev/tty at all (see bin/serverjack-setup's own header comment on
+# that contract) -- a plain, non-interactive docker exec, like (c)'s notty
+# above, rather than the pty driver.
+out=$(docker exec --user wslflag -e SERVERJACK_RELEASE_BASE_URL="$BASE_URL" -e WSL_DISTRO_NAME=Debian "$TESTER" \
+  bash -c "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --no-serve --tcp --port 7681" 2>&1 </dev/null); rc=$?
+result "wslflag exits 0" "0" "$rc"
+[[ $rc != 0 ]] && echo "$out" | sed 's/^/    | /'
+if [[ $out == *"This looks like WSL"* ]]; then
+  echo "  FAIL wslflag: step7b_wsl_port prompted even though --port was given"
+  failures=$((failures + 1))
+else
+  echo "  PASS wslflag: no WSL port prompt (an explicit --port answers it)"
+fi
+[[ $(env_val wslflag SERVERJACK_PORT) == 7681 ]] && echo "  PASS wslflag port = 7681 (the requested one, untouched)" \
+  || { echo "  FAIL wslflag port -- got $(env_val wslflag SERVERJACK_PORT)"; failures=$((failures + 1)); }
 
 echo "================================================================"
 echo "(c) no controlling terminal: clean stop, exit 2, nothing changed"

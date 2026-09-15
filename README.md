@@ -164,6 +164,7 @@ remote control, why Tailscale and not a password, and whether it phones home.
   - [Development install (git checkout)](#development-install-git-checkout)
   - [Two accounts on one machine](#two-accounts-on-one-machine)
   - [Updating and rolling back](#updating-and-rolling-back)
+  - [WSL](#wsl)
 - [Configure](#configure)
   - [Tools](#tools)
 - [Status line and /api/status](#status-line-and-apistatus)
@@ -772,6 +773,32 @@ The built-in Update shortcut then refuses to run again until you
 If the web UI is down after an update, `journalctl --user -u serverjack -e`
 is the first thing to check, then `bin/serverjack --check` (alias
 `--doctor`) for a read-only diagnosis.
+
+### WSL
+
+Works, with four things to know first:
+
+- **Enable systemd first**: add `[boot]` / `systemd=true` to `/etc/wsl.conf`,
+  then `wsl --shutdown` from Windows and reopen the terminal. serverjack's
+  units are `systemd --user` units, and WSL does not turn that on by
+  default — without it, `serverjack-setup` stops at "systemd is not running
+  as PID 1" before it ever gets to installing anything.
+- **Port 7680 (the default) collides with Windows Delivery Optimization**,
+  which already listens on it on the *Windows* side — serverjack itself
+  comes up fine on `127.0.0.1:7680` inside the VM (its own health check
+  says so), but WSL2's localhost relay can't bind a port Windows already
+  holds, so a Windows browser can never reach it there. The guided install
+  detects WSL and offers `--port 7690` instead (default yes); a plain
+  `bash install.sh`/one-line install prints the same warning in its final
+  summary if the port is still 7680. Passing `--port 7690` (or any other
+  port) yourself skips the prompt entirely.
+- **Reach it from Windows at `http://127.0.0.1:<port>/`, not
+  `localhost`** — Windows resolves `localhost` to `::1` (IPv6) first, which
+  WSL2's localhost relay does not answer on.
+- **The units stop when the last WSL terminal window closes**, unless
+  linger is enabled — the same one-time `sudo loginctl enable-linger
+  $USER` every install needs for boot persistence (see above); WSL has no
+  "boot" of its own, but a closed terminal is its equivalent.
 
 ## Configure
 
