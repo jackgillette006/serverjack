@@ -351,7 +351,9 @@ head -c "$((main_off + 60))" \
   "$WEBROOT/v$V1/serverjack-bootstrap.sh" > "$WEBROOT/trunc/midfunc.sh"
 
 # ------------------------------------------------------- pinned ttyd/fzf
-# Parsed from install.sh itself so a future version bump here needs no edit.
+# Parsed from the scripts that actually own each pin (ttyd's moved to
+# scripts/fetch-ttyd.sh, shared with install.sh and CI; fzf's is still
+# install.sh's own) so a future version bump here needs no edit.
 # A few retries on a transient DNS/network blip -- seen in practice building
 # this test -- beat failing the whole run over a hiccup unrelated to what is
 # actually under test.
@@ -364,7 +366,7 @@ fetch_retry() {  # $1 url  $2 output path
   done
   return 1
 }
-TTYD_VER=$(sed -n 's/^TTYD_VER=//p' "$REPO/install.sh")
+TTYD_VER=$(sed -n 's/^TTYD_VER=//p' "$REPO/scripts/fetch-ttyd.sh")
 FZF_VER=$(sed -n 's/^FZF_VER=//p' "$REPO/install.sh")
 say "Pre-fetching ttyd $TTYD_VER / fzf $FZF_VER (x86_64) for the test webroot"
 fetch_retry "https://github.com/tsl0922/ttyd/releases/download/$TTYD_VER/ttyd.x86_64" \
