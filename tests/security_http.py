@@ -47,6 +47,13 @@ for path in ("/healthz", "/api/status"):
     status = request_status(AUTH, "POST", path, headers)
     ok(f"restricted POST {path} requires identity", status == 403, str(status))
 
+# /prefs (the Start card's "change" default-directory form) is a plain POST
+# route like /shortcuts/add -- not one of the two GET-only OPEN_PATHS above --
+# so an unauthenticated peer must be refused before the handler ever runs,
+# the same as every other state-changing route.
+prefs_status = request_status(AUTH, "POST", "/prefs", headers)
+ok("restricted POST /prefs requires identity", prefs_status == 403, str(prefs_status))
+
 # /api/dirs is not in OPEN_PATHS (unlike /healthz and /api/status above), so
 # it must require the same identity as /api/sessions and every other GET API
 # route: an unauthenticated peer gets exactly the same 403 the rest do.

@@ -2463,6 +2463,9 @@ select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outl
 .err{background:var(--danger-wash);border:1px solid var(--danger);color:#ffc6c1;
   padding:10px 14px;border-radius:var(--radius-sm);margin-bottom:var(--space-3);
   font:500 13px/18px var(--font-mono)}
+.flash{background:var(--accent-wash);border:1px solid var(--accent-dim);color:var(--text-primary);
+  padding:10px 14px;border-radius:var(--radius-sm);margin-bottom:var(--space-3);
+  font:500 13px/18px var(--font-mono)}
 .opt{color:var(--text-muted);font-weight:400}
 .hint,.note,.foot{color:var(--text-muted);font-size:12px;line-height:18px}
 .hint{margin:0}
@@ -2484,6 +2487,13 @@ details.card[open] summary::before,details.inline[open] summary::before{content:
 .save input[type=checkbox]{width:18px;height:18px;flex:none;appearance:auto;-webkit-appearance:auto;
   accent-color:var(--accent)}
 .save label{font-family:var(--font-ui);color:var(--text-secondary)}
+/* "Starts in ~/projects · change" under the Start card -- a muted line
+   whose whole row is the <details> toggle, same "+"/"−" marker as every
+   other disclosure above, just smaller and dimmer to read as a footnote. */
+.ddchange{margin-top:var(--space-3)}
+.ddchange summary{color:var(--text-muted);font-size:12px;line-height:18px;min-height:0}
+.ddchange[open] summary{color:var(--text-secondary);margin-bottom:var(--space-2)}
+.ddchange form{margin-top:var(--space-2)}
 
 /* overflow menu (glass) */
 [hidden]{display:none!important}
@@ -2731,7 +2741,13 @@ START_CARD = """<h2>Start a session</h2>
   <p class="hint" id="toolhint" hidden></p>
   <button class="btn wide" type="submit">Start</button>
   <p class="hint">Opens a new terminal session, named after the type and directory unless you name it. A shell stays open after its command finishes, so password prompts work.</p>
-</form></div>"""
+</form>
+<details class="inline ddchange"{dd_open}><summary>Starts in {default_dir_show} &middot; change</summary>
+  <form class="row" method="post" action="/prefs">
+    {default_dirpicker}
+    <button class="btn sec wide" type="submit">Save</button>
+  </form>
+</details></div>"""
 
 ADD_SHORTCUT_CARD = """<details class="card" id="addsc"{addsc_open}><summary>Add a shortcut</summary>
 <form class="row" method="post" action="/shortcuts/add">
@@ -3418,17 +3434,21 @@ def kind_options():
 
 def dir_picker(value="", input_id=None):
     """The one directory-picker combobox, used on the Start card, every tool
-    card, the Add-shortcut card and the terminal's #pop form. DIRPICK_JS finds
-    every ".dirpick" on the page and wires it up: it fetches GET /api/dirs?q=
-    as you type and on Tab/Enter/pointer picks. An empty value means ~
-    (resolve_dir() falls back to HOME); a typed path that doesn't exist yet is
+    card, the Add-shortcut card, the "change default directory" form and the
+    terminal's #pop form. DIRPICK_JS finds every ".dirpick" on the page and
+    wires it up: it fetches GET /api/dirs?q= as you type and on Tab/Enter/
+    pointer picks. An empty value means the default directory (resolve_dir()
+    falls back to default_dir()) -- the placeholder names it, e.g.
+    "~/projects — type a folder name or path", so an empty box always shows
+    where it will actually land. A typed path that doesn't exist yet is
     created when the form is submitted, a picked suggestion always exists."""
     idattr = f' id="{esc(input_id)}"' if input_id else ""
+    placeholder = f"{_dir_show(default_dir())} — type a folder name or path"
     return (
         f'<div class="dirpick"><input{idattr} name="dir" role="combobox" '
         'aria-autocomplete="list" aria-expanded="false" autocomplete="off" '
         'autocapitalize="off" spellcheck="false" '
-        'placeholder="~ — type a folder name or path" '
+        f'placeholder="{esc(placeholder)}" '
         f'value="{esc(value)}">'
         '<ul class="dirlist" role="listbox" hidden></ul></div>')
 
@@ -3652,7 +3672,8 @@ def wants_agent_card(t, st):
 
 
 def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc_cmd="",
-           addsc_open=False, save_open=False, open_tool="", what="shell"):
+           addsc_open=False, save_open=False, open_tool="", what="shell",
+           flash="", dd_open=False, dd_value=None):
     sess = sessions()
     if sess:
         cards = "\n".join(SESSION_CARD.format(
@@ -3707,10 +3728,15 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
             agents = ('<div class="empty">Nothing to set up: every agent is installed and '
                       'starts from the top of the page.</div>')
 
+    dflt = default_dir()
     body = "\n".join([
         START_CARD.format(dirpicker=dir_picker(dir_custom, "dir"), cmd=esc(cmd), label=esc(label),
                           name=esc(name), save_open=" open" if save_open else "",
-                          what_options="\n".join(what_opts)),
+                          what_options="\n".join(what_opts),
+                          default_dir_show=esc(_dir_show(dflt)),
+                          dd_open=" open" if dd_open else "",
+                          default_dirpicker=dir_picker(
+                              dd_value if dd_value is not None else _dir_show(dflt), "dd_dir")),
         "<h2>Shortcuts</h2>", shortcuts,
         ADD_SHORTCUT_CARD.format(dirpicker=dir_picker(input_id="sc_dir"), sc_label=esc(sc_label),
                                  sc_cmd=esc(sc_cmd), addsc_open=" open" if addsc_open else ""),
@@ -3721,7 +3747,8 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
         agents,
     ])
     err = "".join(f'<div class="err">{esc(e)}</div>' for e in (error, tools_error) if e)
-    return PAGE.format(css=CSS, error=err, body=body, title=esc(TITLE), glyph=I_LOGO,
+    flash_html = f'<div class="flash">{esc(flash)}</div>' if flash else ""
+    return PAGE.format(css=CSS, error=flash_html + err, body=body, title=esc(TITLE), glyph=I_LOGO,
                        pwa_links=PWA_LINKS, dirpick_js=DIRPICK_JS,
                        sysline=system_line(), fx_class=FX_CLASS, version=esc(VERSION))
 
@@ -3988,7 +4015,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == TERM_PREFIX or path.startswith(TERM_PATH):
             return self.proxy_term()
         if path == "/":
-            return self.send_html(render())
+            # dir_note: the /prefs redirect's one-shot confirmation, e.g.
+            # "Default directory: ~/projects" -- in the URL, not a cookie or
+            # server-side session, since this app keeps none of either.
+            note = (parse_qs(urlparse(self.path).query).get("dir_note") or [""])[0]
+            return self.send_html(render(flash=note))
         if path.startswith("/s/"):
             name = unquote(path[3:])
             if not session_exists(name):
@@ -4380,6 +4411,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_html(render(err, sc_label=f.get("label", ""), sc_cmd=cmd, addsc_open=True), 400)
             add_shortcut(f.get("label", ""), cmd, cwd)
             return self.redirect("/")
+
+        if path == "/prefs":                      # the Start card's "change" default-dir form
+            d, err = validate_default_dir(f.get("dir") or f.get("dir_custom"))
+            if err:
+                return self.send_html(render(err, dd_open=True, dd_value=f.get("dir", "")), 400)
+            save_prefs({**load_prefs(), "default_dir": d})
+            return self.redirect("/?dir_note=" + quote(f"Default directory: {_dir_show(d)}"))
 
         if path == "/shortcuts/del":
             sid = f.get("id", "")
