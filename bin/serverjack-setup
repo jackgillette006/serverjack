@@ -1300,6 +1300,14 @@ parse_flags() {
       --https-port=*) OPT_HTTPS_PORT=${1#*=} ;;
       --title)        OPT_TITLE=${2:?--title needs a name}; shift ;;
       --title=*)      OPT_TITLE=${1#*=} ;;
+      # A10/C1: install.sh's own legacy, ignored-with-a-warning flag -- the
+      # bootstrap already accepts it the same way (validate_install_args())
+      # and forwards EVERY install_arg to this script unconditionally, so
+      # this needs the identical tolerance or a `curl | bash -s --
+      # --ttyd-port N` that install.sh itself would happily ignore instead
+      # hits this script's own stricter allowlist and refuses as unknown.
+      --ttyd-port)    echo "--ttyd-port: no longer needed, ttyd is behind serverjack now (ignored)" >&2; shift ;;
+      --ttyd-port=*)  echo "--ttyd-port: no longer needed, ttyd is behind serverjack now (ignored)" >&2 ;;
       -h|--help)      usage 0 ;;
       *) echo "unknown option: $1" >&2; usage 1 >&2 ;;
     esac

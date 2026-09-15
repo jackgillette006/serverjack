@@ -218,6 +218,21 @@ if ! "$BIN/fzf" --version 2>/dev/null | grep -q "^$FZF_VER"; then
   tar -xzf "$tmp/$fzf_asset" -C "$tmp" fzf
   install -m 755 "$tmp/fzf" "$BIN/fzf"
 fi
+# serverjack-lib.sh, flat, next to serverjack-ctl: the FLAT-installed
+# serverjack-ctl (below) is the SAME file for both channels, and needs this
+# for several shared helpers (local_http_code/wait_healthy, A8;
+# remove_owned_mapping, A11; systemd_escape_path, A16). Its own resolve_lib()
+# falls back to finding a LIVE install's copy (the managed "current" symlink,
+# or a git checkout's own path) when there's no copy sitting right next to
+# it -- but that fallback can't succeed for a genuinely broken install (a
+# dangling "current" whose release directory is gone, which is exactly what
+# some of the recovery paths that need these helpers -- like `uninstall`
+# cleaning up after itself -- are FOR). Installing a real copy flat removes
+# that whole class of "the recovery tool can't find the thing it needs to
+# recover" failure -- found by exactly that happening (a dangling-"current"
+# uninstall scenario, previously working, started crashing with "command not
+# found" the moment detect_channel() started depending on this).
+install -m 644 "$REPO/bin/serverjack-lib.sh" "$BIN/serverjack-lib.sh"
 # The lifecycle helper: always installed, from this checkout's own copy (no
 # download). It works for a git checkout too (its `update` just delegates to
 # git pull), so this isn't gated on being a managed install.
