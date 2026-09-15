@@ -62,7 +62,7 @@ BASE="http://127.0.0.1:$PORT"
 # see fixture.sh's OpenCode section) already has a real one on it.
 common=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE="Home server" SERVERJACK_FX=off
         SERVERJACK_CONFIG="$CFG" SERVERJACK_TOOLS=opencode SERVERJACK_SSH=off
-        SERVERJACK_DIRS="~/projects/3d-lab:~/projects/game:~/projects/media-stack:~/src:~"
+        SERVERJACK_DIRS="~/projects/3d-lab:~/projects/game:~/projects/synth-ios:~/src:~"
         HOME="$FAKE_HOME" XDG_RUNTIME_DIR="$RT" PATH="$FAKE_HOME/.opencode/bin:$PATH")
 env "${common[@]}" SERVERJACK_PORT="$PORT" \
   python3 "$NEUTRAL_REPO/bin/serverjack" >"$RUN_ROOT/web.log" 2>&1 & pids+=($!)

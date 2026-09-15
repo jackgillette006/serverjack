@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # docs/shots/fixture.sh -- the isolated, neutral serverjack instance shared by
 # make.sh and make-gif.sh: a throwaway repo copy with no .git, a fake $HOME
-# with example project dirs (3d-lab, game, media-stack, src) and real git
+# with example project dirs (3d-lab, game, synth-ios, src) and real git
 # history in two of them, the real OpenCode binary linked in (see the
 # OpenCode section below) plus a scratch SERVERJACK_CONFIG, and an isolated
 # tmux server with the three demo sessions already seeded. This is what
@@ -26,7 +26,7 @@
 #
 # Sets: OPENCODE_SRC, RUN_ROOT, NEUTRAL_REPO, FAKE_HOME, OPENCODE_VERSION,
 # CFG, TMUX_TMPDIR, TMUX_SOCK, T (a `tmux -S ...` invocation array),
-# session_shell. Starts three tmux sessions (game, media-stack, 3d-lab) with
+# session_shell. Starts three tmux sessions (game, synth-ios, 3d-lab) with
 # game's pane already fed a short `ls` / `git log` transcript.
 #
 # Requires the real OpenCode binary to already be installed on this machine
@@ -102,7 +102,7 @@ chmod +x "$NEUTRAL_REPO"/bin/*
 # ------------------------------------------------------------------ fake HOME
 FAKE_HOME="$RUN_ROOT/home"
 mkdir -p "$FAKE_HOME"/projects/3d-lab/{models,renders} "$FAKE_HOME"/projects/game/{src,assets} \
-  "$FAKE_HOME"/projects/media-stack "$FAKE_HOME"/src
+  "$FAKE_HOME"/projects/synth-ios/{Sources,Tests} "$FAKE_HOME"/src
 # A nested project dir alongside the top-level ones above, purely for the
 # directory-picker's dir-search.png shot: typing "3d" has to turn up a real
 # depth-3 match (projects -> ai -> 3d-lab), not just the top-level "3d-lab"
@@ -112,7 +112,7 @@ mkdir -p "$FAKE_HOME"/projects/3d-lab/{models,renders} "$FAKE_HOME"/projects/gam
 mkdir -p "$FAKE_HOME/projects/ai/3d-lab"
 : > "$FAKE_HOME/projects/game/Cargo.toml"
 : > "$FAKE_HOME/projects/game/src/main.rs"
-: > "$FAKE_HOME/projects/media-stack/docker-compose.yml"
+: > "$FAKE_HOME/projects/synth-ios/Package.swift"
 # A tiny git history in "game", so the terminal shot can show a real
 # `git log`. Identity is passed per command: this HOME has no global config,
 # and none of this touches the real user's git configuration.
@@ -226,8 +226,8 @@ mkdir -m 700 "$CFG"
 # points "paths" at ~/.opencode/bin, which now holds the real binary copied
 # in above.
 cat > "$CFG/shortcuts.json" <<'JSON'
-[{"id": "sc-media", "label": "Rebuild media stack",
-  "cmd": "cd ~/projects/media-stack && docker compose pull && docker compose up -d"},
+[{"id": "sc-ios", "label": "Test synth-ios",
+  "cmd": "cd ~/projects/synth-ios && swift build && swift test"},
  {"id": "sc-snapshot", "label": "Snapshot to NAS",
   "cmd": "restic -r sftp:nas:/backups backup ~/projects"}]
 JSON
@@ -260,7 +260,7 @@ T=(tmux -S "$TMUX_SOCK")
 # line, so it's unaffected either way.
 "${T[@]}" new-session -d -s game -x 100 -y 30 -c "$FAKE_HOME/projects/game" "$session_shell"
 "${T[@]}" set-environment -g HOME "$FAKE_HOME"
-"${T[@]}" new-session -d -s media-stack -x 100 -y 30 -c "$FAKE_HOME/projects/media-stack" "$session_shell"
+"${T[@]}" new-session -d -s synth-ios -x 100 -y 30 -c "$FAKE_HOME/projects/synth-ios" "$session_shell"
 # Looks like OpenCode is working in 3d-lab, without running anything real:
 # rename this pane's own process via exec -a so tmux reports its command as
 # "opencode". "exec -a" is a bash-ism (dash lacks it), so force bash
