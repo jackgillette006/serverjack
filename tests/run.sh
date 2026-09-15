@@ -140,6 +140,12 @@ bash ./launcher.sh
 echo "== ctl health + backup/restore checks (host-side)"
 bash ./ctl-health.sh
 
+# C2: read_tailscale_self()'s field-splitting, including a tagged node with
+# no user login at all. No Docker needed (a fake tailscale on PATH) --
+# host-side.
+echo "== read_tailscale_self (host-side)"
+bash ./read-tailscale-self.sh
+
 # A throwaway HOME, created before anything below reads it: bin/serverjack's
 # channel detection (_install_channel()) resolves ~/.local/share/serverjack
 # off the REAL HOME unless told otherwise, so on a machine that has (or ever

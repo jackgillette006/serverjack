@@ -5,7 +5,10 @@
 # account (matching how a real tailnet node's identity is machine-wide but
 # each test account here stands in for a separate machine):
 #   ~/.faketailscale/state       "needslogin" (default) or "running"
-#   ~/.faketailscale/login       tailnet login to report        (default tester@github)
+#   ~/.faketailscale/login       tailnet login to report        (default tester@github);
+#                                 present but EMPTY => a tagged device with no user login
+#                                 at all -- "User": {} in the JSON, no entry for this uid
+#                                 (C2's own fixture: a real tagged node genuinely has none)
 #   ~/.faketailscale/tagged      file present => Self.Tags is non-empty
 #   ~/.faketailscale/foreign     file present => `serve status` also reports an
 #                                 existing https://:443 -> / mapping to something
@@ -72,8 +75,15 @@ case "$cmd" in
       st=$(state)
       if [[ $st == running ]]; then backend=Running; else backend=NeedsLogin; fi
       if (( tagged )); then tags='["tag:fake"]'; else tags=null; fi
-      printf '{"BackendState":"%s","Self":{"UserID":%s,"Tags":%s,"DNSName":"%s","TailscaleIPs":["100.64.1.%s"]},"User":{"%s":{"LoginName":"%s"}}}\n' \
-        "$backend" "$uid" "$tags" "$dns" "$((uid % 250))" "$uid" "$login"
+      # login present-but-empty means "no user at all" for this uid -- a
+      # real tagged device's own entry in `tailscale status --json` (C2).
+      if [[ -f "$STATE_DIR/login" && -z $login ]]; then
+        users='{}'
+      else
+        users=$(printf '{"%s":{"LoginName":"%s"}}' "$uid" "$login")
+      fi
+      printf '{"BackendState":"%s","Self":{"UserID":%s,"Tags":%s,"DNSName":"%s","TailscaleIPs":["100.64.1.%s"]},"User":%s}\n' \
+        "$backend" "$uid" "$tags" "$dns" "$((uid % 250))" "$users"
       exit 0
     fi
     if [[ $(state) == running ]]; then
