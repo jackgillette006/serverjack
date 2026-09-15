@@ -233,7 +233,7 @@ for _ in $(seq 1 30); do
   sleep 0.5
 done
 
-USERS=(prereq_a prereq_b notty ts1 ts2 ts3 ts4 ts5 ts6 ts7 ts8 ts9)
+USERS=(prereq_a prereq_b notty ts1 ts2 ts3 ts4 ts5 ts6 ts7 ts8 ts9 ts10)
 for u in "${USERS[@]}"; do
   docker exec "$TESTER" useradd -m -s /bin/bash "$u"
   docker exec "$TESTER" loginctl enable-linger "$u"
@@ -756,6 +756,31 @@ run_dialogue ts9on ts9 60 '~/.local/bin/serverjack-ctl setup' "" <<'JSON'
 JSON
 result "ts9 off-to-on exits 0" "0" "$DLG_RC"
 check_serve_mapping "ts9 (republished, 8443, B2)" ts9 8443 "http://127.0.0.1:7760"
+
+echo "================================================================"
+echo "(q) A4: setup waits for the mutation lock instead of interleaving with"
+echo "    a serverjack-ctl update/rollback holding it"
+# Holds ~/.local/share/serverjack/.lock in the background for 6s -- the
+# SAME lock a real `serverjack-ctl update`/`rollback` takes via its own
+# with_lock(). serverjack-setup's fresh-install path (step9_install_and_
+# verify) must block on this (lock_acquire), not run install.sh while it's
+# held.
+docker exec --user ts10 "$TESTER" bash -c \
+  'mkdir -p ~/.local/share/serverjack && setsid flock ~/.local/share/serverjack/.lock sleep 6 >/dev/null 2>&1 < /dev/null & disown'
+start_ts=$(date +%s)
+out=$(docker exec --user ts10 -e SERVERJACK_RELEASE_BASE_URL="$BASE_URL" "$TESTER" \
+  bash -c "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --no-serve --tcp --port 7770" 2>&1)
+rc=$?
+elapsed=$(( $(date +%s) - start_ts ))
+result "ts10: install still succeeds once the lock is free" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+contains "ts10: printed that it was waiting for the lock" "$out" "Waiting for another serverjack-ctl/serverjack-setup run to finish"
+if (( elapsed >= 4 )); then
+  echo "  PASS ts10: actually waited for the lock (took ${elapsed}s against a 6s hold), not interleaved"
+else
+  echo "  FAIL ts10: took only ${elapsed}s against a 6s lock hold -- looks like it ran without waiting"
+  failures=$((failures + 1))
+fi
 
 echo
 if (( failures > 0 )); then
