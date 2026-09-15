@@ -57,7 +57,14 @@ YES=0
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 
 usage() {
-  sed -n '2,34p' "${BASH_SOURCE[0]}" 2>/dev/null | sed 's/^# \{0,1\}//'
+  # Prints the header comment block (everything from line 2 up to the
+  # first non-"#" line -- `set -Eeuo pipefail` below) rather than a
+  # hardcoded line range: a fixed `sed -n '2,Np'` silently truncates by
+  # however many lines the header grows past N, with nothing to catch it
+  # (found by exactly that happening here -- it had drifted one line short
+  # of the real end, quietly cutting the last sentence off `--help`).
+  awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' \
+    "${BASH_SOURCE[0]}" 2>/dev/null
   exit "${1:-0}"
 }
 
@@ -327,11 +334,12 @@ backup_current_state() {  # prints the backup dir it created
   [[ -f "$UNIT_DIR/serverjack-ttyd.service" ]] && cp -a "$UNIT_DIR/serverjack-ttyd.service" "$backup_dir/"
   [[ -f $ENV_FILE ]] && cp -a "$ENV_FILE" "$backup_dir/env"
   # The release being activated already replaced ~/.local/bin/serverjack-ctl
-  # with its own copy before install.sh even runs (that install happens
-  # inside THIS call, below) -- back it up too, or a failed release leaves
-  # its (possibly broken) serverjack-ctl in place even after everything else
-  # is rolled back.
+  # AND ~/.local/bin/serverjack-setup with its own copies before install.sh
+  # even runs (that install happens inside THIS call, below) -- back both up,
+  # or a failed release leaves its (possibly broken) copy of either in place
+  # even after everything else is rolled back.
   [[ -f "$HOME/.local/bin/serverjack-ctl" ]] && cp -a "$HOME/.local/bin/serverjack-ctl" "$backup_dir/serverjack-ctl"
+  [[ -f "$HOME/.local/bin/serverjack-setup" ]] && cp -a "$HOME/.local/bin/serverjack-setup" "$backup_dir/serverjack-setup"
   printf '%s' "$backup_dir"
 }
 
@@ -357,6 +365,8 @@ restore_from_backup() {  # $1 version being restored, $2 symlink target, $3 back
     # already reading the old inode (this one) is unaffected.
     install -m 755 "$backup_dir/serverjack-ctl" "$HOME/.local/bin/serverjack-ctl"
   fi
+  [[ -f "$backup_dir/serverjack-setup" ]] \
+    && install -m 755 "$backup_dir/serverjack-setup" "$HOME/.local/bin/serverjack-setup"
   systemctl --user daemon-reload
   # Never restart tmux -- only the two units. KillMode=process on both keeps
   # every tmux session (and the terminal a browser has attached to) alive.
@@ -685,6 +695,19 @@ cmd_update() {
 
   detect_channel
   if [[ $CHANNEL == git ]]; then
+    # detect_channel() only looks at $CFG_DIR/install-path plus that path
+    # having a .git dir -- neither says the install is actually still
+    # THERE. uninstall.sh removes the units but (deliberately) keeps
+    # ~/.config/serverjack, install-path included, so a checkout that was
+    # already uninstalled still reports channel=git here, and `update`
+    # would happily resurrect it with a fresh `git pull && bash install.sh`
+    # instead of refusing. Require the unit that a real, current install
+    # would have.
+    [[ -f "$UNIT_DIR/serverjack.service" ]] || {
+      echo "no serverjack units found here ($UNIT_DIR/serverjack.service) -- this looks like a checkout that was already uninstalled, not a live install to update." >&2
+      echo "To reinstall: cd $GIT_REPO && bash install.sh (or: serverjack-ctl setup)" >&2
+      exit 1
+    }
     [[ -z $OPT_VERSION ]] || echo "note: --version is ignored for a git checkout; that's a git operation (git checkout v$OPT_VERSION)" >&2
     ask_confirm "Run: cd $GIT_REPO && git pull --ff-only && bash install.sh ?"
     ( cd "$GIT_REPO" && git pull --ff-only && bash install.sh )
@@ -908,6 +931,16 @@ cmd_setup() {
     echo "serverjack-setup is not installed (expected $setup_bin) -- run install.sh first, or from a checkout: bash bin/serverjack-setup" >&2
     exit 1
   }
+  # Close fd 9 (with_lock's flock) before handing off: `exec` replaces this
+  # process's image but keeps its open file descriptors, including
+  # non-close-on-exec ones like fd 9 -- so without this, serverjack-setup
+  # (and anything IT spawns, like the rerun menu's "1) update" running
+  # `serverjack-ctl update`) would inherit it already locked. That child
+  # then blocks in ITS OWN with_lock waiting for a lock only this same
+  # process tree can release, while serverjack-setup waits on the child:
+  # a guaranteed deadlock. serverjack-setup is expected to take the lock
+  # itself, narrowly, around its own writes -- see its own comment.
+  exec 9>&-
   exec "$setup_bin" "$@"
 }
 

@@ -72,6 +72,9 @@ def main():
                 break
             if not pump(0.2) and proc.poll() is not None:
                 pump(0.2)  # one last drain after the child exits
+                match_at = buf.find(expect_b)  # the drain above may have just delivered it
+                if match_at != -1:
+                    found = True
                 break
         if not found:
             ok = False
