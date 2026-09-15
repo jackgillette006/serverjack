@@ -432,6 +432,68 @@ FX_CLASS = "" if (os.environ.get("SERVERJACK_FX") or "").strip().lower() in (
 # docs/design/DESIGN.md's "Terminal theme" section for how and why.
 TERM_THEME_OFF = (os.environ.get("SERVERJACK_TERM_THEME") or "").strip().lower() in (
     "0", "off", "no", "false")
+
+
+def _ttyd_extra_args_env():
+    """TTYD_EXTRA_ARGS the way bin/serverjack-ttyd will actually see it. The
+    serverjack-ttyd unit and this one read the same
+    EnvironmentFile=%h/.config/serverjack/env (see systemd/*.service), so a
+    systemd-started serverjack process already has it in os.environ --
+    checked first, and what every test harness and docs/shots fixture relies
+    on (they pass it the same way). A plain `python3 bin/serverjack` started
+    by hand, outside systemd, would not otherwise see it, so this falls back
+    to reading the env file directly: the same convention install.sh's
+    cfg() uses (last matching line wins; one leading and one trailing `"`
+    each stripped independently, not as a matched pair)."""
+    if "TTYD_EXTRA_ARGS" in os.environ:
+        return os.environ["TTYD_EXTRA_ARGS"]
+    value = ""
+    try:
+        with open(os.path.join(HOME, ".config", "serverjack", "env")) as f:
+            for line in f:
+                if line.startswith("TTYD_EXTRA_ARGS="):
+                    value = line[len("TTYD_EXTRA_ARGS="):].rstrip("\n")
+    except OSError:
+        return ""
+    if value.startswith('"'):
+        value = value[1:]
+    if value.endswith('"'):
+        value = value[:-1]
+    return value
+
+
+def _ttyd_extra_args_has_theme(value):
+    """True if TTYD_EXTRA_ARGS already sets its own ttyd -t/--client-option
+    theme=..., in whichever of the three forms bin/serverjack-ttyd itself
+    accepts (`-t theme=...`, `--client-option theme=...`,
+    `--client-option=theme=...`). ttyd's client applies a URL query's theme
+    last, so bin/serverjack must NOT also append &theme=... to the ttyd URL
+    in that case -- doing so would silently override the user's own theme
+    instead of the reverse. Tokenized the same way (shlex.split, posix)
+    bin/serverjack-ttyd parses TTYD_EXTRA_ARGS; a parse failure here is
+    treated as "no theme option found" -- the safe direction, since it still
+    generates the usual default theme rather than silently going dark."""
+    if not value:
+        return False
+    try:
+        words = shlex.split(value, posix=True)
+    except ValueError:
+        return False
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if word in ("-t", "--client-option"):
+            if i + 1 < len(words) and words[i + 1].startswith("theme="):
+                return True
+            i += 2
+            continue
+        if word.startswith("--client-option=theme="):
+            return True
+        i += 1
+    return False
+
+
+TTYD_EXTRA_ARGS_HAS_THEME = _ttyd_extra_args_has_theme(_ttyd_extra_args_env())
 TERM_PATH = os.environ.get("SERVERJACK_TERM", "/term/")
 if not TERM_PATH.endswith("/"):
     TERM_PATH += "/"          # ttyd builds its ws URL relative to the page path
@@ -1583,10 +1645,14 @@ def _term_theme():
     function is now the only place it is written out. Handed to ttyd as
     ?theme=<json> on the iframe src (see ttyd_src()): ttyd applies a URL
     query's theme last, after any -t theme=... it was started with, so this
-    always wins over whatever bin/serverjack-ttyd does (nothing, now) or a
-    user's own TTYD_EXTRA_ARGS -t theme=... unless SERVERJACK_TERM_THEME=off
-    also drops this from the URL. See docs/design/DESIGN.md's "Terminal
-    theme" section for the full key-by-key mapping and reasoning.
+    would always win over whatever bin/serverjack-ttyd does (nothing, now)
+    -- which is exactly why ttyd_src() skips calling this at all when
+    SERVERJACK_TERM_THEME=off, or when TTYD_EXTRA_ARGS already sets its own
+    -t theme=... (TTYD_EXTRA_ARGS_HAS_THEME, from
+    _ttyd_extra_args_has_theme()): the point of detecting that is to let the
+    user's own theme apply instead, not silently overwrite it. See
+    docs/design/DESIGN.md's "Terminal theme" section for the full key-by-key
+    mapping and reasoning.
 
     Most keys reuse an app token outright. `cyan`/`brightCyan` and the plain
     `bright*` tints have no matching semantic role in the app UI -- xterm.js
@@ -1624,7 +1690,12 @@ def _term_theme():
     }
 
 
-TERM_THEME = None if TERM_THEME_OFF else _term_theme()
+# TTYD_EXTRA_ARGS_HAS_THEME: a user's own -t/--client-option theme=... in
+# TTYD_EXTRA_ARGS also skips generating this, the same as
+# SERVERJACK_TERM_THEME=off -- see _ttyd_extra_args_has_theme() above for
+# why (ttyd applies the URL query last, so ours would otherwise silently
+# win over theirs).
+TERM_THEME = None if (TERM_THEME_OFF or TTYD_EXTRA_ARGS_HAS_THEME) else _term_theme()
 TERM_THEME_JSON = json.dumps(TERM_THEME) if TERM_THEME else None
 
 # ---- CRT effects. Opacity/transform only (compositor-cheap), every rule gated
@@ -2777,7 +2848,10 @@ def ttyd_src(name):                  # what the wrapper's frame loads
     # applies a URL query's theme last (after any -t theme=... it started
     # with), so this is the single source of truth -- see _term_theme() and
     # docs/design/DESIGN.md's "Terminal theme" section. Skipped entirely
-    # when SERVERJACK_TERM_THEME=off (TERM_THEME_JSON is then None).
+    # (TERM_THEME_JSON is then None) when SERVERJACK_TERM_THEME=off, or when
+    # TTYD_EXTRA_ARGS already sets its own -t theme=...: appending ours on
+    # top would otherwise silently win over the user's, since the URL query
+    # is exactly what applies last.
     src = f"{TERM_PATH}?arg={quote(name, safe='')}"
     if TERM_THEME_JSON:
         src += f"&theme={quote(TERM_THEME_JSON, safe='')}"

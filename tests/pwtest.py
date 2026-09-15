@@ -197,6 +197,31 @@ with sync_playwright() as p:
     page.screenshot(path="shots/popout.png")
     b.close()
 
+    # ---------- custom TTYD_EXTRA_ARGS theme wins over the generated one
+    # run.sh's third instance starts with TTYD_EXTRA_ARGS='-t
+    # theme={"background":"#123456"}' -- bin/serverjack must detect that and
+    # skip appending its own &theme=... to the ttyd URL, or ttyd would apply
+    # the generated one last (URL queries win) and silently override this.
+    THEME_BASE = os.environ.get("SERVERJACK_TEST_THEME_BASE", "")
+    if THEME_BASE:
+        b = p.chromium.launch()
+        tctx = b.new_context(viewport={"width": 1100, "height": 700})
+        tpage = tctx.new_page()
+        tpage.goto(f"{THEME_BASE}/s/{SESS}")
+        tpage.wait_for_selector("#tabs .tab.on")
+        tfr = tpage.frame_locator("#frame")
+        tfr.locator(".xterm-helper-textarea").wait_for(state="attached", timeout=15000)
+        time.sleep(1.5)
+        src = tpage.get_attribute("#frame", "src")
+        ok("custom TTYD_EXTRA_ARGS theme: iframe src carries no &theme=",
+           "theme=" not in src, src)
+        bg = tfr.locator(".xterm-viewport").evaluate("el => getComputedStyle(el).backgroundColor")
+        ok("custom TTYD_EXTRA_ARGS theme: it, not the generated one, is what rendered",
+           bg == "rgb(18, 52, 86)", bg)   # #123456
+        b.close()
+    else:
+        print("  (skipped: custom TTYD_EXTRA_ARGS theme -- SERVERJACK_TEST_THEME_BASE not set)")
+
     # ---------- iPhone-ish (WebKit engine, touch, 390x844)
     b = p.webkit.launch()
     ctx = b.new_context(**p.devices["iPhone 14"])

@@ -49,6 +49,13 @@ def setUpModule():
             del os.environ[key]
     os.environ["XDG_RUNTIME_DIR"] = runtime
     os.environ["SERVERJACK_CONFIG"] = config
+    # Set, not deleted: _ttyd_extra_args_env() falls back to reading
+    # ~/.config/serverjack/env directly when TTYD_EXTRA_ARGS isn't in
+    # os.environ at all -- an ambient value here (this exact shell has had
+    # one) would make TTYD_EXTRA_ARGS_HAS_THEME nondeterministic at import
+    # time, and deleting it outright would make this import read the real
+    # ~/.config/serverjack/env instead. An explicit empty string avoids both.
+    os.environ["TTYD_EXTRA_ARGS"] = ""
 
     # bin/serverjack has no .py suffix, so spec_from_file_location() can't
     # guess a loader for it -- name one explicitly (it's plain source).
@@ -406,6 +413,111 @@ class TermThemeTests(unittest.TestCase):
         self.assertTrue(src.startswith(mod.TERM_PATH + "?arg=mysession&theme="))
         theme_qs = src.split("&theme=", 1)[1]
         self.assertEqual(json.loads(unquote(theme_qs)), mod.TERM_THEME)
+
+    def test_ttyd_src_omits_theme_when_term_theme_json_is_none(self):
+        # What ttyd_src() actually branches on. The two ways it ends up None
+        # (SERVERJACK_TERM_THEME=off, or TTYD_EXTRA_ARGS already setting its
+        # own theme=...) are exercised directly against
+        # _ttyd_extra_args_has_theme() in TtydExtraArgsThemeTests below;
+        # this is the URL-building half of that same guarantee.
+        old = mod.TERM_THEME_JSON
+        try:
+            mod.TERM_THEME_JSON = None
+            self.assertEqual(mod.ttyd_src("mysession"), mod.TERM_PATH + "?arg=mysession")
+        finally:
+            mod.TERM_THEME_JSON = old
+
+
+class TtydExtraArgsThemeTests(unittest.TestCase):
+    """_ttyd_extra_args_has_theme()/_ttyd_extra_args_env(): a user's own ttyd
+    -t/--client-option theme=... in TTYD_EXTRA_ARGS must be detected so
+    bin/serverjack skips appending its own &theme=... on top of it (ttyd
+    applies the URL query last, so ours would otherwise silently win)."""
+
+    def test_detects_dash_t_form(self):
+        self.assertTrue(mod._ttyd_extra_args_has_theme('-t theme={"background":"#123456"}'))
+
+    def test_detects_long_form_with_space(self):
+        self.assertTrue(mod._ttyd_extra_args_has_theme('--client-option theme={"a":1}'))
+
+    def test_detects_long_form_with_equals(self):
+        self.assertTrue(mod._ttyd_extra_args_has_theme('--client-option=theme={"a":1}'))
+
+    def test_detects_theme_option_alongside_others(self):
+        self.assertTrue(mod._ttyd_extra_args_has_theme(
+            '-t screenReaderMode=true -t theme={"background":"#123456"} -m 4'))
+
+    def test_no_theme_option_present(self):
+        self.assertFalse(mod._ttyd_extra_args_has_theme('-t screenReaderMode=true -m 4'))
+
+    def test_empty_string(self):
+        self.assertFalse(mod._ttyd_extra_args_has_theme(""))
+
+    def test_none(self):
+        self.assertFalse(mod._ttyd_extra_args_has_theme(None))
+
+    def test_dash_t_with_no_value_does_not_crash(self):
+        self.assertFalse(mod._ttyd_extra_args_has_theme('-t'))
+
+    def test_unrelated_client_option_not_mistaken_for_theme(self):
+        # "thememaker=1" starts with "theme" but not "theme=" -- must not match.
+        self.assertFalse(mod._ttyd_extra_args_has_theme('-t thememaker=1'))
+
+    def test_malformed_quoting_is_treated_as_no_theme_found(self):
+        # bin/serverjack-ttyd itself refuses to start on this; here, the
+        # safe fallback is "no theme option found" -- still generate the
+        # usual default theme rather than silently going dark.
+        self.assertFalse(mod._ttyd_extra_args_has_theme("'unterminated"))
+
+    def test_env_reads_os_environ_when_present(self):
+        old = os.environ.get("TTYD_EXTRA_ARGS")
+        try:
+            os.environ["TTYD_EXTRA_ARGS"] = '-t theme={"x":1}'
+            self.assertEqual(mod._ttyd_extra_args_env(), '-t theme={"x":1}')
+        finally:
+            if old is None:
+                del os.environ["TTYD_EXTRA_ARGS"]
+            else:
+                os.environ["TTYD_EXTRA_ARGS"] = old
+
+    def test_env_falls_back_to_config_file_when_var_is_unset(self):
+        # A plain, non-systemd invocation wouldn't have TTYD_EXTRA_ARGS in
+        # its environment at all (unlike the serverjack-ttyd unit, which
+        # reads the same EnvironmentFile) -- del, not set to "", so the
+        # fallback path in _ttyd_extra_args_env() actually triggers.
+        old_home, old_ttyd_args = mod.HOME, os.environ.pop("TTYD_EXTRA_ARGS", None)
+        fake_home = tempfile.mkdtemp(prefix="sj-unit-home-")
+        _tmpdirs.append(fake_home)
+        try:
+            cfg_dir = os.path.join(fake_home, ".config", "serverjack")
+            os.makedirs(cfg_dir)
+            with open(os.path.join(cfg_dir, "env"), "w") as f:
+                # install.sh's cfg() convention: last matching line wins, one
+                # leading/trailing '"' each stripped independently.
+                f.write('SOMETHING_ELSE=1\n')
+                f.write('TTYD_EXTRA_ARGS="-t theme={\\"old\\":1}"\n')
+                f.write('TTYD_EXTRA_ARGS=-t theme={"background":"#123456"}\n')
+            mod.HOME = fake_home
+            got = mod._ttyd_extra_args_env()
+        finally:
+            mod.HOME = old_home
+            if old_ttyd_args is not None:
+                os.environ["TTYD_EXTRA_ARGS"] = old_ttyd_args
+        self.assertEqual(got, '-t theme={"background":"#123456"}')
+        self.assertTrue(mod._ttyd_extra_args_has_theme(got))
+
+    def test_env_fallback_missing_file_is_empty(self):
+        old_home, old_ttyd_args = mod.HOME, os.environ.pop("TTYD_EXTRA_ARGS", None)
+        fake_home = tempfile.mkdtemp(prefix="sj-unit-home-")
+        _tmpdirs.append(fake_home)
+        try:
+            mod.HOME = fake_home   # no .config/serverjack/env under here
+            got = mod._ttyd_extra_args_env()
+        finally:
+            mod.HOME = old_home
+            if old_ttyd_args is not None:
+                os.environ["TTYD_EXTRA_ARGS"] = old_ttyd_args
+        self.assertEqual(got, "")
 
 
 class ShortcutsAtomicityTests(unittest.TestCase):
