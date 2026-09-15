@@ -133,6 +133,12 @@ python3 ./test_unit.py
 echo "== launcher (host-side)"
 bash ./launcher.sh
 
+# B4: serverjack-ctl's units_active() (OR vs AND) and the health-check
+# curls' per-request timeout. No Docker needed (a fake systemctl, and a
+# real python3 socket that accepts and never responds) -- host-side.
+echo "== ctl health checks (host-side)"
+bash ./ctl-health.sh
+
 # A throwaway HOME, created before anything below reads it: bin/serverjack's
 # channel detection (_install_channel()) resolves ~/.local/share/serverjack
 # off the REAL HOME unless told otherwise, so on a machine that has (or ever

@@ -493,14 +493,20 @@ sleep 1
 # cmd_status and bin/serverjack-setup's verify_and_report.
 { systemctl --user --no-pager is-active serverjack serverjack-ttyd 2>/dev/null || true; } \
   | paste -sd' ' | sed 's/^/  serverjack serverjack-ttyd: /'
+# -m/--connect-timeout: B4 -- these curl calls used to have no per-request
+# bound at all, so a listener that accepts a connection and then never
+# responds (not the same as connection-refused, which curl reports
+# immediately) could hang a single request forever, and wait_local_healthz's
+# own timeout loop can't re-check its deadline until the request it's
+# awaiting actually returns.
 if [[ $LISTEN == tcp ]]; then
-  healthz_args=(-o /dev/null "http://127.0.0.1:$SERVERJACK_PORT/healthz")
-  term_args=(-o /dev/null "http://127.0.0.1:$SERVERJACK_PORT$SERVERJACK_TERM")
+  healthz_args=(-o /dev/null -m 5 --connect-timeout 5 "http://127.0.0.1:$SERVERJACK_PORT/healthz")
+  term_args=(-o /dev/null -m 5 --connect-timeout 5 "http://127.0.0.1:$SERVERJACK_PORT$SERVERJACK_TERM")
   landing_label="http://127.0.0.1:$SERVERJACK_PORT/"
   term_label="http://127.0.0.1:$SERVERJACK_PORT$SERVERJACK_TERM"
 else
-  healthz_args=(-o /dev/null --unix-socket "$RUNTIME/web.sock" http://serverjack/healthz)
-  term_args=(-o /dev/null --unix-socket "$RUNTIME/web.sock" "http://serverjack$SERVERJACK_TERM")
+  healthz_args=(-o /dev/null -m 5 --connect-timeout 5 --unix-socket "$RUNTIME/web.sock" http://serverjack/healthz)
+  term_args=(-o /dev/null -m 5 --connect-timeout 5 --unix-socket "$RUNTIME/web.sock" "http://serverjack$SERVERJACK_TERM")
   landing_label="$RUNTIME/web.sock"
   term_label="$RUNTIME/web.sock$SERVERJACK_TERM"
 fi

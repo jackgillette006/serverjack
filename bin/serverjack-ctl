@@ -332,12 +332,21 @@ healthz_code() {
   fi
 }
 
-# True only when BOTH units are active -- `systemctl --user is-active` with
-# multiple unit names exits non-zero if either isn't, which is exactly what
-# we want here (the `|| true` in cmd_status below is the same signal used
-# safely; here we want the failure).
+# True only when BOTH units are active. B4 (Codex): `systemctl is-active
+# PATTERN...` with MULTIPLE unit names is a logical OR, not AND -- per
+# systemctl(1): "Returns an exit code 0 if at least one is active". A single
+# `is-active --quiet serverjack serverjack-ttyd` call here used to pass this
+# health gate with ttyd stopped (or crash-looping) as long as serverjack
+# itself was up, so `update`/`rollback` could confirm a release "healthy"
+# with the terminal completely unreachable. Two separate calls, ANDed by the
+# shell, actually require both. (Every OTHER `is-active unit1 unit2` in this
+# codebase is display-only -- it prints each unit's own state to stdout via
+# `paste` and only ever uses `|| true` to stop `set -e` from aborting on a
+# non-zero it doesn't otherwise act on -- so this is the one call whose
+# exit code was actually being trusted as a real AND.)
 units_active() {
-  systemctl --user is-active --quiet serverjack serverjack-ttyd
+  systemctl --user is-active --quiet serverjack \
+    && systemctl --user is-active --quiet serverjack-ttyd
 }
 
 wait_healthy() {  # $1 = timeout seconds
@@ -1000,4 +1009,11 @@ main() {
   esac
 }
 
-main "$@"
+# Guarded (not a bare `main "$@"`) so tests/ctl-health.sh can `source` this
+# file -- with a fake systemctl/curl on PATH -- to call units_active()/
+# wait_healthy() directly, without running the real subcommand dispatcher.
+# Ordinary invocation (`bash serverjack-ctl ...` or the installed
+# `serverjack-ctl ...`) is completely unaffected: $0 IS this file then.
+if [[ ${BASH_SOURCE[0]} == "${0}" ]]; then
+  main "$@"
+fi
