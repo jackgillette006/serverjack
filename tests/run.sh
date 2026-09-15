@@ -195,6 +195,23 @@ cat > "$CFG/tools.json" <<JSON
  {"id": "pathfake", "label": "Path fixture", "bin": "pathfake", "run": "pathfake",
   "paths": ["$TOOLPATH_DIR"]}]
 JSON
+
+# A scratch HOME for every serverjack/ttyd instance below (not just the tmux
+# pty sessions further down, which already got one) -- so the directory
+# picker's default SERVERJACK_DIRS (~/projects:~/src:~/code:~) resolves under
+# here instead of this machine's real home, and pwland.py's directory-search
+# assertions are deterministic. Created before the instances start, since they
+# read HOME at import time.
+TEST_HOME=$RUN_ROOT/home
+mkdir -m 700 "$TEST_HOME"
+printf '%s\n' "PS1='serverjack-test\$ '" > "$TEST_HOME/bashrc"
+printf -v session_shell 'exec env HOME=%q bash --noprofile --rcfile %q -i' \
+  "$TEST_HOME" "$TEST_HOME/bashrc"
+# A nested project dir under ~/projects, three levels deep with one child of
+# its own -- pwland.py types "3d", expects it to surface from that depth, Tabs
+# into it, and checks the child directory shows up too.
+mkdir -p "$TEST_HOME/projects/ai/3d-lab/scenes"
+
 # SERVERJACK_TRUST_UIDS=101 is not needed to reach anything here any more (no
 # proxy in front), but the peer-uid check below still proves it works.
 # SERVERJACK_TERM_THEME= and TTYD_EXTRA_ARGS= pin those two to empty rather
@@ -205,7 +222,7 @@ JSON
 # shellcheck disable=SC2054  # the comma is inside SERVERJACK_TOOLS's value, not an array separator
 common=(HOME="$TEST_HOME" SERVERJACK_LISTEN=tcp SERVERJACK_TITLE=test SERVERJACK_CONFIG="$CFG"
         SERVERJACK_TOOLS=fake,fake2,pathfake SERVERJACK_TRUST_UIDS=101
-        SERVERJACK_TERM_THEME= TTYD_EXTRA_ARGS=)
+        SERVERJACK_TERM_THEME= TTYD_EXTRA_ARGS= HOME="$TEST_HOME")
 env "${common[@]}" XDG_RUNTIME_DIR="$RT" SERVERJACK_PORT="$PORT" \
     python3 ../bin/serverjack >shots/web.log 2>&1 & pids+=($!)
 env "${common[@]}" XDG_RUNTIME_DIR="$RT" \
