@@ -106,9 +106,28 @@ EOF
 
 # "This phase: refuse with instructions; phase C may add migration" -- so this
 # deliberately does not try to reconcile or move an existing install.
+#
+# The one exception is install.json carrying "state": "installing" -- that
+# means a PREVIOUS bootstrap run staged a release and handed off to its
+# install.sh, which then failed (a bad download, a transient network error,
+# ttyd/fzf unreachable, ...) before ever clearing that marker (install.sh
+# does that itself once it actually succeeds -- see its own comment on this).
+# That is a half-finished install, not an existing one: refusing it would
+# leave the account stuck forever, since nothing else can complete or clear
+# it. Treat it as resumable and let this run redo the whole thing.
 refuse_if_existing_install() {
   local share="$HOME/.local/share/serverjack"
   if [[ -f "$share/install.json" ]]; then
+    local state
+    state=$(python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("state",""))
+except Exception:
+    print("")' < "$share/install.json" 2>/dev/null || true)
+    if [[ $state == installing ]]; then
+      say "Resuming an install that did not finish last time (install.sh failed) -- retrying."
+      return 0
+    fi
     cat >&2 <<EOF
 serverjack is already installed here as a managed release ($share).
 
@@ -174,6 +193,14 @@ resolve_target() {
 download_and_verify() {
   local tmp; tmp=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
   DOWNLOAD_TMPDIR=$tmp
+  # Belt and braces against every early `exit 1` below leaking this
+  # directory (and the archive in it) on a failed/corrupted/truncated
+  # download -- the caller's own `rm -rf "$DOWNLOAD_TMPDIR"` after a SUCCESS
+  # only ever ran on the success path. Double-quoted so $tmp is substituted
+  # now, not when the trap fires (it is `local` to this function, and would
+  # be unset by the time the whole script actually exits otherwise).
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" EXIT
   ARCHIVE_TMP="$tmp/$(basename "$TARGET_ARCHIVE_URL")"
 
   say "Downloading serverjack $TARGET_VERSION"
@@ -207,8 +234,16 @@ download_and_verify() {
 }
 
 # Extracts ARCHIVE_TMP to ~/.local/share/serverjack/releases/<version>/ and
-# atomically swaps "current" to point at it. Sets RELEASE_DIR.
-stage_and_activate() {
+# atomically swaps "current" to point at it. Sets RELEASE_DIR. Writes
+# install.json with "state": "installing" -- this process is about to exec
+# install.sh (see main()), which replaces it outright and so has no way to
+# come back afterward and confirm success itself; install.sh clears that
+# marker once it actually finishes (see the matching comment there).
+# refuse_if_existing_install() treats the marker as a resumable half-install
+# rather than an existing one, so a failed install.sh run (bad ttyd/fzf
+# download, killed midway, ...) can always be completed by a second
+# `curl | bash` instead of leaving the account permanently stuck.
+stage_and_activate() {  # $@ = install_args to persist (see write_install_json/finding 4)
   local share="$HOME/.local/share/serverjack"
   local releases="$share/releases"
   RELEASE_DIR="$releases/$TARGET_VERSION"
@@ -230,13 +265,15 @@ stage_and_activate() {
 
   local now; now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   local tmp_json; tmp_json=$(mktemp "$share/.install.json.XXXXXX")
-  python3 - "$TARGET_VERSION" "$now" > "$tmp_json" <<'PY'
+  python3 - "$TARGET_VERSION" "$now" "$@" > "$tmp_json" <<'PY'
 import json
 import sys
 
 version, installed_at = sys.argv[1], sys.argv[2]
+install_args = sys.argv[3:]
 json.dump({"channel": "release", "version": version, "installed_at": installed_at,
-           "previous": None}, sys.stdout, indent=2)
+           "previous": None, "install_args": install_args, "state": "installing"},
+          sys.stdout, indent=2)
 print()
 PY
   mv -f "$tmp_json" "$share/install.json"
@@ -281,7 +318,7 @@ main() {
   refuse_if_existing_install
 
   download_and_verify
-  stage_and_activate
+  stage_and_activate "${install_args[@]}"
   rm -rf "$DOWNLOAD_TMPDIR"
 
   say "Installed serverjack $TARGET_VERSION -> $RELEASE_DIR (current -> releases/$TARGET_VERSION)"
