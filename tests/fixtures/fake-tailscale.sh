@@ -53,7 +53,18 @@ STATE_FILE=$STATE_DIR/state
 SERVECONFIG=$STATE_DIR/serveconfig
 OPERATOR_FILE=/etc/faketailscale-operator
 mkdir -p "$STATE_DIR"
-touch "$SERVECONFIG"
+# Not a bare `touch "$SERVECONFIG"`: C4's own fix runs a REAL `sudo tailscale
+# serve ...` against this fixture, and this file's mutation below (`mv -f
+# "$SERVECONFIG.tmp" "$SERVECONFIG"`) replaces it with a NEW inode owned by
+# whoever wrote it -- root, once a sudo call has ever touched it. A plain
+# `touch` on an EXISTING file needs WRITE on the file itself (unlike
+# creating or renaming one, which only needs write on the DIRECTORY), so
+# the very next NON-sudo invocation (any real `tailscale serve status`
+# read included) crashed here with "Permission denied" before it ever
+# reached its own subcommand logic. Only create it if it doesn't exist yet;
+# an existing file (whoever owns it) is already exactly what every reader
+# below needs.
+[[ -e "$SERVECONFIG" ]] || touch "$SERVECONFIG"
 
 state() {
   if [[ -f $STATE_FILE ]]; then cat "$STATE_FILE"; else echo needslogin; fi
