@@ -121,6 +121,20 @@ sleep 0.3
 sleep 0.4
 "${T[@]}" send-keys -t "$name" "ls" Enter
 : > "$OUT/typed_done"
+sleep 0.3   # let the last `ls` finish rendering before the check below
+
+# Regression check for command_args() in bin/serverjack: the recorded pane's
+# echoed "$ <cmd>" line must show the plain configured command ("claude"),
+# never a resolved TOOL_PATH location -- that would bake this throwaway
+# run's own /tmp path into a public asset (the demo GIF). Fail loudly rather
+# than ship a GIF that leaks it.
+pane_text=$("${T[@]}" capture-pane -p -J -t "=$name:" -S -200)
+if grep -q '/tmp/' <<<"$pane_text"; then
+  echo "error: the recorded pane shows a /tmp/ path -- command_args() must leave the" >&2
+  echo "configured command text untouched (see bin/serverjack)" >&2
+  echo "$pane_text" | tail -n 20 >&2
+  exit 1
+fi
 
 docker wait "$CID" >/dev/null
 docker logs "$CID" 2>&1 | grep -v 'GL Driver\|maybe unknown option' || true

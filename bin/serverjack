@@ -1076,21 +1076,22 @@ def command_args(cmd):
     what `bash -lc` below starts -- so a tool that's only reachable via
     TOOL_PATH (nvm's bin dir, a tool's private "paths" entry) would report
     "installed" from tool_kinds() and then fail to start with "command not
-    found". Fixed two ways: the first word of `cmd` is resolved to an
-    absolute path with TOOL_PATH up front, so *this* invocation doesn't
-    depend on PATH at all; and TOOL_PATH is also exported inside the login
-    shell before the command runs, so anything the tool itself shells out to
-    (a subprocess that looks up a sibling binary by name) sees it too."""
+    found". Fixed by re-exporting TOOL_PATH as the very first thing the
+    login shell does, after its own startup files (and their PATH reset)
+    have already run and before the command is looked up -- so a plain
+    PATH lookup of the unmodified command text finds it. Deliberately does
+    NOT rewrite `cmd` to an absolute path: the echoed "$ <cmd>" line and the
+    pane's reported process name are user-facing (and, for the demo GIF,
+    public), and a resolved path would bake in TOOL_PATH's actual location
+    -- a throwaway fixture directory, someone's home directory -- instead of
+    just naming the tool. shutil.which(..., path=TOOL_PATH) is still how
+    tool_kinds() decides a tool is "installed" in the first place; it just
+    isn't used here to change what gets run."""
     cmd = cmd.strip()
-    parts = cmd.split(None, 1)
-    win_name = parts[0] if parts else "cmd"
-    resolved = parts and shutil.which(parts[0], path=TOOL_PATH)
-    if resolved:
-        cmd = resolved + (" " + parts[1] if len(parts) > 1 else "")
     inner = f'export PATH={shlex.quote(TOOL_PATH)}:"$PATH"; eval "$SERVERJACK_CMD"'
     # set -m: the command gets its own process group, so tmux reports it (not
     # this wrapper) as the pane's command, and a ^C reaches only the command.
-    return ["-n", win_name, "-e", "SERVERJACK_CMD=" + cmd,
+    return ["-n", (cmd.split() or ["cmd"])[0], "-e", "SERVERJACK_CMD=" + cmd,
             'set -m; printf "\\$ %s\\n" "$SERVERJACK_CMD"; bash -lc '
             + shlex.quote(inner) + '; '
             'rc=$?; echo; echo "[exited with status $rc]"; exec bash -l']
