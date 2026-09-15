@@ -90,10 +90,27 @@ labels them but never checks out or executes their code with a write token.
 1. Bump `VERSION` in `bin/serverjack`.
 2. Add a dated section to [CHANGELOG.md](CHANGELOG.md), moving the
    `Unreleased` entries under it.
-3. Commit, then tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-4. `.github/workflows/release.yml` checks out that tag, verifies `VERSION`
-   matches it, runs `scripts/build-release.sh X.Y.Z`, and opens a **draft**
-   GitHub release with three assets: `serverjack-X.Y.Z.tar.gz`,
+3. **The tag must point at the exact commit that was already tested and
+   reviewed** — normally `main`'s current tip right after the owner's PR
+   review, never a commit picked ahead of that. Commit, then tag:
+   `git tag vX.Y.Z && git push origin vX.Y.Z`. Never
+   `gh release create --target main` (or any `--target`) as a substitute for
+   this: that resolves to whatever `main` happens to be AT RELEASE TIME,
+   which can have moved past the commit that was actually reviewed and
+   tested — the tag, pushed against a specific SHA ahead of time, is what
+   pins it. `gh release create` in step 4 below deliberately passes no
+   `--target` at all, since the tag already names the exact commit.
+4. `.github/workflows/release.yml` checks out that tag and, before building
+   or drafting anything: verifies `VERSION` matches it, then (C6) queries
+   `gh api commits/<sha>/check-runs` for that exact commit and refuses
+   unless "Browser and security tests", "Lint" and "Install suites (managed
+   + guided)" all show a completed, successful run there — a pushed tag is
+   not itself proof the commit was ever tested. It then runs
+   `scripts/build-release.sh X.Y.Z`, verifies the built archive's sha256
+   matches both `SHA256SUMS` and the bootstrap's own embedded pin and that
+   the bootstrap carries its end-of-file marker (catches a truncated or
+   inconsistent build before it's ever published, not after), and opens a
+   **draft** GitHub release with three assets: `serverjack-X.Y.Z.tar.gz`,
    `serverjack-bootstrap.sh`, `SHA256SUMS`. Wait for that workflow to finish.
 5. Verify the draft before publishing it — this step is manual on purpose:
    - Download all three assets and confirm their digests against
