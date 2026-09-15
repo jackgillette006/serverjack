@@ -10,6 +10,10 @@
 set -uo pipefail
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 UNIT_DIR=$HOME/.config/systemd/user
+SELF_DIR_FOR_LIB=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd || true)
+# shellcheck source=bin/serverjack-lib.sh
+[[ -n $SELF_DIR_FOR_LIB && -f "$SELF_DIR_FOR_LIB/bin/serverjack-lib.sh" ]] \
+  && source "$SELF_DIR_FOR_LIB/bin/serverjack-lib.sh"
 
 # A copy of this file inside a managed release
 # (~/.local/share/serverjack/releases/<v>/uninstall.sh) run BY HAND (not via
@@ -92,43 +96,14 @@ if command -v tailscale >/dev/null 2>&1; then
     echo "tailscale serve routes left unchanged: could not inspect the current serve status" >&2
   else
     port=$((10#$port))
-    serve_backends_for() {
-      local wanted_port=$1 wanted_path=$2
-      awk -v wp="$wanted_port" -v wpath="$wanted_path" '
-        /^https:\/\// { h=$1; sub(/^https:\/\//,"",h); n=split(h,a,":");
-                        cur=(n>1 ? a[n] : "443"); next }
-        /^\|--/ && cur==wp && $2==wpath { print $NF }' <<< "$serve_status"
-    }
-    backend_is_ours() {
-      local backend=$1
-      [[ $backend == "http://127.0.0.1:$port" \
-         || $backend == "unix:$RUNTIME/web.sock" \
-         || $backend == "unix:$RUNTIME/ttyd.sock" \
-         || ( -n $legacy_port && $backend == "http://127.0.0.1:$legacy_port" ) ]]
-    }
-    remove_owned_mapping() {
-      local path=$1 label=$2 backend
-      local -a backends=()
-      mapfile -t backends < <(serve_backends_for "$https" "$path")
-      if (( ${#backends[@]} == 0 )); then
-        return
-      elif (( ${#backends[@]} != 1 )); then
-        echo "tailscale serve $label left unchanged: status was ambiguous" >&2
-        return
-      fi
-      backend=${backends[0]}
-      if ! backend_is_ours "$backend"; then
-        echo "tailscale serve $label left unchanged: it points to a foreign backend ($backend)" >&2
-        return
-      fi
-      if tailscale serve --https="$https" --set-path="$path" off >/dev/null 2>&1; then
-        echo "removed tailscale serve $label ($backend)"
-      else
-        echo "could not remove tailscale serve $label ($backend); it was left unchanged" >&2
-      fi
-    }
-    remove_owned_mapping / "https=$https path=/"
-    remove_owned_mapping "$mount" "https=$https path=$mount"
+    own_backends=("http://127.0.0.1:$port" "unix:$RUNTIME/web.sock" "unix:$RUNTIME/ttyd.sock")
+    [[ -n $legacy_port ]] && own_backends+=("http://127.0.0.1:$legacy_port")
+    # remove_owned_mapping/serve_backends_for/backend_is_ours: bin/serverjack-lib.sh
+    # (A11) -- ONE implementation, shared with bin/serverjack-ctl's
+    # remove_units_and_serve_route() and bin/serverjack-setup, instead of
+    # three drifting copies of the same parsing and removal logic.
+    remove_owned_mapping "https=$https path=/" "$serve_status" "$https" / "${own_backends[@]}"
+    remove_owned_mapping "https=$https path=$mount" "$serve_status" "$https" "$mount" "${own_backends[@]}"
   fi
 fi
 # Not part of "your data" this deliberately keeps (env, shortcuts.json,
