@@ -4,12 +4,27 @@
 # talks to this instead of a real tailscaled. State is per invoking Linux
 # account (matching how a real tailnet node's identity is machine-wide but
 # each test account here stands in for a separate machine):
-#   ~/.faketailscale/state    "needslogin" (default) or "running"
-#   ~/.faketailscale/login    tailnet login to report                (default tester@github)
-#   ~/.faketailscale/tagged   file present => Self.Tags is non-empty
-#   ~/.faketailscale/foreign  file present => `serve status` reports an
-#                             existing https://:443 -> / mapping to something
-#                             else, for the check_serve_clash() scenario
+#   ~/.faketailscale/state       "needslogin" (default) or "running"
+#   ~/.faketailscale/login       tailnet login to report        (default tester@github)
+#   ~/.faketailscale/tagged      file present => Self.Tags is non-empty
+#   ~/.faketailscale/foreign     file present => `serve status` also reports an
+#                                 existing https://:443 -> / mapping to something
+#                                 else (a foreign, non-serverjack backend), for
+#                                 check_serve_clash()
+#   ~/.faketailscale/serveconfig one "<https_port> <path> <backend>" line per
+#                                 mapping `serve --bg --https=P [--set-path=path] backend`
+#                                 has set -- a REAL, mutable ServeConfig, not
+#                                 a fixed fixture: `serve --https=P --set-path=path off`
+#                                 removes the matching line, and `serve status`
+#                                 reports whatever is actually in here, in the
+#                                 real text format bin/serverjack-lib.sh's
+#                                 serve_backend_for() parses. Without this,
+#                                 every guided publish scenario could only ever
+#                                 assert the FAILURE string (nothing here ever
+#                                 recorded a successful publish), so
+#                                 remove_owned_mapping()/uninstall.sh's route
+#                                 removal were never actually exercised by any
+#                                 guided test.
 # /etc/faketailscale-operator is the one genuinely machine-wide piece of
 # state (root-writable only), mirroring how the real `tailscale set
 # --operator` is machine-wide too.
@@ -32,8 +47,10 @@ real_home() {
 
 STATE_DIR=$(real_home)/.faketailscale
 STATE_FILE=$STATE_DIR/state
+SERVECONFIG=$STATE_DIR/serveconfig
 OPERATOR_FILE=/etc/faketailscale-operator
 mkdir -p "$STATE_DIR"
+touch "$SERVECONFIG"
 
 state() {
   if [[ -f $STATE_FILE ]]; then cat "$STATE_FILE"; else echo needslogin; fi
@@ -97,13 +114,44 @@ case "$cmd" in
     exit 0
     ;;
   serve)
-    if [[ ${1:-} == status ]] && [[ -f "$STATE_DIR/foreign" ]]; then
-      echo "https://$dns:443 (Funnel off)"
-      echo "|-- / proxy http://127.0.0.1:9999"
+    if [[ ${1:-} == status ]]; then
+      if [[ -f "$STATE_DIR/foreign" ]]; then
+        echo "https://$dns:443 (Funnel off)"
+        echo "|-- / proxy http://127.0.0.1:9999"
+      fi
+      # Group the real (mutable) mappings by https port so each gets its own
+      # "https://..." header line, matching the real text format.
+      if [[ -s $SERVECONFIG ]]; then
+        for p in $(awk '{print $1}' "$SERVECONFIG" | sort -u); do
+          [[ -f "$STATE_DIR/foreign" && $p == 443 ]] && continue
+          echo "https://$dns:$p (Funnel off)"
+          awk -v p="$p" '$1==p{print "|-- " $2 " proxy " $3}' "$SERVECONFIG"
+        done
+      fi
+      exit 0
     fi
-    # Every other serve subcommand (--bg --https=..., --set-path=... off,
-    # ...) just succeeds -- this fake doesn't track machine-wide serve
-    # state beyond the one "foreign" fixture above.
+    # Every other `serve` call is a mutation: parse the flags serverjack
+    # ever actually passes, in any order --
+    #   serve --bg --https=P BACKEND          (publish path "/")
+    #   serve --https=P --set-path=PATH off    (remove one mapping)
+    https=443
+    path=/
+    backend=""
+    off=0
+    for a in "$@"; do
+      case "$a" in
+        --https=*)    https=${a#--https=} ;;
+        --set-path=*) path=${a#--set-path=} ;;
+        --bg)         ;;
+        off)          off=1 ;;
+        *)            [[ -z $backend ]] && backend=$a ;;
+      esac
+    done
+    grep -v "^$https $path " "$SERVECONFIG" > "$SERVECONFIG.tmp" 2>/dev/null || true
+    if (( ! off )) && [[ -n $backend ]]; then
+      echo "$https $path $backend" >> "$SERVECONFIG.tmp"
+    fi
+    mv -f "$SERVECONFIG.tmp" "$SERVECONFIG"
     exit 0
     ;;
   *)

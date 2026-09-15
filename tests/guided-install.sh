@@ -45,11 +45,34 @@
 #   (i) "other accounts share this machine?" yes selects --unix
 #   (j) re-running setup (via `serverjack-ctl setup`) on (f)'s now-installed
 #       account, choosing "nothing": env file and units are untouched
+#   (k) `serverjack-ctl uninstall` removes the tailscale serve mapping a
+#       fresh publish created
+#   (l) a root-step prompt (tailscale operator) answered with a bare Enter
+#       (its default) never runs sudo (a fake sudo wrapper on PATH records
+#       every invocation)
+#   (m) rerun on (f)'s account again, choosing "1) update": proves
+#       `serverjack-ctl setup` handing off to serverjack-setup, which in
+#       turn shells out to `serverjack-ctl update`, does not deadlock on
+#       the outer command's own lock
+#   (n) a deliberately broken release (unit crash-loops, /healthz never
+#       answers) still gets the health-check failure diagnostic and the
+#       journalctl hint, instead of verify_and_report dying silently on an
+#       unguarded `is-active | paste` pipeline under pipefail
+#   (o) rerunning setup on a real git-checkout install (installed directly
+#       via install.sh, never through the bootstrap) shows the same rerun
+#       menu as a managed install, instead of the old unconditional refusal
+#
+# (f)-(i) each also assert the tailscale serve MAPPING itself exists
+# afterward (`tailscale serve status`, via the fake's now-real, mutable
+# ServeConfig -- see tests/fixtures/fake-tailscale.sh), not only that
+# serverjack-setup printed a particular message.
 #
 # ttyd and fzf are pre-fetched on the HOST (real internet, proven by the
-# setup steps) at the exact pinned versions install.sh expects, then served
-# from the same private webroot as the release itself -- same reasoning as
-# tests/managed-install.sh.
+# setup steps) at the exact pinned versions install.sh expects, then copied
+# straight into every test account's ~/.local/bin before it runs anything
+# (so install.sh's own version check short-circuits and never has to reach
+# github.com itself) -- same reasoning, and the same fix for the same
+# flakiness, as tests/managed-install.sh's provision_ttyd_fzf().
 set -Eeuo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 REPO=$(cd .. && pwd)
@@ -118,6 +141,7 @@ fi
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 say "Building the test image"
 cp "$REPO/tests/fixtures/fake-tailscale.sh" "$WORK/fake-tailscale.sh"
+cp "$REPO/tests/fixtures/fake-sudo-wrapper.sh" "$WORK/fake-sudo-wrapper.sh"
 cat > "$WORK/Dockerfile" <<'EOF'
 FROM debian:13-slim
 ENV DEBIAN_FRONTEND=noninteractive
@@ -127,6 +151,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 COPY fake-tailscale.sh /usr/local/bin/tailscale
 RUN chmod 755 /usr/local/bin/tailscale
+# NOT on the default PATH (see the file's own header) -- only the scenario
+# that needs it prepends /opt/fake-sudo-bin.
+COPY fake-sudo-wrapper.sh /opt/fake-sudo-bin/sudo
+RUN chmod 755 /opt/fake-sudo-bin/sudo
 STOPSIGNAL SIGRTMIN+3
 CMD ["/lib/systemd/systemd"]
 EOF
@@ -145,6 +173,24 @@ say "Building release $V1 for the test webroot"
 rm -f /tmp/"$RUNID"-build.log
 cp "$REPO/dist/serverjack-$V1.tar.gz" "$REPO/dist/serverjack-bootstrap.sh" "$REPO/dist/SHA256SUMS" \
   "$WEBROOT/v$V1/"
+
+# A second, deliberately broken release for scenario (n) below (finding 3):
+# bin/serverjack exits immediately, so the unit crash-loops (Restart=on-
+# failure) and never answers /healthz -- exactly what verify_and_report()
+# must survive without the old pipefail bug silently swallowing it.
+V2="9.9.5-guided-broken-test"
+mkdir -p "$WEBROOT/v$V2"
+say "Building a deliberately broken release $V2 for the finding-3 scenario"
+V2DIR="$WORK/src-$V2"
+cp -a "$REPO" "$V2DIR"
+rm -rf "$V2DIR/.git" "$V2DIR/dist"
+sed -i "s/^VERSION = \".*\"/VERSION = \"$V2\"/" "$V2DIR/bin/serverjack"
+sed -i '1i import sys; sys.exit(1)  # deliberately broken -- tests/guided-install.sh finding 3' "$V2DIR/bin/serverjack"
+( cd "$V2DIR" && bash scripts/build-release.sh "$V2" ) >/tmp/"$RUNID"-build2.log 2>&1 \
+  || { echo "build-release.sh (broken variant) failed:" >&2; cat /tmp/"$RUNID"-build2.log >&2; exit 1; }
+rm -f /tmp/"$RUNID"-build2.log
+cp "$V2DIR/dist/serverjack-$V2.tar.gz" "$V2DIR/dist/serverjack-bootstrap.sh" "$V2DIR/dist/SHA256SUMS" \
+  "$WEBROOT/v$V2/"
 
 fetch_retry() {  # $1 url  $2 output path
   local url=$1 out=$2 n
@@ -184,7 +230,7 @@ for _ in $(seq 1 30); do
   sleep 0.5
 done
 
-USERS=(prereq_a prereq_b notty ts1 ts2 ts3 ts4)
+USERS=(prereq_a prereq_b notty ts1 ts2 ts3 ts4 ts5 ts6 ts7 ts8)
 for u in "${USERS[@]}"; do
   docker exec "$TESTER" useradd -m -s /bin/bash "$u"
   docker exec "$TESTER" loginctl enable-linger "$u"
@@ -196,6 +242,21 @@ for u in "${USERS[@]}"; do
     docker exec "$TESTER" test -S "/run/user/$(docker exec "$TESTER" id -u "$u")/bus" 2>/dev/null && break
     sleep 0.5
   done
+done
+
+# Pre-fetched ttyd/fzf were already proven against real internet (see the
+# host-side fetch above) -- copy them straight into every account's
+# ~/.local/bin (from the same webroot bind-mounted at /work, so no docker
+# cp or second download is needed) so install.sh's own version check
+# ("$BIN/ttyd" --version ... | grep -q ...) short-circuits and never needs
+# to reach github.com itself. Without this, EVERY account's own install.sh
+# run independently re-fetches ttyd/fzf from real GitHub -- same reasoning
+# as tests/managed-install.sh's provision_ttyd_fzf(), and why that file
+# doesn't have this flakiness: a transient DNS/network blip mid-run used to
+# fail scenarios that have nothing to do with networking at all.
+for u in "${USERS[@]}"; do
+  docker exec --user "$u" "$TESTER" bash -c \
+    'mkdir -p ~/.local/bin && cp /work/webroot/tools/ttyd /work/webroot/tools/fzf ~/.local/bin/ && chmod 755 ~/.local/bin/ttyd ~/.local/bin/fzf'
 done
 
 # faketailscale state for a user: $1 user  $2 state(needslogin|running)
@@ -211,6 +272,18 @@ set_ts_state() {
   "
 }
 reset_operator() { docker exec "$TESTER" rm -f /etc/faketailscale-operator; }
+
+# The fake tailscale now tracks a real, mutable ServeConfig (see
+# tests/fixtures/fake-tailscale.sh) -- this actually exercises the mapping
+# `tailscale serve` really made, not just the failure string every guided
+# publish scenario used to be limited to asserting (the fake used to have no
+# state for a successful publish at all).
+check_serve_mapping() {  # $1 label  $2 user  $3 https_port  $4 expected backend substring
+  local label=$1 user=$2 https=$3 want=$4 out
+  out=$(docker exec --user "$user" "$TESTER" bash -c 'tailscale serve status' 2>&1)
+  contains "$label: serve status shows https port $https" "$out" ":$https "
+  contains "$label: serve status proxies to $want" "$out" "proxy $want"
+}
 
 env_val() {  # $1 user  $2 key -- reads ~/.config/serverjack/env inside the container
   docker exec --user "$1" "$TESTER" bash -c "sed -n 's/^$2=//p' ~/.config/serverjack/env 2>/dev/null | tail -1 | tr -d '\"'"
@@ -373,6 +446,7 @@ result "ts1 exits 0" "0" "$DLG_RC"
   || { echo "  FAIL ts1 allow-list -- got $(env_val ts1 SERVERJACK_ALLOW)"; failures=$((failures + 1)); }
 [[ $(env_val ts1 SERVERJACK_PORT) == 7690 ]] && echo "  PASS ts1 port = 7690" \
   || { echo "  FAIL ts1 port -- got $(env_val ts1 SERVERJACK_PORT)"; failures=$((failures + 1)); }
+check_serve_mapping ts1 ts1 443 "http://127.0.0.1:7690"
 
 echo "================================================================"
 echo "(g) fake tailscale running and TAGGED: allow-list required"
@@ -392,6 +466,7 @@ JSON
 result "ts2 exits 0" "0" "$DLG_RC"
 [[ $(env_val ts2 SERVERJACK_ALLOW) == "carol@github" ]] && echo "  PASS ts2 allow-list = carol@github" \
   || { echo "  FAIL ts2 allow-list -- got $(env_val ts2 SERVERJACK_ALLOW)"; failures=$((failures + 1)); }
+check_serve_mapping ts2 ts2 443 "http://127.0.0.1:7700"
 
 echo "================================================================"
 echo "(h) an existing foreign serve mapping on 443 is offered an alternate port"
@@ -414,6 +489,10 @@ JSON
 result "ts3 exits 0" "0" "$DLG_RC"
 [[ $(env_val ts3 SERVERJACK_HTTPS_PORT) == 8443 ]] && echo "  PASS ts3 https-port = 8443" \
   || { echo "  FAIL ts3 https-port -- got $(env_val ts3 SERVERJACK_HTTPS_PORT)"; failures=$((failures + 1)); }
+# The pre-existing foreign mapping on 443 must still be there too -- ts3
+# picked 8443 specifically to avoid disturbing it.
+check_serve_mapping "ts3 (own, 8443)" ts3 8443 "http://127.0.0.1:7710"
+check_serve_mapping "ts3 (foreign, 443, untouched)" ts3 443 "http://127.0.0.1:9999"
 
 echo "================================================================"
 echo "(i) 'other accounts share this machine?' yes selects --unix"
@@ -433,6 +512,8 @@ JSON
 result "ts4 exits 0" "0" "$DLG_RC"
 [[ $(env_val ts4 SERVERJACK_LISTEN) == unix ]] && echo "  PASS ts4 listen = unix" \
   || { echo "  FAIL ts4 listen -- got $(env_val ts4 SERVERJACK_LISTEN)"; failures=$((failures + 1)); }
+ts4_uid=$(docker exec "$TESTER" id -u ts4)
+check_serve_mapping ts4 ts4 443 "unix:/run/user/$ts4_uid/serverjack/web.sock"
 
 echo "================================================================"
 echo "(j) rerun on (f)'s account via serverjack-ctl setup, choosing 'nothing'"
@@ -452,6 +533,134 @@ result "env file unchanged by 'nothing'" "$env_before" "$env_after"
 # printing nothing instead of "active" for a unit that really was running.
 active=$(docker exec --user ts1 "$TESTER" bash -c 'export XDG_RUNTIME_DIR="/run/user/$(id -u)"; systemctl --user is-active serverjack 2>/dev/null')
 result "serverjack still active after 'nothing'" "active" "$active"
+
+echo "================================================================"
+echo "(k) uninstall removes the tailscale serve mapping it owns"
+reset_operator
+set_ts_state ts5 running "frank@github" 0 0
+run_dialogue ts5 ts5 90 \
+  "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --port 7730" \
+  "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL" <<'JSON'
+[["Tailscale is running.", null],
+ ["Publish with tailscale serve", "y"],
+ ["Detected tailnet login: frank@github", null],
+ ["Allow only this login?", "y"],
+ ["Do other people have Linux accounts on this machine?", "n"],
+ ["Run it now?", "y"],
+ ["not yet reachable from your phone", null]]
+JSON
+result "ts5 exits 0" "0" "$DLG_RC"
+check_serve_mapping "ts5 (before uninstall)" ts5 443 "http://127.0.0.1:7730"
+out=$(docker exec --user ts5 "$TESTER" bash -c '~/.local/bin/serverjack-ctl uninstall --yes' 2>&1); rc=$?
+result "ts5 uninstall exits 0" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+out=$(docker exec --user ts5 "$TESTER" bash -c 'tailscale serve status' 2>&1)
+[[ $out != *"proxy http://127.0.0.1:7730"* ]] && echo "  PASS the serve mapping was removed by uninstall" \
+  || { echo "  FAIL the serve mapping was removed by uninstall -- got: $out"; failures=$((failures + 1)); }
+
+echo "================================================================"
+echo "(l) a root-step prompt answered with Enter (default) must not run sudo"
+reset_operator
+set_ts_state ts6 running "gina@github" 0 0
+run_dialogue ts6 ts6 90 \
+  "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --port 7731" \
+  "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL -e PATH=/opt/fake-sudo-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" <<'JSON'
+[["Tailscale is running.", null],
+ ["Publish with tailscale serve", "y"],
+ ["Detected tailnet login: gina@github", null],
+ ["Allow only this login?", "y"],
+ ["Do other people have Linux accounts on this machine?", "n"],
+ ["Run it now?", ""],
+ ["not yet reachable from your phone", null]]
+JSON
+result "ts6 exits 0 (declining the root step doesn't abort the install)" "0" "$DLG_RC"
+sudo_log=$(docker exec --user ts6 "$TESTER" bash -c 'cat ~/.fake-sudo.log 2>/dev/null || true')
+[[ -z $sudo_log ]] && echo "  PASS sudo was never invoked (default-Enter declined the root step)" \
+  || { echo "  FAIL sudo was never invoked -- got: $sudo_log"; failures=$((failures + 1)); }
+contains "explains the remaining root step instead of running it" "$(cat "$WORK/log-ts6.txt" 2>/dev/null)" "Remaining step:"
+
+echo "================================================================"
+echo "(m) rerun on (f)'s account via serverjack-ctl setup, choosing '1) update'"
+# The deadlock this guards: `serverjack-ctl setup` dispatches through
+# `with_lock cmd_setup`, so fd 9 is a held flock when cmd_setup execs into
+# serverjack-setup. Picking "1" here makes serverjack-setup, still running
+# as that same process (exec, not a subshell), invoke `serverjack-ctl
+# update` as a CHILD -- which itself dispatches through `with_lock
+# cmd_update` and blocks forever on a lock only this same process tree
+# could ever release, while THIS process is in turn just waiting on that
+# child. Nothing times out on its own; only the driver's own bounded
+# timeout below turns that hang into a reported failure instead of the
+# test run itself getting stuck. SERVERJACK_RELEASE_BASE_URL points update's
+# own resolve step at the fake release server rather than the real GitHub
+# API (so this test has no live-network dependency) -- cmd_update()
+# deliberately refuses to guess "latest" on a mirror with no --version
+# given ("pass --version explicitly"), which is fine here: reaching that
+# refusal at all -- fast, and with an on-topic message, not the exchange
+# just timing out -- is exactly what proves the child `serverjack-ctl
+# update` process actually ran instead of hanging forever on the parent's
+# still-held lock.
+run_dialogue rerun2 ts1 30 '~/.local/bin/serverjack-ctl setup' "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL" <<'JSON'
+[["already installed here as a managed release", null],
+ ["Choice [1-4, default 4]:", "1"],
+ ["pass --version explicitly", null]]
+JSON
+result "rerun(update) completes without hanging (real response, not a deadlock)" "1" "$DLG_RC"
+
+echo "================================================================"
+echo "(n) verify_and_report survives a unit that never comes up (finding 3)"
+# V2 is a deliberately broken release (bin/serverjack exits immediately, so
+# the unit crash-loops and /healthz never answers). --no-serve --tcp skips
+# every other prompt (tailscale, allow-list, unix/tcp), so the only thing
+# this dialogue waits for is verify_and_report's own failure diagnostic --
+# which the OLD `active=$(... is-active ... | paste ...)` pipeline, missing
+# `|| true`, would abort BEFORE ever printing (silently, under pipefail,
+# the instant it saw one inactive unit) instead of reaching the health poll
+# and this message.
+run_dialogue ts7 ts7 120 \
+  "curl -fsSL $BASE_URL/v$V2/serverjack-bootstrap.sh | bash -s -- --no-serve --tcp --port 7695" \
+  "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL" <<'JSON'
+[["Local health check failed", null]]
+JSON
+result "ts7 exits 1 (health check genuinely fails, diagnostic still printed)" "1" "$DLG_RC"
+contains "prints the journalctl hint" "$(cat "$WORK/log-ts7.txt" 2>/dev/null)" "journalctl --user -u serverjack -n 50"
+# Finding 9's "000000" double-code bug: local_http_code() used to be
+# `curl ... || echo 000` after curl's own -w already printed "000" on a
+# connection failure -- two "000"s with no separator, "000000", never the
+# clean "000" this checks for.
+contains "the failed health check reports a clean HTTP 000 (finding 9), not 000000" "$(cat "$WORK/log-ts7.txt" 2>/dev/null)" "Local health check failed (HTTP 000)."
+
+echo "================================================================"
+echo "(o) rerun on a git-checkout install shows the rerun menu (finding 7)"
+# A real git-checkout install (bash install.sh run directly from a checkout,
+# never through the bootstrap/managed-release path) -- CFG_DIR/install-path
+# and a real .git DIRECTORY (not the round3 worktree's own .git, which is a
+# FILE pointing elsewhere -- handle_existing_install() checks `-d
+# "$repo/.git"`, so this copies the tree and gives it a plain empty .git
+# dir of its own) are exactly what handle_existing_install() needs to
+# recognize it as an existing install and route to rerun_git() instead of
+# the old unconditional "does not migrate" refusal (exit 3).
+docker exec --user ts8 "$TESTER" bash -c '
+  set -e
+  mkdir -p ~/checkout
+  cp -a /srv/serverjack/. ~/checkout/
+  rm -rf ~/checkout/.git ~/checkout/dist
+  mkdir -p ~/checkout/.git
+  cd ~/checkout && bash install.sh --no-serve --tcp --port 7696
+' >"$WORK/log-ts8-setup.txt" 2>&1
+setup_rc=$?
+result "ts8: direct git-checkout install.sh exits 0" "0" "$setup_rc"
+[[ $setup_rc -ne 0 ]] && sed 's/^/    | /' "$WORK/log-ts8-setup.txt"
+env_before=$(docker exec --user ts8 "$TESTER" bash -c 'sha256sum ~/.config/serverjack/env' | awk '{print $1}')
+run_dialogue rerung ts8 30 '~/.local/bin/serverjack-ctl setup' "" <<'JSON'
+[["already installed here as a git checkout", null],
+ ["Choice [1-4, default 4]:", ""],
+ ["Leaving everything as it is.", null]]
+JSON
+result "rerun(git checkout) exits 0, shows the menu instead of refusing" "0" "$DLG_RC"
+env_after=$(docker exec --user ts8 "$TESTER" bash -c 'sha256sum ~/.config/serverjack/env' | awk '{print $1}')
+result "ts8: env file unchanged by 'nothing'" "$env_before" "$env_after"
+active=$(docker exec --user ts8 "$TESTER" bash -c 'export XDG_RUNTIME_DIR="/run/user/$(id -u)"; systemctl --user is-active serverjack 2>/dev/null')
+result "ts8: serverjack still active after the git-checkout rerun" "active" "$active"
 
 echo
 if (( failures > 0 )); then

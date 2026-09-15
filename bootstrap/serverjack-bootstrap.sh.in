@@ -170,6 +170,70 @@ EOF
   fi
 }
 
+# A legacy tmux-web/ttyd install (this project's own predecessor, before the
+# 2026-09-07 rename -- see CHANGELOG/README "Legacy") is invisible to
+# refuse_if_existing_install() above: no install.json, no serverjack.service,
+# so this bootstrap would happily stage a release, write install.json, and
+# only THEN discover the port clash inside install.sh -- a half-adopted
+# ~/.local/share/serverjack sitting next to a legacy install still quietly
+# running on the same port. Check for it, and for the target port simply
+# being busy by anything at all, before writing a single byte.
+check_legacy_and_port_clash() {  # $@ = the raw arguments this bootstrap was called with
+  local unit_dir="$HOME/.config/systemd/user"
+  local -a found=()
+  [[ -f "$unit_dir/tmux-web.service" ]] && found+=("user unit $unit_dir/tmux-web.service")
+  [[ -f "$unit_dir/ttyd.service" ]] && found+=("user unit $unit_dir/ttyd.service")
+  [[ -f /etc/systemd/system/tmux-web.service ]] && found+=("system unit /etc/systemd/system/tmux-web.service")
+  [[ -f /etc/systemd/system/ttyd.service ]] && found+=("system unit /etc/systemd/system/ttyd.service")
+  if (( ${#found[@]} )); then
+    {
+      echo "Found what looks like a legacy tmux-web/ttyd install (this project's"
+      echo "predecessor, before it was renamed serverjack):"
+      printf '  %s\n' "${found[@]}"
+      echo
+      echo "This bootstrap does not migrate it automatically. Stop and remove it"
+      echo "first, then re-run this bootstrap."
+    } >&2
+    exit 3
+  fi
+
+  command -v ss >/dev/null 2>&1 || return 0
+  # The target port: --port N / --port=N among the arguments this bootstrap
+  # was itself called with (install.sh's own flag, passed straight through
+  # unparsed otherwise), else install.sh's own default. --unix means no TCP
+  # port is ever bound at all -- same LISTEN==tcp gate install.sh's own
+  # (later) port check uses.
+  local port=7680 i
+  local -a args=("$@")
+  for (( i = 0; i < ${#args[@]}; i++ )); do
+    case "${args[i]}" in
+      --unix)   return 0 ;;
+      --port)   port=${args[i+1]:-$port} ;;
+      --port=*) port=${args[i]#*=} ;;
+    esac
+  done
+  # A port that's busy because THIS account's own serverjack/serverjack-ttyd
+  # units are already active is not a clash to refuse -- it is exactly what
+  # a resumed bootstrap (install.json still "state": "installing" from a
+  # run whose install.sh got as far as starting the units before failing
+  # later) looks like. Without this, resuming that install would refuse
+  # itself out on its own already-running units -- found by exactly that
+  # happening (finding 2's own resume scenario tripped this). Same
+  # exemption install.sh's later, definitive port check uses.
+  if ! systemctl --user is-active --quiet serverjack serverjack-ttyd 2>/dev/null \
+      && ss -ltn 2>/dev/null | grep -q ":$port "; then
+    {
+      echo "Port $port already has something listening on it (checked before"
+      echo "writing anything)."
+      echo "This bootstrap will not fight another process for a port. Pick a free"
+      echo "one: curl ... | bash -s -- --port N --https-port N --title NAME"
+      echo "(what's using it: ss -ltnp | grep \":$port \" -- needs root to name the"
+      echo "owner if it belongs to a different account)."
+    } >&2
+    exit 3
+  fi
+}
+
 # Resolves what to install into TARGET_VERSION / TARGET_ARCHIVE_URL /
 # TARGET_SUMS_URL / TARGET_SHA256 (the last is empty when it must instead be
 # looked up in a downloaded SHA256SUMS, i.e. whenever --version names a
@@ -261,11 +325,34 @@ stage_and_activate() {  # $@ = install_args to persist (see write_install_json/f
   local releases="$share/releases"
   RELEASE_DIR="$releases/$TARGET_VERSION"
   mkdir -p "$releases"
-  # A leftover partial extraction from an earlier failed attempt at the same
-  # version must not be trusted; start clean.
-  rm -rf "$RELEASE_DIR"
-  mkdir -p "$RELEASE_DIR"
-  tar -xzf "$ARCHIVE_TMP" -C "$RELEASE_DIR" --strip-components=1
+
+  # A resumed bootstrap (install.json still says "state": "installing"
+  # because the LAST run got this far and then failed later -- in
+  # install.sh or serverjack-setup, after already starting the units) can
+  # land here with "current" and the running units already resolving to
+  # THIS exact directory. Unconditionally rm -rf-ing it (as if it were
+  # always a leftover partial extraction to distrust) deleted files out
+  # from under a live install. A COMPLETE prior extraction -- marked by a
+  # file written only after tar succeeds -- is trusted as-is and left
+  # completely untouched; only a missing or genuinely incomplete release
+  # dir (no marker: this version was never staged, or died mid-tar) gets
+  # (re)staged, and even then never by removing what "current" resolves to
+  # first -- same guard as serverjack-ctl's stage_release(): stage into a
+  # scratch directory and mv atomically into place, so $RELEASE_DIR only
+  # ever exists complete (with its marker) or not at all.
+  if [[ ! -f "$RELEASE_DIR/.serverjack-release-complete" ]]; then
+    local live_target=""
+    [[ -L "$share/current" ]] && live_target=$(readlink -f "$share/current" 2>/dev/null || true)
+    if [[ -n $live_target && $(readlink -f "$RELEASE_DIR" 2>/dev/null || true) == "$live_target" ]]; then
+      echo "internal error: refusing to replace $RELEASE_DIR -- \"current\" resolves to it and it is not marked complete" >&2
+      exit 1
+    fi
+    local scratch; scratch=$(mktemp -d "$releases/.stage.XXXXXX")
+    tar -xzf "$ARCHIVE_TMP" -C "$scratch" --strip-components=1
+    touch "$scratch/.serverjack-release-complete"
+    rm -rf "$RELEASE_DIR"
+    mv -T "$scratch" "$RELEASE_DIR"
+  fi
 
   local current="$share/current"
   if [[ -e $current && ! -L $current ]]; then
@@ -321,6 +408,7 @@ main() {
 
   refuse_root
   refuse_if_existing_install
+  check_legacy_and_port_clash ${install_args[@]+"${install_args[@]}"}
   resolve_target
 
   local share="$HOME/.local/share/serverjack"

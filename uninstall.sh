@@ -2,7 +2,11 @@
 # Remove serverjack's user units, its runtime sockets and its tailscale serve
 # entries. Leaves ~/.local/bin binaries, ~/.config/serverjack (env,
 # shortcuts.json, tools.json) and your tmux sessions alone -- delete those
-# yourself if you want them gone.
+# yourself if you want them gone. The one exception is
+# ~/.config/serverjack/install-path: that is not your data, only a record of
+# where a git checkout lives for channel detection, and leaving it behind
+# used to let a later `serverjack-ctl update` resurrect an already-
+# uninstalled checkout instead of refusing.
 set -uo pipefail
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 UNIT_DIR=$HOME/.config/systemd/user
@@ -127,4 +131,14 @@ if command -v tailscale >/dev/null 2>&1; then
     remove_owned_mapping "$mount" "https=$https path=$mount"
   fi
 fi
+# Not part of "your data" this deliberately keeps (env, shortcuts.json,
+# tools.json) -- it is only serverjack-ctl's/serverjack-setup's own record
+# of where a git checkout lives, read by detect_channel()/resolve_self() to
+# decide whether THIS looks like a live install. Leaving it behind used to
+# let `serverjack-ctl update` "succeed" by resurrecting an already-
+# uninstalled checkout with a fresh `git pull && bash install.sh` instead of
+# refusing -- see cmd_update()'s own no-units check in bin/serverjack-ctl,
+# the other half of this fix (finding 15).
+rm -f "$HOME/.config/serverjack/install-path"
+
 echo "removed. tmux sessions were not touched."

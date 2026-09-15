@@ -63,6 +63,14 @@
 #       still removes the units via the fallback, and reports it
 #   (v) a unit that genuinely can't be removed: `uninstall --yes` exits
 #       non-zero and leaves $SHARE in place, rather than reporting success
+#   (w) a bootstrap whose install.sh fails AFTER the units were already
+#       (re)started (a deliberately-late-failing release) is resumed by a
+#       second, identical `curl | bash`: the release directory "current"
+#       already resolves to is never removed in between, and the second
+#       run completes and answers 200
+#   (x) the bootstrap refuses BEFORE writing anything -- a legacy
+#       tmux-web/ttyd unit file, and separately a plain port-7680 listener
+#       that is neither -- leaving no ~/.local/share/serverjack at all
 #
 # ttyd and fzf are pre-fetched on the HOST (which has real internet, proven
 # earlier by the setup steps) at the exact pinned versions install.sh
@@ -181,15 +189,18 @@ V3="9.9.10-broken-test"
 V4="9.9.6-corrupt-test"
 V5="9.9.7-resume-test"
 V6="9.9.3-slow-test"
+V7="9.9.4-resume-live-test"
 [[ -n $V1 ]] || { echo "could not read VERSION from bin/serverjack" >&2; exit 1; }
 V3_CTL_MARKER="SJMI_TEST_MARKER_V3_CTL"
+V3_SETUP_MARKER="SJMI_TEST_MARKER_V3_SETUP"
 V6_SLOW_MARKER="/tmp/sjmi-slow-marker"
+V7_LATE_FAIL_MARKER="/tmp/sjmi-late-fail-marker"
 
 WEBROOT="$WORK/webroot"
 mkdir -p "$WEBROOT/v$V1" "$WEBROOT/v$V2" "$WEBROOT/v$V3" "$WEBROOT/v$V4" "$WEBROOT/v$V5" \
-  "$WEBROOT/v$V6" "$WEBROOT/trunc" "$WEBROOT/tools"
+  "$WEBROOT/v$V6" "$WEBROOT/v$V7" "$WEBROOT/trunc" "$WEBROOT/tools"
 
-build_variant() {  # $1 version  $2 dir-to-copy-from  $3 mode: real|bump|broken|flaky|slow
+build_variant() {  # $1 version  $2 dir-to-copy-from  $3 mode: real|bump|broken|flaky|flaky-late|slow
   local version=$1 src=$2 mode=$3
   local vdir="$WORK/src-$version"
   cp -a "$src" "$vdir"
@@ -204,6 +215,12 @@ build_variant() {  # $1 version  $2 dir-to-copy-from  $3 mode: real|bump|broken|
     # the auto-rollback, proving restore_from_backup() puts back the
     # previous (good) release's serverjack-ctl, not just its units/env.
     echo "# $V3_CTL_MARKER" >> "$vdir/bin/serverjack-ctl"
+    # Same idea for serverjack-setup (finding 5): install.sh overwrites
+    # ~/.local/bin/serverjack-setup on every run just like serverjack-ctl,
+    # but backup_current_state()/restore_from_backup() used to only cover
+    # the units, env and serverjack-ctl -- never this file -- so a rollback
+    # left V3's (broken release's) setup script installed.
+    echo "# $V3_SETUP_MARKER" >> "$vdir/bin/serverjack-setup"
   fi
   if [[ $mode == flaky ]]; then
     # Fails install.sh's very first real line (right after `set -euo
@@ -228,6 +245,38 @@ for i, line in enumerate(lines):
         break
 else:
     raise SystemExit("could not find insertion point in install.sh")
+with open(path, "w", encoding="utf-8") as fh:
+    fh.writelines(lines)
+PY
+  fi
+  if [[ $mode == flaky-late ]]; then
+    # Unlike "flaky" above (fails before install.sh touches anything
+    # durable), this fails install.sh right AFTER it has already enabled
+    # and (re)started the units -- "current" and the running units both
+    # already resolve to this release by the time the failure happens, so
+    # a resumed bootstrap lands in stage_and_activate() with a COMPLETE,
+    # live RELEASE_DIR already in place. Proves finding 2: that resume
+    # must never `rm -rf` it out from under the live install; only a
+    # missing ".serverjack-release-complete" marker earns a re-stage.
+    # Succeeds on any rerun (marker file), same mechanism as "flaky".
+    python3 - "$vdir/install.sh" "$V7_LATE_FAIL_MARKER" <<'PY'
+import sys
+
+path, marker = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as fh:
+    lines = fh.readlines()
+inject = (
+    'MARKER="%s"\n'
+    '[[ -f "$MARKER" ]] || { touch "$MARKER"; '
+    'echo "deliberately failing this run, AFTER units were started -- '
+    'tests/managed-install.sh finding 2" >&2; exit 1; }\n'
+) % marker
+for i, line in enumerate(lines):
+    if line.strip() == "systemctl --user restart serverjack serverjack-ttyd":
+        lines.insert(i + 1, inject)
+        break
+else:
+    raise SystemExit("could not find insertion point (unit restart line) in install.sh")
 with open(path, "w", encoding="utf-8") as fh:
     fh.writelines(lines)
 PY
@@ -261,13 +310,14 @@ PY
     "$WEBROOT/v$version/"
 }
 
-say "Building test releases V1=$V1 (real) V2=$V2 (bump) V3=$V3 (broken) V4=$V4 (to be corrupted) V5=$V5 (flaky) V6=$V6 (slow)"
+say "Building test releases V1=$V1 (real) V2=$V2 (bump) V3=$V3 (broken) V4=$V4 (to be corrupted) V5=$V5 (flaky) V6=$V6 (slow) V7=$V7 (flaky-late)"
 build_variant "$V1" "$REPO" real
 build_variant "$V2" "$REPO" bump
 build_variant "$V3" "$REPO" broken
 build_variant "$V4" "$REPO" bump
 build_variant "$V5" "$REPO" flaky
 build_variant "$V6" "$REPO" slow
+build_variant "$V7" "$REPO" flaky-late
 
 # One byte flipped in the SERVED archive only -- the bootstrap's own embedded
 # sha256 (and SHA256SUMS) still say what the archive should have hashed to.
@@ -352,11 +402,21 @@ docker exec "$TESTER" useradd -m -s /bin/bash tester3
 # so a dangling "current" or a permission-blocked unit dir doesn't leave
 # tester/tester2/tester3 in a weird state for whatever runs after them.
 docker exec "$TESTER" useradd -m -s /bin/bash tester4
+# tester5: dedicated to the resume-after-units-started scenario (round 3,
+# finding 2), kept off tester4 so it doesn't inherit anything from the
+# uninstall/partial-removal scenarios that run on that account afterward.
+docker exec "$TESTER" useradd -m -s /bin/bash tester5
+# tester6: dedicated to the legacy-install/port-clash scenario (round 3,
+# finding 6), which deliberately leaves a fake listener/unit file behind --
+# kept off every other account so a leftover can't shadow their own ports.
+docker exec "$TESTER" useradd -m -s /bin/bash tester6
 docker exec "$TESTER" loginctl enable-linger tester
 docker exec "$TESTER" loginctl enable-linger tester2
 docker exec "$TESTER" loginctl enable-linger tester3
 docker exec "$TESTER" loginctl enable-linger tester4
-for u in tester tester2 tester3 tester4; do
+docker exec "$TESTER" loginctl enable-linger tester5
+docker exec "$TESTER" loginctl enable-linger tester6
+for u in tester tester2 tester3 tester4 tester5 tester6; do
   for _ in $(seq 1 30); do
     docker exec "$TESTER" test -S "/run/user/$(docker exec "$TESTER" id -u "$u")/bus" 2>/dev/null && break
     sleep 0.5
@@ -369,17 +429,43 @@ TESTER_UID=$(docker exec "$TESTER" id -u tester)
 TESTER2_UID=$(docker exec "$TESTER" id -u tester2)
 TESTER3_UID=$(docker exec "$TESTER" id -u tester3)
 TESTER4_UID=$(docker exec "$TESTER" id -u tester4)
-run_as() {  # $1 = user ("tester".."tester4"), remaining args = one command string
+TESTER5_UID=$(docker exec "$TESTER" id -u tester5)
+TESTER6_UID=$(docker exec "$TESTER" id -u tester6)
+run_as() {  # $1 = user ("tester".."tester6"), remaining args = one command string
   local user=$1 uid; shift
   case "$user" in
     tester2) uid=$TESTER2_UID ;;
     tester3) uid=$TESTER3_UID ;;
     tester4) uid=$TESTER4_UID ;;
+    tester5) uid=$TESTER5_UID ;;
+    tester6) uid=$TESTER6_UID ;;
     *)       uid=$TESTER_UID ;;
   esac
   docker exec --user "$user" -e XDG_RUNTIME_DIR="/run/user/$uid" \
     -e SERVERJACK_RELEASE_BASE_URL="$BASE_URL" -e PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" \
     -w /tmp "$TESTER" bash -c "$*"
+}
+# Same as run_as(), but through a REAL pty (`script -qfc`, same mechanism
+# tests/guided-install-driver.py uses -- `/dev/tty`, which ask_line()/
+# ask_confirm() actually open, only exists behind one) with $2 written to
+# it once up front. For the one place in this file that has to answer an
+# interactive prompt (serverjack-setup's rerun menu) rather than always
+# hitting the no-controlling-terminal refusal plain `docker exec` (no -t)
+# gives every other command in this file -- which is deliberate there, not
+# a limitation to work around in general.
+run_as_answering() {  # $1 = user, $2 = the line to send once, remaining args = one command string
+  local user=$1 answer=$2 uid; shift 2
+  case "$user" in
+    tester2) uid=$TESTER2_UID ;;
+    tester3) uid=$TESTER3_UID ;;
+    tester4) uid=$TESTER4_UID ;;
+    tester5) uid=$TESTER5_UID ;;
+    tester6) uid=$TESTER6_UID ;;
+    *)       uid=$TESTER_UID ;;
+  esac
+  printf '%s\n' "$answer" | docker exec -i --user "$user" -e XDG_RUNTIME_DIR="/run/user/$uid" \
+    -e SERVERJACK_RELEASE_BASE_URL="$BASE_URL" -e PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin" \
+    -w /tmp "$TESTER" script -qfc "$*" /dev/null
 }
 
 # A fake `tailscale` on the container's PATH, ahead of nothing (there is no
@@ -533,6 +619,11 @@ result "tmux session still survived the failed update" "yes" "$alive"
 # must put back V2's serverjack-ctl too, not just the units/env -- finding 7.
 marker=$(run_as tester "grep -c $V3_CTL_MARKER ~/.local/bin/serverjack-ctl || true")
 result "serverjack-ctl itself was restored to the pre-update (V2) copy, not V3's" "0" "$marker"
+# Finding 5: backup/restore must cover ~/.local/bin/serverjack-setup too --
+# V3's install.sh already overwrote it, same as serverjack-ctl above, before
+# the health check ever ran.
+setup_marker=$(run_as tester "grep -c $V3_SETUP_MARKER ~/.local/bin/serverjack-setup || true")
+result "serverjack-setup itself was restored to the pre-update (V2) copy, not V3's" "0" "$setup_marker"
 
 # --------------------------------------------------- (e) no-tty update refused
 # Current is V2 here (post steps c/d) -- target V1 (a real change) rather
@@ -569,6 +660,19 @@ result "direct install.sh from a non-current release exits 1" "1" "$rc"
   || { echo "  FAIL points at serverjack-ctl update -- got: $out"; failures=$((failures + 1)); }
 code=$(run_as tester "~/.local/bin/serverjack-ctl status | sed -n 's/^current:  //p'")
 result "current version unaffected by the refused direct install.sh" "$V1" "$code"
+# Finding 11 (round 3): the guard above must run AFTER flag parsing, not
+# before -- otherwise --help/--version from this exact same non-current
+# release directory would ALSO hit it and refuse, even though a version
+# query changes nothing and has no business being blocked by a guard that
+# exists only to stop a REINSTALL from the wrong place.
+out=$(run_as tester "bash ~/.local/share/serverjack/releases/$V2/install.sh --help" 2>&1); rc=$?
+result "--help from that same non-current release still exits 0" "0" "$rc"
+[[ $out == *"Usage:"* ]] && echo "  PASS --help actually printed usage, not the managed-release refusal" \
+  || { echo "  FAIL --help actually printed usage, not the managed-release refusal -- got: $out"; failures=$((failures + 1)); }
+out=$(run_as tester "bash ~/.local/share/serverjack/releases/$V2/install.sh --version" 2>&1); rc=$?
+result "--version from that same non-current release still exits 0" "0" "$rc"
+[[ $out == "serverjack $V2" ]] && echo "  PASS --version reports $V2 (this release's own version), not a refusal" \
+  || { echo "  FAIL --version reports $V2 -- got: $out"; failures=$((failures + 1)); }
 
 # --------------------------------------- (o) ctl-side corrupted archive leak
 # The same corrupted V4 archive (h) uses below, but through serverjack-ctl's
@@ -621,7 +725,15 @@ result "install.json was never written after either truncated attempt" "no" "$ha
 
 # --------------------------------------------------------- (h) corrupted
 echo "== (h) a corrupted archive is refused"
-out=$(run_as tester2 "curl -fsSL $BASE_URL/v$V4/serverjack-bootstrap.sh | bash -s -- --no-serve" 2>&1); rc=$?
+# --port 7691, not the default 7680: tester (same network namespace, see
+# run_as()'s own comment on this) still owns 7680 at this point in the file
+# -- (i) doesn't uninstall it until below. Before finding 6's bootstrap-side
+# port/legacy check, install.sh's own (much later) port check was never
+# reached anyway, since the checksum mismatch this scenario is actually
+# about fails first; now that the port is checked BEFORE any download, a
+# collision here would report "port busy" and never even try the corrupted
+# archive, silently proving nothing about checksum verification at all.
+out=$(run_as tester2 "curl -fsSL $BASE_URL/v$V4/serverjack-bootstrap.sh | bash -s -- --no-serve --port 7691" 2>&1); rc=$?
 [[ $rc -ne 0 ]] && echo "  PASS corrupted-archive install exits non-zero" \
   || { echo "  FAIL corrupted-archive install exits non-zero -- got 0"; failures=$((failures + 1)); }
 [[ $out == *"checksum mismatch"* ]] && echo "  PASS output names a checksum mismatch" \
@@ -660,6 +772,17 @@ out=$(run_as tester2 "~/.local/bin/serverjack-ctl status" 2>&1)
   || { echo "  FAIL reports channel=git with the \"%\"/space path intact -- got: $out (setup: $setup_out)"; failures=$((failures + 1)); }
 [[ $out == *"current:  9.9.5-fake-git"* ]] && echo "  PASS also reads the version back out of that checkout" \
   || { echo "  FAIL also reads the version back out of that checkout -- got: $out"; failures=$((failures + 1)); }
+# Finding 15: detect_channel() alone (install-path + a real .git dir) is not
+# proof the install is still live -- tester2 never actually installed
+# anything (both earlier attempts on it, (g) and (h), refused before any
+# unit existed), so `update` must refuse instead of trying to resurrect it
+# with `git pull && bash install.sh` against a checkout that has no
+# install.sh to even run.
+out=$(run_as tester2 "~/.local/bin/serverjack-ctl update" 2>&1); rc=$?
+[[ $rc -ne 0 ]] && echo "  PASS update on a git-checkout record with no units exits non-zero (refuses to resurrect it)" \
+  || { echo "  FAIL update on a git-checkout record with no units exits non-zero -- got 0: $out"; failures=$((failures + 1)); }
+[[ $out == *"no serverjack units found"* ]] && echo "  PASS explains that no units exist here" \
+  || { echo "  FAIL explains that no units exist here -- got: $out"; failures=$((failures + 1)); }
 
 # ------------------------------------------------------------ (i) uninstall
 echo "== (i) serverjack-ctl uninstall --yes leaves config and tmux"
@@ -879,6 +1002,101 @@ result "\$SHARE was NOT removed when removal was incomplete" "present" "$share_k
 # Clean up so this doesn't count as a leaked/broken install for anything
 # that might run after it -- best effort, this is the last use of tester4.
 run_as tester4 "~/.local/bin/serverjack-ctl uninstall --yes" >/dev/null 2>&1 || true
+
+# ---- (w) resume after install.sh failed AFTER the units were already up
+echo "== (w) resume after install.sh failed AFTER units were already started"
+provision_ttyd_fzf tester5
+W_PORT=7700
+out=$(run_as tester5 "curl -fsSL $BASE_URL/v$V7/serverjack-bootstrap.sh | bash -s -- --no-serve --port $W_PORT" 2>&1); rc=$?
+result "tester5: first (deliberately late-failing) run exits 1" "1" "$rc"
+[[ $out == *"deliberately failing this run, AFTER units were started"* ]] && echo "  PASS output confirms the failure happened after unit start, not before" \
+  || { echo "  FAIL output confirms the failure happened after unit start -- got: $out"; failures=$((failures + 1)); }
+# By now "current" already resolves to releases/$V7 and install.json still
+# says "state": "installing" (both written by stage_and_activate() before
+# it ever handed off to install.sh) -- exactly the state a second `curl |
+# bash` must resume, not refuse or re-stage. Drop a sentinel INSIDE that
+# release directory: the only way it could vanish is a resumed bootstrap
+# wrongly `rm -rf`-ing $RELEASE_DIR (finding 2) before re-extracting a
+# fresh copy that would never contain it.
+current_target=$(run_as tester5 "readlink -f ~/.local/share/serverjack/current")
+release_target=$(run_as tester5 "readlink -f ~/.local/share/serverjack/releases/$V7")
+result "tester5: \"current\" already resolves to the V7 release dir" "$release_target" "$current_target"
+marker_present=$(run_as tester5 "test -f ~/.local/share/serverjack/releases/$V7/.serverjack-release-complete && echo present || echo gone")
+result "tester5: the release is already marked complete before the resume" "present" "$marker_present"
+run_as tester5 "touch ~/.local/share/serverjack/releases/$V7/.w-sentinel"
+# The first run already got as far as writing and starting the units
+# before it was made to fail, so on this second run serverjack-setup's own
+# handle_existing_install() correctly recognizes an existing install and
+# shows the interactive rerun menu instead of quietly redoing the whole
+# guided flow (this is itself evidence for finding 2: it means the SAME
+# release/units from the first run are still genuinely there, not
+# re-staged from scratch) -- answer it through a real pty (run_as_answering,
+# not plain run_as, which has no controlling terminal on purpose
+# everywhere else in this file), choosing "4" (nothing), the same
+# well-established choice (j) already exercises for a managed rerun.
+out=$(run_as_answering tester5 "" "curl -fsSL $BASE_URL/v$V7/serverjack-bootstrap.sh | bash -s -- --no-serve --port $W_PORT" 2>&1); rc=$?
+result "tester5: second (resuming) run exits 0" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+[[ $out == *"already installed here as a managed release"* ]] && echo "  PASS the resumed run reached the rerun menu (proving it did NOT re-download/re-extract a phantom fresh install)" \
+  || { echo "  FAIL the resumed run reached the rerun menu -- got: $out"; failures=$((failures + 1)); }
+sentinel_after=$(run_as tester5 "test -f ~/.local/share/serverjack/releases/$V7/.w-sentinel && echo present || echo gone")
+result "tester5: the sentinel dropped into the release dir survived the resume (it was never removed)" "present" "$sentinel_after"
+code=$(run_as tester5 "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$W_PORT/healthz")
+result "tester5: /healthz is 200 -- the install genuinely completed and works" "200" "$code"
+active=$(run_as tester5 "systemctl --user is-active serverjack serverjack-ttyd 2>/dev/null | paste -sd' ' -")
+result "tester5: both units active after the resume" "active active" "$active"
+
+# ---- (x) the bootstrap refuses before writing anything: legacy unit, port
+echo "== (x) legacy tmux-web unit: refused before anything is written"
+run_as tester6 "mkdir -p ~/.config/systemd/user && touch ~/.config/systemd/user/tmux-web.service"
+out=$(run_as tester6 "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash" 2>&1); rc=$?
+result "tester6: bootstrap exits 3 against a legacy unit" "3" "$rc"
+[[ $out == *"legacy tmux-web/ttyd install"* ]] && echo "  PASS explains the legacy install is what's blocking it" \
+  || { echo "  FAIL explains the legacy install is what's blocking it -- got: $out"; failures=$((failures + 1)); }
+share_created=$(run_as tester6 "test -e ~/.local/share/serverjack && echo present || echo gone")
+result "tester6: nothing under \$SHARE was created (legacy-unit refusal)" "gone" "$share_created"
+run_as tester6 "rm -f ~/.config/systemd/user/tmux-web.service"
+
+echo "== (x) a plain port-7680 listener (neither legacy nor serverjack): refused before anything is written"
+run_as tester6 "setsid python3 -m http.server 7680 >/tmp/tester6-fake-listener.log 2>&1 < /dev/null & disown; sleep 1"
+out=$(run_as tester6 "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash" 2>&1); rc=$?
+result "tester6: bootstrap exits 3 against a busy port 7680" "3" "$rc"
+[[ $out == *"Port 7680 already has something listening on it"* ]] && echo "  PASS explains the port is what's blocking it" \
+  || { echo "  FAIL explains the port is what's blocking it -- got: $out"; failures=$((failures + 1)); }
+share_created=$(run_as tester6 "test -e ~/.local/share/serverjack && echo present || echo gone")
+result "tester6: nothing under \$SHARE was created (port-clash refusal)" "gone" "$share_created"
+run_as tester6 "pkill -f 'http.server 7680'" >/dev/null 2>&1 || true
+
+# ------------------------------------------------- (y) uninstall removes install-path
+echo "== (y) uninstall removes ~/.config/serverjack/install-path (finding 15)"
+out=$(run_as tester6 "mkdir -p ~/checkout \
+  && curl -fsSL $BASE_URL/v$V1/serverjack-$V1.tar.gz -o /tmp/sjmi-v1-for-y.tar.gz \
+  && tar -xzf /tmp/sjmi-v1-for-y.tar.gz -C ~/checkout --strip-components=1 \
+  && mkdir -p ~/checkout/.git \
+  && cd ~/checkout && bash install.sh --no-serve --port 7712" 2>&1); rc=$?
+result "tester6: a real git-checkout install exits 0" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+has_path=$(run_as tester6 "test -f ~/.config/serverjack/install-path && echo present || echo gone")
+result "tester6: install-path exists right after a git-checkout install" "present" "$has_path"
+# serverjack-ctl's own `uninstall` is release-channel only (require_release_
+# channel) -- a git checkout is uninstalled by running its own uninstall.sh
+# directly, same as install.sh, which is exactly the path finding 15 is
+# about.
+out=$(run_as tester6 "bash ~/checkout/uninstall.sh" 2>&1); rc=$?
+result "tester6: the checkout's own uninstall.sh exits 0" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+has_path=$(run_as tester6 "test -f ~/.config/serverjack/install-path && echo present || echo gone")
+result "tester6: install-path is gone after uninstall" "gone" "$has_path"
+has_env=$(run_as tester6 "test -f ~/.config/serverjack/env && echo yes || echo no")
+result "tester6: ~/.config/serverjack/env (actual user data) still kept" "yes" "$has_env"
+# The other half of finding 15's fix: now that install-path is gone too,
+# detect_channel() can no longer call this channel=git at all, so `update`
+# refuses for that reason on its own -- proving install-path's removal is
+# what actually closes the resurrection path end to end, not just the
+# no-units check in isolation (already covered by tester2's (q) case above).
+out=$(run_as tester6 "~/.local/bin/serverjack-ctl update" 2>&1); rc=$?
+[[ $rc -ne 0 ]] && echo "  PASS update after a full uninstall exits non-zero (no resurrection)" \
+  || { echo "  FAIL update after a full uninstall exits non-zero -- got 0: $out"; failures=$((failures + 1)); }
 
 echo
 if (( failures > 0 )); then

@@ -40,48 +40,13 @@ set -euo pipefail
 USER=${USER:-$(id -un)}
 cd "$(dirname "$(readlink -f "$0")")"
 REPO=$PWD
+# shellcheck source=bin/serverjack-lib.sh
+source "$REPO/bin/serverjack-lib.sh"
 BIN=$HOME/.local/bin
 CFG_DIR=$HOME/.config/serverjack
 ENV_FILE=$CFG_DIR/env
 UNIT_DIR=$HOME/.config/systemd/user
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
-# A managed install (bootstrap/serverjack-bootstrap.sh.in, bin/serverjack-ctl)
-# runs this file from ~/.local/share/serverjack/releases/<v>/ -- but the
-# readlink -f above resolves straight through the "current" symlink to that
-# physical release directory, which is exactly the path an upgrade replaces.
-# Detect that case (by realpath prefix, so it also catches running an old
-# release's install.sh directly) and bake the STABLE "current" path into the
-# systemd units instead: a later `serverjack-ctl update` only has to swap the
-# symlink and restart, never touch or reinstall the units. Everything else in
-# this script still reads its own files from $REPO (the physical location),
-# which is correct -- only the path written INTO the unit files changes.
-SHARE_RELEASES=$HOME/.local/share/serverjack/releases
-SHARE_RELEASES=$(readlink -f "$SHARE_RELEASES" 2>/dev/null || printf '%s' "$SHARE_RELEASES")
-UNIT_REPO=$REPO
-case "$REPO" in
-  "$SHARE_RELEASES"/*)
-    # This copy of install.sh is physically inside a staged release, but
-    # that alone doesn't mean it's the ACTIVE one -- running an old, no
-    # longer current release's install.sh by hand would otherwise happily
-    # bake "current" into the units and start them, silently running
-    # whatever release current actually points at (which might not even be
-    # this one) instead of refusing. serverjack-ctl always swaps "current"
-    # to the release it's activating BEFORE calling install.sh, so for its
-    # own update/rollback/bootstrap flows this check already passes; the
-    # env var is only there as an explicit, documented trust boundary
-    # between "serverjack-ctl invoked me" and "someone ran this by hand".
-    CURRENT_REAL=$(readlink -f "$HOME/.local/share/serverjack/current" 2>/dev/null || true)
-    if [[ -z ${SERVERJACK_CTL_MANAGED:-} && $CURRENT_REAL != "$REPO" ]]; then
-      echo "this install.sh is inside a managed release ($REPO), but" >&2
-      echo "$HOME/.local/share/serverjack/current does not point at it (current -> ${CURRENT_REAL:-<none>})." >&2
-      echo "Run: ~/.local/bin/serverjack-ctl update  (or rollback), or point" >&2
-      echo "current at this release first, rather than running this copy of" >&2
-      echo "install.sh directly." >&2
-      exit 1
-    fi
-    UNIT_REPO=$HOME/.local/share/serverjack/current
-    ;;
-esac
 NO_SERVE=0
 OPT_LISTEN=
 # Empty unless passed on the command line. A flag sets the value in a NEW env
@@ -125,6 +90,51 @@ done
   || { echo "--https-port must be 443, 8443 or 10000 (tailscale serve only listens on those)" >&2; exit 1; }
 [[ $OPT_TITLE != *$'\n'* && $OPT_TITLE != *$'\r'* ]] \
   || { echo "--title cannot contain a newline" >&2; exit 1; }
+
+# A managed install (bootstrap/serverjack-bootstrap.sh.in, bin/serverjack-ctl)
+# runs this file from ~/.local/share/serverjack/releases/<v>/ -- but the
+# readlink -f above resolves straight through the "current" symlink to that
+# physical release directory, which is exactly the path an upgrade replaces.
+# Detect that case (by realpath prefix, so it also catches running an old
+# release's install.sh directly) and bake the STABLE "current" path into the
+# systemd units instead: a later `serverjack-ctl update` only has to swap the
+# symlink and restart, never touch or reinstall the units. Everything else in
+# this script still reads its own files from $REPO (the physical location),
+# which is correct -- only the path written INTO the unit files changes.
+#
+# Deliberately AFTER flag parsing (and its own -h/--help/--version exits)
+# above, not before: this refusal used to run first, so --help or --version
+# from an OLDER, no-longer-current staged release (CURRENT_REAL != REPO,
+# exactly the case this guards against) refused outright instead of just
+# answering -- there is nothing unsafe about a version query, only about
+# actually reinstalling from the wrong place.
+SHARE_RELEASES=$HOME/.local/share/serverjack/releases
+SHARE_RELEASES=$(readlink -f "$SHARE_RELEASES" 2>/dev/null || printf '%s' "$SHARE_RELEASES")
+UNIT_REPO=$REPO
+case "$REPO" in
+  "$SHARE_RELEASES"/*)
+    # This copy of install.sh is physically inside a staged release, but
+    # that alone doesn't mean it's the ACTIVE one -- running an old, no
+    # longer current release's install.sh by hand would otherwise happily
+    # bake "current" into the units and start them, silently running
+    # whatever release current actually points at (which might not even be
+    # this one) instead of refusing. serverjack-ctl always swaps "current"
+    # to the release it's activating BEFORE calling install.sh, so for its
+    # own update/rollback/bootstrap flows this check already passes; the
+    # env var is only there as an explicit, documented trust boundary
+    # between "serverjack-ctl invoked me" and "someone ran this by hand".
+    CURRENT_REAL=$(readlink -f "$HOME/.local/share/serverjack/current" 2>/dev/null || true)
+    if [[ -z ${SERVERJACK_CTL_MANAGED:-} && $CURRENT_REAL != "$REPO" ]]; then
+      echo "this install.sh is inside a managed release ($REPO), but" >&2
+      echo "$HOME/.local/share/serverjack/current does not point at it (current -> ${CURRENT_REAL:-<none>})." >&2
+      echo "Run: ~/.local/bin/serverjack-ctl update  (or rollback), or point" >&2
+      echo "current at this release first, rather than running this copy of" >&2
+      echo "install.sh directly." >&2
+      exit 1
+    fi
+    UNIT_REPO=$HOME/.local/share/serverjack/current
+    ;;
+esac
 
 FZF_VER=0.74.4
 # sha256 of every fzf asset we might download, copied from the project's own
@@ -366,10 +376,10 @@ else
 fi
 
 # ---------------------------------------------------------------- port clashes
-port_free() { ! ss -ltnp 2>/dev/null | grep -q ":$1 "; }
-# ss shows the listener as users:(("python3",pid=...)) -- we can't see WHOSE it
-# is without root, but the process name is enough to guess "another account's".
-port_holder() { ss -ltnp 2>/dev/null | grep ":$1 " | grep -o 'users:.*' | head -1; }
+# port_free/port_holder/serve_backend_for/local_http_code/wait_local_healthz
+# come from bin/serverjack-lib.sh (sourced above) -- shared with
+# bin/serverjack-setup so a fix to one (their `|| true` guards, the
+# local_http_code() "000000" fix) can't miss the other.
 # First free (n, n+1) pair at or after $1, so the remedy suggests real ports.
 free_pair() {
   local p=$1
@@ -386,15 +396,6 @@ free_https() {
     [[ -z "$(serve_backend_for "$p" /)" ]] && { printf '%s' "$p"; return; }
   done
   printf '8443'
-}
-# Backend `tailscale serve` currently proxies <https port><path> to, as it
-# prints it: "http://127.0.0.1:7680" or "unix:/run/user/1000/serverjack/web.sock".
-serve_backend_for() {
-  command -v tailscale >/dev/null 2>&1 || return 0
-  tailscale serve status 2>/dev/null | awk -v wp="$1" -v wpath="$2" '
-    /^https:\/\// { h=$1; sub(/^https:\/\//,"",h); n=split(h,a,":");
-                    cur=(n>1 ? a[n] : "443"); next }
-    /^\|--/ && cur==wp && $2==wpath { print $NF; exit }'
 }
 backend_is_ours() {
   local backend=$1
@@ -450,16 +451,34 @@ say "Starting user units"
 systemctl --user enable serverjack serverjack-ttyd >/dev/null 2>&1
 systemctl --user restart serverjack serverjack-ttyd
 sleep 1
-systemctl --user --no-pager is-active serverjack serverjack-ttyd | paste -sd' ' | sed 's/^/  serverjack serverjack-ttyd: /'
+# `|| true`: `is-active` with multiple units exits non-zero if either isn't
+# active yet -- under pipefail that's a real pipeline failure, and under
+# set -e it killed this script right here, silently, before it ever printed
+# a single health line. Same bug, same fix, as bin/serverjack-ctl's
+# cmd_status and bin/serverjack-setup's verify_and_report.
+{ systemctl --user --no-pager is-active serverjack serverjack-ttyd 2>/dev/null || true; } \
+  | paste -sd' ' | sed 's/^/  serverjack serverjack-ttyd: /'
 if [[ $LISTEN == tcp ]]; then
-  curl -s -o /dev/null -w "  landing  http://127.0.0.1:$SERVERJACK_PORT/  -> HTTP %{http_code}\n" "http://127.0.0.1:$SERVERJACK_PORT/healthz"
-  curl -s -o /dev/null -w "  terminal http://127.0.0.1:$SERVERJACK_PORT$SERVERJACK_TERM  -> HTTP %{http_code}\n" "http://127.0.0.1:$SERVERJACK_PORT$SERVERJACK_TERM"
+  healthz_args=(-o /dev/null "http://127.0.0.1:$SERVERJACK_PORT/healthz")
+  term_args=(-o /dev/null "http://127.0.0.1:$SERVERJACK_PORT$SERVERJACK_TERM")
+  landing_label="http://127.0.0.1:$SERVERJACK_PORT/"
+  term_label="http://127.0.0.1:$SERVERJACK_PORT$SERVERJACK_TERM"
 else
-  curl -s -o /dev/null --unix-socket "$RUNTIME/web.sock" \
-    -w "  landing  $RUNTIME/web.sock  -> HTTP %{http_code}\n" http://serverjack/healthz
-  curl -s -o /dev/null --unix-socket "$RUNTIME/web.sock" \
-    -w "  terminal $RUNTIME/web.sock$SERVERJACK_TERM -> HTTP %{http_code}\n" "http://serverjack$SERVERJACK_TERM"
+  healthz_args=(-o /dev/null --unix-socket "$RUNTIME/web.sock" http://serverjack/healthz)
+  term_args=(-o /dev/null --unix-socket "$RUNTIME/web.sock" "http://serverjack$SERVERJACK_TERM")
+  landing_label="$RUNTIME/web.sock"
+  term_label="$RUNTIME/web.sock$SERVERJACK_TERM"
 fi
+# A single immediate curl right after `systemctl restart` raced the app's
+# own startup time and could report a failing landing check on an install
+# that was actually fine a moment later -- poll instead, same helper
+# bin/serverjack-setup's own final check uses.
+if wait_local_healthz 30 "${healthz_args[@]}"; then
+  echo "  landing  $landing_label  -> HTTP 200"
+else
+  echo "  landing  $landing_label  -> HTTP $(local_http_code "${healthz_args[@]}")"
+fi
+echo "  terminal $term_label  -> HTTP $(local_http_code "${term_args[@]}")"
 
 # ---------------------------------------------------------------- boot persistence
 if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]]; then
