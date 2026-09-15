@@ -545,7 +545,8 @@ Flags (all optional):
 
 | Flag | Effect |
 |---|---|
-| `--no-serve` | skip the `tailscale serve` step entirely |
+| `--no-serve` | skip the `tailscale serve` step entirely (persisted — see `SERVERJACK_SERVE` below) |
+| `--serve` | explicitly re-enable it (undoes a persisted `--no-serve`) |
 | `--tcp` | listen on `127.0.0.1` ports (the default) |
 | `--unix` | listen on private Unix sockets instead — needs one `sudo tailscale serve` |
 | `--port N` | serverjack's port (default `7680`); implies `--tcp` |
@@ -693,6 +694,7 @@ a concurrent run waits rather than races.
 | `SERVERJACK_HOSTS` | unset | extra `Host:` values to answer to, comma-separated (`term.example.com`). `127.0.0.1`, `localhost`, `[::1]`, the hostname and the tailnet DNS name are always accepted; anything else gets `421` |
 | `SERVERJACK_PORT` | `7680` | serverjack's port (localhost) — `tcp` mode only |
 | `SERVERJACK_HTTPS_PORT` | `443` | HTTPS port `tailscale serve` publishes on, and the only one `uninstall.sh` turns off — `443`, `8443` or `10000`. Give a second account on the machine its own |
+| `SERVERJACK_SERVE` | `on` | `off` skips the `tailscale serve` step (what `--no-serve` sets; `--serve` sets it back). Only written by install.sh when `--no-serve`/`--serve` is actually passed, so a plain re-run with neither flag keeps whatever this already says — a git checkout's own update path (`git pull --ff-only && bash install.sh`) is exactly that plain invocation, so this is what keeps an earlier `--no-serve` choice from being silently forgotten on the next update |
 | `SERVERJACK_TITLE` | hostname | page title, tab title, PWA name |
 | `SERVERJACK_DIRS` | `~/projects:~/src:~/code:~` | directories offered when starting a session |
 | `SERVERJACK_TOOLS` | unset (all) | optional comma-separated tool ids: restricts and orders the agent choices, both the Start a session radios and the Agent servers rows, e.g. `claude,codex` |

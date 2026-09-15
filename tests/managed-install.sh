@@ -1136,6 +1136,30 @@ result "tester7: second curl|bash resumes the half-finished install" "1" "$conta
 [[ $out2 != *"already installed"* ]] && echo "  PASS tester7: does not refuse with \"already installed\"" \
   || { echo "  FAIL tester7: incorrectly refused as already installed -- got: $out2"; failures=$((failures + 1)); }
 
+echo "================================================================"
+echo "== (z) A5: --no-serve persists across a plain re-run for a git checkout"
+echo "     (serverjack-ctl update's own git-channel path, the rerun menu's"
+echo "     option 1, and the page's Update row all run exactly that)"
+run_as tester6 "rm -rf ~/checkout2 && mkdir -p ~/checkout2 \
+  && curl -fsSL $BASE_URL/v$V1/serverjack-$V1.tar.gz -o /tmp/sjmi-v1-for-z.tar.gz \
+  && tar -xzf /tmp/sjmi-v1-for-z.tar.gz -C ~/checkout2 --strip-components=1 \
+  && mkdir -p ~/checkout2/.git" >/dev/null 2>&1
+run_as tester6 "> $FAKE_TAILSCALE_LOG"
+out=$(run_as tester6 "cd ~/checkout2 && bash install.sh --no-serve --tcp --port 7780" 2>&1); rc=$?
+result "tester6: fresh git-checkout install with --no-serve exits 0" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+val=$(run_as tester6 "sed -n 's/^SERVERJACK_SERVE=//p' ~/.config/serverjack/env | tail -1 | tr -d '\"'")
+result "tester6: SERVERJACK_SERVE persisted as off after --no-serve" "off" "$val"
+
+# The actual A5 scenario: a PLAIN re-run with no flags at all.
+run_as tester6 "> $FAKE_TAILSCALE_LOG"
+out=$(run_as tester6 "cd ~/checkout2 && bash install.sh" 2>&1); rc=$?
+result "tester6: plain re-run (no flags) exits 0" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+tsc=$(run_as tester6 "grep -c '^serve' $FAKE_TAILSCALE_LOG || true")
+result "tester6: A5 -- persisted --no-serve means a plain re-run never calls tailscale serve" "0" "$tsc"
+run_as tester6 "cd ~/checkout2 && bash uninstall.sh" >/dev/null 2>&1
+
 echo
 if (( failures > 0 )); then
   echo "$failures managed-install check(s) failed" >&2

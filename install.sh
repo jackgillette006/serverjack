@@ -53,6 +53,11 @@ ENV_FILE=$CFG_DIR/env
 UNIT_DIR=$HOME/.config/systemd/user
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 NO_SERVE=0
+# A5: whether --no-serve/--serve was actually passed on THIS run, as
+# opposed to NO_SERVE's default of 0 -- read further down (once the env
+# file is available) to decide whether to fall back to the persisted
+# SERVERJACK_SERVE preference instead of silently defaulting to "serve".
+NO_SERVE_SET=0
 OPT_LISTEN=
 # Empty unless passed on the command line. A flag sets the value in a NEW env
 # file, and rewrites that one line in an existing one -- everything else kept.
@@ -64,7 +69,11 @@ OPT_ALLOW_SET=0; OPT_ALLOW=
 usage() { sed -n '2,20p' "$0"; exit "${1:-0}"; }
 while (( $# )); do
   case "$1" in
-    --no-serve)   NO_SERVE=1 ;;
+    --no-serve)   NO_SERVE=1; NO_SERVE_SET=1 ;;
+    # A5: the explicit opposite -- re-enables serve on a git-checkout
+    # account that previously persisted SERVERJACK_SERVE=off, without
+    # having to hand-edit the env file.
+    --serve)      NO_SERVE=0; NO_SERVE_SET=1 ;;
     --unix)       OPT_LISTEN=unix ;;
     --tcp)        OPT_LISTEN=tcp ;;
     --port)       OPT_PORT=${2:?--port needs a number}; shift ;;
@@ -259,6 +268,15 @@ SERVERJACK_PORT=${OPT_PORT:-7680}
 # HTTPS port \`tailscale serve\` publishes on (443, 8443 or 10000). serve is
 # machine-wide, so a second account on this box needs its own port here.
 SERVERJACK_HTTPS_PORT=${OPT_HTTPS_PORT:-443}
+# Whether install.sh publishes with tailscale serve at all: "on" (default)
+# or "off" (what --no-serve sets; --serve sets it back to "on"). Only
+# written here when a run actually passed --no-serve/--serve -- a plain
+# re-run with neither flag leaves this line, and whichever value it holds,
+# untouched. This is what makes \`bash install.sh\` with no flags (a git
+# checkout's own update path: \`git pull --ff-only && bash install.sh\`)
+# keep an earlier --no-serve choice instead of silently starting to publish
+# again on the next run.
+SERVERJACK_SERVE=$( (( NO_SERVE )) && echo off || echo on )
 SERVERJACK_TITLE=${OPT_TITLE:-$(hostname -s)}
 # Directories offered when starting a session (colon-separated, ~ ok)
 SERVERJACK_DIRS=~/projects:~/src:~/code:~
@@ -347,6 +365,18 @@ SERVERJACK_PORT=${OPT_PORT:-$(cfg SERVERJACK_PORT 7680)}
 HTTPS_PORT=${OPT_HTTPS_PORT:-$(cfg SERVERJACK_HTTPS_PORT 443)}
 SERVERJACK_TERM=$(cfg SERVERJACK_TERM /term/)
 LEGACY_TTYD_PORT=$(cfg TTYD_PORT '')
+# A5: neither --no-serve nor --serve was passed on THIS run -- fall back to
+# whatever was persisted last time (default "on", i.e. NO_SERVE stays 0,
+# same as every install before this setting existed). Without this, a
+# git-checkout account that deliberately installed with --no-serve had that
+# choice silently forgotten on every later PLAIN `bash install.sh` (what
+# `serverjack-ctl update`'s git-channel branch, the rerun menu's option 1,
+# and the page's own "Update serverjack" row all run, with no flags of
+# their own) -- serve would quietly turn back on. A managed install has no
+# such gap: its install_args (including --no-serve) are replayed on every
+# update/rollback via install.json -- this is the git-checkout equivalent
+# of that persistence.
+(( NO_SERVE_SET )) || { [[ $(cfg SERVERJACK_SERVE on) == off ]] && NO_SERVE=1; }
 # An env file written before this setting existed has no line for it and gets
 # the default, tcp -- which is what it was already doing, so an install that is
 # only being refreshed keeps working and its serve mounts stay correct.
@@ -393,6 +423,11 @@ fi
 # re-run with no --allow must never reset an already-configured allow-list
 # back to empty.
 (( OPT_ALLOW_SET )) && setcfg SERVERJACK_ALLOW "$OPT_ALLOW"
+# A5: persist the serve on/off preference whenever it was actually chosen
+# on this run, so the NEXT plain `bash install.sh` (no flags) honors it --
+# see the SERVERJACK_SERVE fallback above for why this matters most for a
+# git checkout, whose update path is exactly that plain invocation.
+(( NO_SERVE_SET )) && setcfg SERVERJACK_SERVE "$( (( NO_SERVE )) && echo off || echo on )"
 RUNTIME=${XDG_RUNTIME_DIR}/serverjack
 mkdir -p "$RUNTIME"; chmod 700 "$RUNTIME"
 if [[ $LISTEN == tcp ]]; then
