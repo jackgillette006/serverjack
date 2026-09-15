@@ -660,8 +660,11 @@ echo "== (d) updating to a broken release auto-rolls-back"
 out=$(run_as tester "~/.local/bin/serverjack-ctl update --version $V3 --yes" 2>&1); rc=$?
 [[ $rc -ne 0 ]] && echo "  PASS update to the broken release exits non-zero" \
   || { echo "  FAIL update to the broken release exits non-zero -- got 0"; failures=$((failures + 1)); }
-[[ $out == *"rolling back"* ]] && echo "  PASS output says it is rolling back" \
-  || { echo "  FAIL output says it is rolling back -- got: $out"; failures=$((failures + 1)); }
+# "restoring", not "rolling back": A9's activate_release() is now shared by
+# update, resume and rollback, so its own failure message is deliberately
+# generic (it applies to all three, not just an update auto-rollback).
+[[ $out == *"restoring"* ]] && echo "  PASS output says it is restoring the previous version" \
+  || { echo "  FAIL output says it is restoring the previous version -- got: $out"; failures=$((failures + 1)); }
 code=$(run_as tester "~/.local/bin/serverjack-ctl status | sed -n 's/^current:  //p'")
 result "current version is back to V2 (previous good)" "$V2" "$code"
 code=$(run_as tester "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7680/healthz")
