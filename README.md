@@ -184,6 +184,15 @@ from the server with a phone in your hand.
 Pick **Shell** or an installed agent, a directory (defaults to `~`), and tap
 **Start**:
 
+The directory field is a combobox, not a dropdown: start typing part of a
+folder's name (anywhere it's nested, not just top-level) and a matching list
+drops in below. Arrow keys move the highlight, Enter picks the highlighted
+suggestion, and **Tab** fills it in with a trailing `/` and shows *its*
+children too, so you can drill down the same way shell completion works.
+Typing (or pasting) a full path works exactly as before — any path can be
+typed, DIR_ROOTS or not, and one that doesn't exist yet is created when the
+session starts.
+
 - **Shell** opens a plain login shell, or — type a command first — runs it
   **in front of** that login shell: an interactive `sudo` prompt works,
   anything that asks a question (apt, a login flow, a confirmation) works,
@@ -817,6 +826,7 @@ Works, with four things to know first:
 | `SERVERJACK_SERVE` | `on` | `off` skips the `tailscale serve` step (what `--no-serve` sets; `--serve` sets it back). Only written by install.sh when `--no-serve`/`--serve` is actually passed, so a plain re-run with neither flag keeps whatever this already says — a git checkout's own update path (`git pull --ff-only && bash install.sh`) is exactly that plain invocation, so this is what keeps an earlier `--no-serve` choice from being silently forgotten on the next update |
 | `SERVERJACK_TITLE` | hostname | page title, tab title, PWA name |
 | `SERVERJACK_DIRS` | `~/projects:~/src:~/code:~` | directories offered when starting a session |
+| `SERVERJACK_DIR_DEPTH` | `5` | how many levels deep the directory picker's search index walks under each `SERVERJACK_DIRS` root |
 | `SERVERJACK_TOOLS` | unset (all) | optional comma-separated tool ids: restricts and orders the agent choices, both the Start a session radios and the Agent servers rows, e.g. `claude,codex` |
 | `SERVERJACK_TERM` | `/term/` | URL path serverjack serves the terminal on (proxying it to ttyd's socket) |
 | `TTYD_EXTRA_ARGS` | unset | optional ttyd client options, shell-parsed as data with no expansion. Allowed flags: `-t`/`--client-option`, `-T`/`--terminal-type`, `-m`/`--max-clients`, and `-P`/`--ping-interval`. Listener, auth, command, base-path, origin and write-access flags are refused. A JSON value (e.g. `-t theme={"background":"#123456"}`) needs its inner `"` escaped as `\"` -- the shell-style parsing that keeps this safe also treats a bare `"..."` as quoting syntax and strips it, corrupting the JSON otherwise |

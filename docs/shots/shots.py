@@ -99,3 +99,23 @@ with sync_playwright() as p:
     ctx.close()
     b.close()
     print("captured iphone-term.png")
+
+    # ------------------------------------------------------- dir-search ----
+    # The Start card's directory combobox, mid-search: "3d" typed, the
+    # suggestion list open showing both the top-level "3d-lab" fixture and
+    # the nested "projects/ai/3d-lab" one fixture.sh adds just for this shot
+    # (told apart by their muted path prefix).
+    b = p.webkit.launch()
+    ctx = b.new_context(**p.devices["iPhone 14"])
+    page = ctx.new_page()
+    page.goto(f"{BASE}/", wait_until="networkidle")
+    page.wait_for_selector("h2:text('Sessions')")
+    dirbox = page.locator("#startform #dir")
+    dirbox.click()
+    dirbox.fill("3d")
+    page.wait_for_selector(".dirpick .dirlist li:has-text('3d-lab')")
+    page.wait_for_timeout(300)
+    page.screenshot(path=os.path.join(OUT, "dir-search.png"), full_page=True)
+    ctx.close()
+    b.close()
+    print("captured dir-search.png")

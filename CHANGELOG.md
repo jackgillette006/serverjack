@@ -16,6 +16,22 @@ and this project uses [Semantic Versioning](https://semver.org/).
   for anyone who lands on 7680 without going through the guided prompt. See
   the README's new [WSL](README.md#wsl) note.
 
+### Added
+
+- Every directory picker (Start a session, each tool card, Add a shortcut,
+  the terminal's new-session panel) is now one combobox with search,
+  autocomplete and Tab completion, replacing the old `<select>` + "…or type
+  a path" input pair. Typing part of a folder's name finds it anywhere it's
+  nested, not just at the top level ("3d-lab" finds
+  `~/projects/ai/3d-lab`); arrow keys move the highlight, Enter picks it,
+  and Tab fills the highlighted-or-first match with a trailing `/` and
+  shows its children, so it drills down the way shell completion does.
+  Backed by a new `GET /api/dirs?q=` (`dir_search()` in `bin/serverjack`),
+  behind the same identity check as `/api/sessions`. A typed path that
+  doesn't exist yet is still created when the session starts; a picked
+  suggestion always exists already. New `SERVERJACK_DIR_DEPTH` (default 5)
+  caps how deep the search index walks under each `SERVERJACK_DIRS` root.
+
 ## 1.4.0 - 2026-09-15
 
 ### Fixed (round 5 review: security blockers, 17 install-flow findings, 7 installer gaps)

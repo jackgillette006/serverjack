@@ -1,12 +1,11 @@
 """Driver for docs/shots/make-gif.sh, run inside the Playwright container.
 
 Records a video of the demo flow against the same isolated, neutral
-serverjack instance make.sh uses for the three static screenshots (see
+serverjack instance make.sh uses for the README screenshots (see
 make-gif.sh, which sets it up identically): land on the phone-emulated
 landing page, pick the "OpenCode" pill, type the ~/projects/3d-lab path
-into the "...or type a path" input (the <select> picker doesn't render as a
-native popup under emulation, so typing is the only part of the directory
-picker that's actually visible on screen), tap Start, sit on the live
+into the directory combobox (character by character, so the live
+suggestion list dropping in is visible too), tap Start, sit on the live
 terminal while the real OpenCode TUI opens in that directory, tap back to
 the session list.
 
@@ -149,13 +148,15 @@ with sync_playwright() as p:
     tap(page.locator('.seg label:has(input[name=what][value="opencode"])'))
     page.wait_for_timeout(800)
 
-    # The <select> directory picker never renders as a native popup under
-    # emulation, so it's invisible in a recording -- type the path into the
-    # "...or type a path" input instead, character by character, so a viewer
-    # can actually see the directory being chosen.
-    path_input = page.locator('#startform input[name="dir_custom"]')
+    # The directory field is the picker itself -- type the path in character
+    # by character so a viewer can see it being chosen (the live suggestion
+    # list drops in as they go), then close that list before moving on so
+    # it isn't still open over the Start button in the next shot.
+    path_input = page.locator('#startform input[name="dir"]')
     tap(path_input)
     path_input.press_sequentially("~/projects/3d-lab", delay=83)   # ~1.5s total
+    page.wait_for_timeout(400)   # let the last debounced /api/dirs fetch land
+    page.keyboard.press("Escape")
     page.wait_for_timeout(200)
 
     # --------------------------------------------------------------- start --

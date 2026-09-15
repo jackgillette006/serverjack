@@ -103,6 +103,13 @@ chmod +x "$NEUTRAL_REPO"/bin/*
 FAKE_HOME="$RUN_ROOT/home"
 mkdir -p "$FAKE_HOME"/projects/3d-lab/{models,renders} "$FAKE_HOME"/projects/game/{src,assets} \
   "$FAKE_HOME"/projects/media-stack "$FAKE_HOME"/src
+# A nested project dir alongside the top-level ones above, purely for the
+# directory-picker's dir-search.png shot: typing "3d" has to turn up a real
+# depth-3 match (projects -> ai -> 3d-lab), not just the top-level "3d-lab"
+# every other shot already uses -- the picker shows both, told apart by their
+# muted path prefix, which is the whole point of "type just the nested folder
+# name too".
+mkdir -p "$FAKE_HOME/projects/ai/3d-lab"
 : > "$FAKE_HOME/projects/game/Cargo.toml"
 : > "$FAKE_HOME/projects/game/src/main.rs"
 : > "$FAKE_HOME/projects/media-stack/docker-compose.yml"
