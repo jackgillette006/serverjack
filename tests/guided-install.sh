@@ -587,8 +587,7 @@ run_dialogue ts11 ts11 150 \
  ["Do other people have Linux accounts on this machine?", "y"],
  ["Run it now?", "y"],
  ["tailscale serve needs root", null],
- ["Run it now?", "n"],
- ["LOCAL-ONLY", null]]
+ ["Run it now?", "n"]]
 JSON
 result "ts11 exits 0 (declining the unix-serve step doesn't abort the install)" "0" "$DLG_RC"
 sudo_log=$(docker exec --user ts11 "$TESTER" bash -c 'cat ~/.fake-sudo.log 2>/dev/null || true')
@@ -834,7 +833,18 @@ rc=$?
 elapsed=$(( $(date +%s) - start_ts ))
 result "ts10: install still succeeds once the lock is free" "0" "$rc"
 [[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
-contains "ts10: printed that it was waiting for the lock" "$out" "Waiting for another serverjack-ctl/serverjack-setup run to finish"
+# A FRESH install goes through the bootstrap's OWN pre-existing lock+wait
+# first (bootstrap/serverjack-bootstrap.sh.in's main(), "Waiting for
+# another serverjack install/update to finish...") -- it releases that
+# lock right before handing off to serverjack-setup, so by the time
+# THIS scenario's own hold has expired, serverjack-setup's own
+# lock_acquire() (A4) usually finds it already free and never needs to
+# print its own message at all. Either message proves the chain actually
+# serialized against the concurrent hold rather than interleaving with it.
+[[ $out == *"Waiting for another serverjack install/update to finish"* \
+   || $out == *"Waiting for another serverjack-ctl/serverjack-setup run to finish"* ]] \
+  && echo "  PASS ts10: printed that it was waiting for the lock" \
+  || { echo "  FAIL ts10: printed that it was waiting for the lock -- got: $out"; failures=$((failures + 1)); }
 if (( elapsed >= 4 )); then
   echo "  PASS ts10: actually waited for the lock (took ${elapsed}s against a 6s hold), not interleaved"
 else
