@@ -199,6 +199,9 @@ SERVERJACK_TERM=/term/
 #SERVERJACK_HOSTS=term.example.com
 # Extra ttyd flags (rarely needed -- serverjack strips the /term prefix itself)
 TTYD_EXTRA_ARGS=
+# The terminal uses the app's own color theme by default. Set to off (or
+# 0/no/false) to leave ttyd's stock xterm.js look instead.
+#SERVERJACK_TERM_THEME=off
 # user@host used by "Copy SSH command" / "Open in SSH app" (auto: tailnet name); "off" hides them
 #SERVERJACK_SSH=
 # Sessions opened from the page get tmux's status line hidden (the page bar

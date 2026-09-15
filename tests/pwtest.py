@@ -32,6 +32,16 @@ with sync_playwright() as p:
     ok("bar shows current tab", page.locator("#tabs .tab.on").inner_text() == SESS)
     ok("terminal textarea focused", page.evaluate("document.getElementById('frame').contentDocument.activeElement.className.includes('xterm-helper-textarea')"))
 
+    # bin/serverjack-ttyd's default -t theme=... (SERVERJACK_TERM_THEME unset
+    # in tests/run.sh's common env, so this instance gets it) should paint
+    # the terminal in the app's own --bg-primary (#080f0e), not xterm.js's
+    # stock look. .xterm-screen and .xterm are transparent in this ttyd/
+    # xterm.js build (checked directly: getComputedStyle on both reports
+    # rgba(0,0,0,0) even with a theme applied) -- .xterm-viewport is the
+    # element that actually carries the painted background color.
+    bg = fr.locator(".xterm-viewport").evaluate("el => getComputedStyle(el).backgroundColor")
+    ok("terminal background matches the app's --bg-primary token (#080f0e)", bg == "rgb(8, 15, 14)", bg)
+
     # typing reaches the shell
     page.keyboard.type("echo TYPED_OK"); page.keyboard.press("Enter"); time.sleep(0.8)
     ok("typing reaches tmux", "TYPED_OK" in pane(), pane()[-200:])

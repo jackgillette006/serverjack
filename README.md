@@ -11,7 +11,7 @@ Your coding agents, from your phone. Lightweight, private, self-hosted.
 
 [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [FAQ](docs/FAQ.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
 
-![Demo: picking Claude Code and a project directory, starting a session, and landing in a live terminal, on a phone](docs/shots/demo.gif)
+![Demo: picking OpenCode and a project directory, starting a session, and landing in a live terminal, on a phone](docs/shots/demo.gif)
 
 | Desktop | iPhone — landing | iPhone — terminal |
 |---|---|---|
@@ -541,6 +541,7 @@ so when it takes one down. `uninstall.sh` turns off the `/` mount (and that old
 | `SERVERJACK_TOOLS` | unset (all) | optional comma-separated tool ids: restricts and orders the agent choices, both the Start a session radios and the Agent servers rows, e.g. `claude,codex` |
 | `SERVERJACK_TERM` | `/term/` | URL path serverjack serves the terminal on (proxying it to ttyd's socket) |
 | `TTYD_EXTRA_ARGS` | unset | optional ttyd client options, shell-parsed as data with no expansion. Allowed flags: `-t`/`--client-option`, `-T`/`--terminal-type`, `-m`/`--max-clients`, and `-P`/`--ping-interval`. Listener, auth, command, base-path, origin and write-access flags are refused |
+| `SERVERJACK_TERM_THEME` | unset (on) | `off` (or `0`/`no`/`false`) skips the default terminal color theme (`bin/serverjack-ttyd`'s `-t theme=...`, built from the app's own tokens), leaving ttyd's stock xterm.js look. A `-t theme=...` of your own in `TTYD_EXTRA_ARGS` always overrides the default regardless of this setting |
 | `SERVERJACK_TMUX_STATUS` | `off` | sessions opened from the page get tmux's status line turned off (the bar shows tabs and window count instead); `on` leaves tmux alone |
 | `SERVERJACK_SSH` | `auto` | `user@host` for the SSH menu items (tailnet DNS name if Tailscale is up, else hostname); `off` hides them |
 | `SERVERJACK_FX` | unset (on) | `off` (or `0`/`no`/`false`) turns the CRT effects off by default; each browser can still flip them with the **CRT fx** toggle |

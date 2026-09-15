@@ -6,25 +6,27 @@
 #   bash docs/shots/make-gif.sh
 #
 # The fixture setup (neutral repo copy, fake $HOME with example project dirs
-# and a tiny git history, a fixture "claude" binary, scratch
+# and a tiny git history, the real OpenCode binary copied in, scratch
 # SERVERJACK_CONFIG, isolated tmux server, three seeded sessions,
 # serverjack + ttyd startup and health checks) lives in fixture.sh, shared
 # with make.sh so the README stills and this GIF always come from the same
-# data -- read that file first if this needs changing. This script does not
-# depend on anything under tests/ at runtime, and it never touches the real
-# serverjack units, the real tmux server, or ~/.config/serverjack.
+# data -- read that file first if this needs changing (it also requires
+# OpenCode to already be installed on this machine, and fails loudly if it
+# isn't -- this GIF is meant to show the real program, never a fake one).
+# This script does not depend on anything under tests/ at runtime, and it
+# never touches the real serverjack units, the real tmux server, or
+# ~/.config/serverjack.
 #
 # What's different from make.sh: instead of three static screenshots, this
 # drives gif_record.py to record a Playwright video (WebKit, iPhone 14
 # emulation, device_scale_factor=2) of the demo flow -- land on the
-# phone-emulated landing page, pick the Claude Code pill, type
+# phone-emulated landing page, pick the OpenCode pill, type
 # ~/projects/3d-lab into the "...or type a path" input (the <select>
 # picker never renders as a native popup under emulation, so typing is the
 # only part of it that's actually visible), tap Start, sit on the live
-# terminal while this script feeds the new session a short, honest,
-# neutral transcript directly over tmux (see gif_record.py's docstring for
-# why host-side, not live browser typing), tap back to the list -- then
-# converts the recording to a GIF and an MP4 with ffmpeg in a container.
+# terminal while the real OpenCode TUI opens in that directory (see
+# gif_record.py's docstring), tap back to the list -- then converts the
+# recording to a GIF and an MP4 with ffmpeg in a container.
 set -Eeuo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 IMG=mcr.microsoft.com/playwright/python:v1.62.0-noble@sha256:aa81288e738725378becba5b3e06cb0f3a7f012a610e87e8d767a090ea3f740d
@@ -56,7 +58,7 @@ PY
 BASE="http://127.0.0.1:$PORT"
 
 common=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE="Home server" SERVERJACK_FX=off
-        SERVERJACK_CONFIG="$CFG" SERVERJACK_TOOLS=claude SERVERJACK_SSH=off
+        SERVERJACK_CONFIG="$CFG" SERVERJACK_TOOLS=opencode SERVERJACK_SSH=off
         SERVERJACK_DIRS="~/projects/3d-lab:~/projects/game:~/projects/media-stack:~/src:~"
         HOME="$FAKE_HOME" XDG_RUNTIME_DIR="$RT")
 env "${common[@]}" SERVERJACK_PORT="$PORT" \
@@ -88,14 +90,12 @@ CID=$(docker run -d --network host \
     python3 gif_record.py')
 
 # gif_record.py writes the new session name to $OUT/session_name.txt as soon
-# as Start lands it on the terminal page; feed it a short, honest, neutral
-# transcript over the host's own tmux (same binary/version as the server,
-# unlike an apt-installed tmux inside the container) the moment we see it --
-# `ls --color=always` and `git status` land almost instantly, before the
-# browser has finished attaching to the terminal, so they read as a
-# pre-existing session rather than something typed live; the final `ls` is
-# sent the same way but is the one thing meant to look "live" in the
-# recording -- then unblock the recording.
+# as Start lands it on the terminal page -- read it just so the regression
+# check below knows which tmux session to look at. Nothing is fed into this
+# pane over tmux any more: its foreground process is the real OpenCode TUI
+# (not a shell), so send-keys here would type raw characters into its chat
+# input instead of running a command. gif_record.py itself just waits for
+# the TUI to render and holds on it.
 name=""
 for _ in $(seq 1 100); do
   if [[ -s "$OUT/session_name.txt" ]]; then
@@ -115,19 +115,13 @@ if [[ -z $name ]]; then
   docker logs "$CID" 2>&1 | grep -v 'GL Driver\|maybe unknown option' >&2 || true
   exit 1
 fi
-"${T[@]}" send-keys -t "$name" "ls --color=always" Enter
-sleep 0.3
-"${T[@]}" send-keys -t "$name" "git status" Enter
-sleep 0.4
-"${T[@]}" send-keys -t "$name" "ls" Enter
-: > "$OUT/typed_done"
-sleep 0.3   # let the last `ls` finish rendering before the check below
 
 # Regression check for command_args() in bin/serverjack: the recorded pane's
-# echoed "$ <cmd>" line must show the plain configured command ("claude"),
-# never a resolved TOOL_PATH location -- that would bake this throwaway
-# run's own /tmp path into a public asset (the demo GIF). Fail loudly rather
-# than ship a GIF that leaks it.
+# echoed "$ <cmd>" line (printed just before OpenCode's TUI takes over the
+# screen, so it's still in tmux's scrollback) must show the plain configured
+# command ("opencode"), never a resolved TOOL_PATH location -- that would
+# bake this throwaway run's own /tmp path into a public asset (the demo
+# GIF). Fail loudly rather than ship a GIF that leaks it.
 pane_text=$("${T[@]}" capture-pane -p -J -t "=$name:" -S -200)
 if grep -q '/tmp/' <<<"$pane_text"; then
   echo "error: the recorded pane shows a /tmp/ path -- command_args() must leave the" >&2

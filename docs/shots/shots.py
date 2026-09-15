@@ -21,11 +21,11 @@ with sync_playwright() as p:
     page = ctx.new_page()
     page.goto(f"{BASE}/", wait_until="networkidle")
     page.wait_for_selector("h2:text('Sessions')")
-    # Pick the Claude Code pill so the Start card's hint reads "Runs claude"
+    # Pick the OpenCode pill so the Start card's hint reads "Runs opencode"
     # here too, same as the demo GIF (see gif_record.py) -- the README still
     # and the GIF should show the exact same Start card, not the bare
     # Shell-selected default.
-    page.click('.seg label:has(input[name=what][value="claude"])')
+    page.click('.seg label:has(input[name=what][value="opencode"])')
     page.wait_for_selector("#toolhint:has-text('Runs')")
     page.wait_for_timeout(400)          # let layout settle before capture
     page.screenshot(path=os.path.join(OUT, "desktop.png"), full_page=True)
