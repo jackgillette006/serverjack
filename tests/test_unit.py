@@ -373,6 +373,7 @@ class DirSearchTests(unittest.TestCase):
     def setUp(self):
         self.old_home, self.old_roots = mod.HOME, mod.DIR_ROOTS
         self.old_depth = mod.DIR_DEPTH
+        self.old_prefs_file = mod.PREFS_FILE
         self.fake_home = tempfile.mkdtemp(prefix="sj-unit-dirsearch-home-")
         _tmpdirs.append(self.fake_home)
         self.root = os.path.join(self.fake_home, "work")
@@ -393,10 +394,24 @@ class DirSearchTests(unittest.TestCase):
         os.makedirs(os.path.join(self.fake_home, "projects"))
         mod.HOME = self.fake_home
         mod.DIR_ROOTS = [self.root, self.root2]
+        # No prefs.json yet -- points at a file that doesn't exist, so
+        # default_dir() falls back to HOME. That would make _index_roots()
+        # add fake_home (an ancestor of both self.root and self.root2, so
+        # "not already under one" of DIR_ROOTS) as an extra index root,
+        # double-indexing everything under it at different depths and
+        # breaking depth-sensitive assertions elsewhere in this class --
+        # so pin the default to self.root instead, already a DIR_ROOTS
+        # entry, leaving every existing fixture/assertion untouched. Tests
+        # that care about the default dir itself set their own prefs.json.
+        self.prefs_file = os.path.join(self.fake_home, "prefs.json")
+        mod.PREFS_FILE = self.prefs_file
+        with open(self.prefs_file, "w") as f:
+            json.dump({"default_dir": self.root}, f)
         mod._DIR_INDEX_CACHE = None
 
     def tearDown(self):
         mod.HOME, mod.DIR_ROOTS, mod.DIR_DEPTH = self.old_home, self.old_roots, self.old_depth
+        mod.PREFS_FILE = self.old_prefs_file
         mod._DIR_INDEX_CACHE = None
 
     def names(self, q):
@@ -474,18 +489,67 @@ class DirSearchTests(unittest.TestCase):
         self.assertEqual(results.count("alpha"), 1, results)
         self.assertEqual(sorted(results), sorted(set(results)), results)
 
-    def test_empty_q_returns_home_first_then_roots_and_children(self):
+    def test_empty_q_starts_with_the_default_dir_then_home_then_roots(self):
+        # setUp pins the default dir to self.root, so it -- and its own
+        # first-level children -- must lead the list, ahead of even HOME.
         status, obj = mod.dir_search("")
         self.assertEqual(status, 200)
         paths = [d["path"] for d in obj["dirs"]]
-        self.assertEqual(paths[0], self.fake_home)
-        # dir_choices()'s own order after that: each root, then its
-        # (alphabetically sorted) first-level children, root by root.
+        self.assertEqual(paths[0], self.root)
+        self.assertIn(os.path.join(self.root, "alpha"), paths[1:6])
+        # ...then HOME...
+        self.assertIn(self.fake_home, paths)
+        self.assertLess(paths.index(self.fake_home), paths.index(self.root2))
+        # ...then dir_choices()'s own order for whatever isn't already
+        # listed: self.root2, then its (alphabetically sorted) first-level
+        # children (self.root and its own children were already listed
+        # above and must not repeat here).
         i = paths.index(self.root2)
         self.assertEqual(paths[i:i + 3],
                          [self.root2,
                           os.path.join(self.root2, "child-a"),
                           os.path.join(self.root2, "child-b")])
+        self.assertEqual(paths.count(self.root), 1)
+
+    def test_empty_q_default_dir_outside_every_root_still_leads(self):
+        # The default dir doesn't have to be one of DIR_ROOTS at all -- a
+        # standalone directory works too, and still leads the list (with
+        # HOME and the configured roots following, unrepeated).
+        outside = os.path.join(self.fake_home, "outside-default")
+        os.makedirs(os.path.join(outside, "only-child"))
+        with open(self.prefs_file, "w") as f:
+            json.dump({"default_dir": outside}, f)
+        status, obj = mod.dir_search("")
+        paths = [d["path"] for d in obj["dirs"]]
+        self.assertEqual(paths[0], outside)
+        self.assertEqual(paths[1], os.path.join(outside, "only-child"))
+        self.assertIn(self.fake_home, paths[2:])
+        self.assertIn(self.root, paths[2:])
+
+    def test_default_dir_outside_every_root_is_added_to_the_search_index(self):
+        # Not just _dir_search_empty()'s own list -- dir_index() (backing
+        # name search) must reach into it too, so typing a name finds
+        # something under a default dir picked from outside SERVERJACK_DIRS.
+        outside = os.path.join(self.fake_home, "outside-default")
+        os.makedirs(os.path.join(outside, "marker-child"))
+        with open(self.prefs_file, "w") as f:
+            json.dump({"default_dir": outside}, f)
+        mod._DIR_INDEX_CACHE = None
+        entries, _truncated = mod.dir_index()
+        paths = [p for p, _d, _r in entries]
+        self.assertIn(outside, paths)
+        self.assertIn(os.path.join(outside, "marker-child"), paths)
+
+    def test_default_dir_that_is_an_ancestor_of_a_root_is_not_re_added(self):
+        # fake_home is the parent of both self.root and self.root2 -- if it
+        # were the default, adding it as a THIRD index root would re-walk
+        # self.root's own content a second time under a different root tag,
+        # at different (index-relative) depths, corrupting depth-sensitive
+        # results elsewhere. _index_roots() must recognize it's already
+        # reachable (in the other direction) and leave DIR_ROOTS alone.
+        with open(self.prefs_file, "w") as f:
+            json.dump({"default_dir": self.fake_home}, f)
+        self.assertEqual(mod._index_roots(), mod.DIR_ROOTS)
 
     def test_query_over_512_chars_is_rejected(self):
         status, obj = mod.dir_search("x" * 513)
@@ -684,6 +748,147 @@ class ShortcutsAtomicityTests(unittest.TestCase):
         mod.add_shortcut("Label", "echo hi", "/tmp")
         mod.save_shortcuts([])
         self.assertEqual(mod.load_shortcuts(), [])
+
+
+class DefaultDirTests(unittest.TestCase):
+    """load_prefs()/save_prefs()/default_dir()/validate_default_dir(), and
+    resolve_dir()'s use of default_dir() as its fallback -- the /prefs
+    "change the default directory" feature."""
+
+    def setUp(self):
+        self.cfg = tempfile.mkdtemp()
+        self._orig_config_dir = mod.CONFIG_DIR
+        self._orig_prefs_file = mod.PREFS_FILE
+        self._orig_home = mod.HOME
+        self._orig_env = os.environ.pop("SERVERJACK_DEFAULT_DIR", None)
+        # resolve_dir()/validate_default_dir() expand "~" with the plain
+        # os.path.expanduser(), which reads the real process environment's
+        # HOME, not mod.HOME -- so the "~" tests below need the real
+        # os.environ["HOME"] patched too, not just the module attribute.
+        self._orig_env_home = os.environ.get("HOME")
+        mod.CONFIG_DIR = self.cfg
+        mod.PREFS_FILE = os.path.join(self.cfg, "prefs.json")
+        self.fake_home = tempfile.mkdtemp(prefix="sj-unit-defaultdir-home-")
+        mod.HOME = self.fake_home
+        os.environ["HOME"] = self.fake_home
+        _tmpdirs.extend([self.cfg, self.fake_home])
+
+    def tearDown(self):
+        mod.CONFIG_DIR = self._orig_config_dir
+        mod.PREFS_FILE = self._orig_prefs_file
+        mod.HOME = self._orig_home
+        if self._orig_env_home is not None:
+            os.environ["HOME"] = self._orig_env_home
+        else:
+            os.environ.pop("HOME", None)
+        if self._orig_env is not None:
+            os.environ["SERVERJACK_DEFAULT_DIR"] = self._orig_env
+        else:
+            os.environ.pop("SERVERJACK_DEFAULT_DIR", None)
+
+    def mkdir(self, *parts):
+        p = os.path.join(self.fake_home, *parts)
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    # ---------------------------------------------------------- load_prefs
+    def test_missing_prefs_file_is_not_an_error(self):
+        self.assertEqual(mod.load_prefs(), {})
+
+    def test_malformed_prefs_file_falls_back_without_raising(self):
+        with open(mod.PREFS_FILE, "w") as f:
+            f.write("{not json")
+        self.assertEqual(mod.load_prefs(), {})
+
+    def test_prefs_file_that_is_not_an_object_is_ignored(self):
+        with open(mod.PREFS_FILE, "w") as f:
+            json.dump(["a", "list", "not", "a", "dict"], f)
+        self.assertEqual(mod.load_prefs(), {})
+
+    # --------------------------------------------------------- default_dir
+    def test_default_dir_is_home_when_nothing_is_set(self):
+        self.assertEqual(mod.default_dir(), self.fake_home)
+
+    def test_default_dir_reads_prefs_json(self):
+        d = self.mkdir("projects")
+        mod.save_prefs({"default_dir": d})
+        self.assertEqual(mod.default_dir(), os.path.realpath(d))
+
+    def test_env_var_is_the_fallback_when_prefs_has_no_default(self):
+        d = self.mkdir("from-env")
+        os.environ["SERVERJACK_DEFAULT_DIR"] = d
+        self.assertEqual(mod.default_dir(), os.path.realpath(d))
+
+    def test_prefs_default_wins_over_the_env_var(self):
+        from_prefs, from_env = self.mkdir("from-prefs"), self.mkdir("from-env")
+        os.environ["SERVERJACK_DEFAULT_DIR"] = from_env
+        mod.save_prefs({"default_dir": from_prefs})
+        self.assertEqual(mod.default_dir(), os.path.realpath(from_prefs))
+
+    def test_stale_prefs_entry_falls_back_to_home(self):
+        # The saved directory was removed after being set as the default --
+        # default_dir() must fall back quietly, not surface the dangling path.
+        gone = os.path.join(self.fake_home, "removed-later")
+        mod.save_prefs({"default_dir": gone})
+        self.assertEqual(mod.default_dir(), self.fake_home)
+
+    # ------------------------------------------------------ save_prefs I/O
+    def test_save_prefs_round_trips_and_is_mode_600(self):
+        d = self.mkdir("projects")
+        mod.save_prefs({"default_dir": d})
+        self.assertEqual(mod.load_prefs(), {"default_dir": d})
+        mode = stat.S_IMODE(os.stat(mod.PREFS_FILE).st_mode)
+        self.assertEqual(mode, 0o600)
+
+    # ------------------------------------------------ validate_default_dir
+    def test_validate_rejects_a_directory_that_does_not_exist(self):
+        target = os.path.join(self.fake_home, "not-there")
+        d, err = mod.validate_default_dir(target)
+        self.assertIsNone(d)
+        self.assertIn("Not a directory", err)
+        self.assertFalse(os.path.exists(target), "validate_default_dir must never create one")
+
+    def test_validate_rejects_an_empty_value(self):
+        d, err = mod.validate_default_dir("  ")
+        self.assertIsNone(d)
+        self.assertTrue(err)
+
+    def test_validate_accepts_an_existing_directory_and_returns_its_realpath(self):
+        target = self.mkdir("projects")
+        d, err = mod.validate_default_dir(target)
+        self.assertIsNone(err)
+        self.assertEqual(d, os.path.realpath(target))
+
+    def test_validate_expands_tilde_against_home(self):
+        self.mkdir("projects")
+        d, err = mod.validate_default_dir("~/projects")
+        self.assertIsNone(err)
+        self.assertEqual(d, os.path.realpath(os.path.join(self.fake_home, "projects")))
+
+    def test_validate_resolves_a_relative_path_against_the_current_default(self):
+        base = self.mkdir("projects")
+        self.mkdir("projects", "sub")
+        mod.save_prefs({"default_dir": base})
+        d, err = mod.validate_default_dir("sub")
+        self.assertIsNone(err)
+        self.assertEqual(d, os.path.realpath(os.path.join(base, "sub")))
+
+    # ------------------------------------------- resolve_dir() uses it too
+    def test_resolve_dir_empty_falls_back_to_the_default_not_home(self):
+        target = self.mkdir("projects")
+        mod.save_prefs({"default_dir": target})
+        d, err = mod.resolve_dir("", None)
+        self.assertIsNone(err)
+        self.assertEqual(d, os.path.realpath(target))
+        self.assertNotEqual(d, self.fake_home)
+
+    def test_resolve_dir_relative_path_resolves_against_the_default(self):
+        target = self.mkdir("projects")
+        mod.save_prefs({"default_dir": target})
+        d, err = mod.resolve_dir("newproj", None)
+        self.assertIsNone(err)
+        self.assertEqual(d, os.path.realpath(os.path.join(target, "newproj")))
+        self.assertTrue(os.path.isdir(d))   # a typed path that doesn't exist yet is created
 
 
 class ValidateNameTests(unittest.TestCase):
