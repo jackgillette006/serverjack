@@ -16,11 +16,12 @@
 #   serverjack-ctl prune [--yes]       delete releases other than current/previous
 #
 # `update` and `rollback` on a release-channel install: stage the new release
-# without touching the running one, back up the current unit files and env,
-# swap ~/.local/share/serverjack/current, run its install.sh, and wait up to
-# 30s for /healthz (and /term/) to answer. On failure they restore the prior
-# units/env and symlink and report. tmux is never restarted -- the units are
-# KillMode=process, so an in-flight session survives either way.
+# without touching the running one, back up the current unit files, env and
+# serverjack-ctl itself, swap ~/.local/share/serverjack/current, run its
+# install.sh, and wait up to 30s for /healthz plus both units being active.
+# On failure they restore the prior units/env/serverjack-ctl and symlink and
+# report. tmux is never restarted -- the units are KillMode=process, so an
+# in-flight session survives either way.
 #
 # On a git-checkout install, `update` is just `git pull --ff-only && bash
 # install.sh`, same as the built-in shortcut on the page; every other
@@ -31,6 +32,11 @@
 # ~/.local/share/serverjack/.lock.
 set -Eeuo pipefail
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+# Tells install.sh/uninstall.sh they were invoked BY this lifecycle helper,
+# not run by hand from inside a release directory -- see the matching check
+# in install.sh (UNIT_REPO) and uninstall.sh (both refuse a direct, by-hand
+# invocation from a managed release dir otherwise, on purpose).
+export SERVERJACK_CTL_MANAGED=1
 
 SHARE=$HOME/.local/share/serverjack
 RELEASES=$SHARE/releases
@@ -116,26 +122,53 @@ env_get() {
 }
 
 # Sets CHANNEL to "release", "git" or "unknown", and GIT_REPO when "git".
+#
+# Decided by a PHYSICAL signal first, install.json only as a fallback --
+# same precedence as bin/serverjack's _install_channel(), and for the same
+# reason: install.json existing says nothing about what THIS unit's
+# ExecStart= actually points at (a stale install.json from a since-removed
+# managed install must not shadow a real git-checkout unit that replaced it).
+#
+# For "release": install.sh always bakes the STABLE ".../current/bin/..."
+# path into ExecStart= for a managed install (never the physical release
+# dir -- that's the whole point of the symlink), so a plain substring match
+# against $CURRENT is exact and needs no parsing.
+#
+# For "git": install.sh additionally writes the checkout's absolute path,
+# in plain text, to $HOME/.config/serverjack/install-path (only for a
+# git-checkout install -- see install.sh). Reading that avoids parsing
+# ExecStart= at all, which used to need undoing systemd's own %/\/" quoting
+# of the path baked in there and didn't -- a repo path containing a literal
+# "%" came back from that regex still doubled ("%%"), so -d "$repo/.git"
+# silently failed and a real git checkout could misreport as "unknown".
 detect_channel() {
   CHANNEL=unknown
   GIT_REPO=""
-  if [[ -f $INSTALL_JSON ]]; then
+  local unit="$UNIT_DIR/serverjack.service" exec_line
+  if [[ -f $unit ]]; then
+    exec_line=$(grep -m1 '^ExecStart=' "$unit" || true)
+    if [[ $exec_line == *"\"$CURRENT/bin/serverjack\""* ]]; then
+      CHANNEL=release
+    fi
+  fi
+  if [[ $CHANNEL != release ]]; then
+    local install_path="$HOME/.config/serverjack/install-path" repo
+    if [[ -f $install_path ]]; then
+      repo=$(<"$install_path")
+      if [[ -n $repo && -d "$repo/.git" ]]; then
+        CHANNEL=git
+        GIT_REPO=$repo
+      fi
+    fi
+  fi
+  if [[ $CHANNEL == unknown && -f $INSTALL_JSON ]]; then
     local ch
     ch=$(python3 -c 'import json,sys
 try:
     print(json.load(sys.stdin).get("channel",""))
 except Exception:
     print("")' < "$INSTALL_JSON" 2>/dev/null || true)
-    if [[ $ch == release ]]; then CHANNEL=release; return; fi
-  fi
-  local unit="$UNIT_DIR/serverjack.service" exec_line repo
-  if [[ -f $unit ]]; then
-    exec_line=$(grep -m1 '^ExecStart=' "$unit" || true)
-    repo=$(sed -n 's#.*python3 "\(.*\)/bin/serverjack".*#\1#p' <<< "$exec_line")
-    if [[ -n $repo && -d "$repo/.git" ]]; then
-      CHANNEL=git
-      GIT_REPO=$repo
-    fi
+    [[ $ch == release ]] && CHANNEL=release
   fi
 }
 
@@ -172,17 +205,38 @@ except Exception:
     print("")' < "$INSTALL_JSON" 2>/dev/null
 }
 
-write_install_json() {  # $1 version, $2 previous (may be empty)
+# Prints, one per line, the install_args (e.g. --no-serve) the bootstrap was
+# first run with -- see bootstrap/serverjack-bootstrap.sh.in. These are
+# run-time-only install.sh flags with nothing in the env file to remember
+# them, so `update`/`rollback` must read them back and pass them to
+# install.sh again, or a flag deliberately chosen at install time (most
+# importantly --no-serve) silently stops applying on the very next update.
+# An install.json written before this field existed has none -- prints
+# nothing, matching that install's original (flag-less) behavior exactly.
+installed_args() {
+  [[ -f $INSTALL_JSON ]] || return 0
+  python3 -c 'import json,sys
+try:
+    for a in json.load(sys.stdin).get("install_args") or []:
+        print(a)
+except Exception:
+    pass' < "$INSTALL_JSON" 2>/dev/null
+}
+
+write_install_json() {  # $1 version, $2 previous (may be empty), $3.. install_args
   local version=$1 previous=$2 tmp
+  shift 2
   mkdir -p "$SHARE"
   tmp=$(mktemp "$SHARE/.install.json.XXXXXX")
-  python3 - "$version" "$previous" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp" <<'PY'
+  python3 - "$version" "$previous" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$@" > "$tmp" <<'PY'
 import json
 import sys
 
 version, previous, installed_at = sys.argv[1], sys.argv[2], sys.argv[3]
+install_args = sys.argv[4:]
 json.dump({"channel": "release", "version": version, "installed_at": installed_at,
-           "previous": previous or None}, sys.stdout, indent=2)
+           "previous": previous or None, "install_args": install_args},
+          sys.stdout, indent=2)
 print()
 PY
   mv -f "$tmp" "$INSTALL_JSON"
@@ -210,27 +264,30 @@ healthz_code() {
   fi
 }
 
-term_code() {
-  local listen port sock term
-  term=$(env_get SERVERJACK_TERM /term/)
-  listen=$(env_get SERVERJACK_LISTEN tcp)
-  if [[ $listen == unix ]]; then
-    sock="${XDG_RUNTIME_DIR}/serverjack/web.sock"
-    curl -s -o /dev/null -w '%{http_code}' --unix-socket "$sock" "http://serverjack$term" 2>/dev/null || echo 000
-  else
-    port=$(env_get SERVERJACK_PORT 7680)
-    curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$term" 2>/dev/null || echo 000
-  fi
+# True only when BOTH units are active -- `systemctl --user is-active` with
+# multiple unit names exits non-zero if either isn't, which is exactly what
+# we want here (the `|| true` in cmd_status below is the same signal used
+# safely; here we want the failure).
+units_active() {
+  systemctl --user is-active --quiet serverjack serverjack-ttyd
 }
 
 wait_healthy() {  # $1 = timeout seconds
+  # Health is /healthz (always open, even under SERVERJACK_ALLOW -- see
+  # bin/serverjack's OPEN_PATHS) plus both units being active. It used to
+  # also probe SERVERJACK_TERM (/term/), but that path is NOT in OPEN_PATHS:
+  # with SERVERJACK_ALLOW set, a plain loopback probe with no
+  # Tailscale-User-Login identity gets 403 forever, so every update and
+  # rollback on an ALLOW-restricted install auto-rolled-back even though the
+  # new release was perfectly healthy. This process has no way to send an
+  # identity tailscaled itself would trust (that header is only honored from
+  # tailscaled's own uid), so /term/ is not a probe this helper can use.
   local timeout=$1 deadline code
   deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
     code=$(healthz_code)
-    if [[ $code == 200 ]]; then
-      code=$(term_code)
-      [[ $code == 200 ]] && return 0
+    if [[ $code == 200 ]] && units_active; then
+      return 0
     fi
     sleep 1
   done
@@ -245,13 +302,20 @@ backup_current_state() {  # prints the backup dir it created
   [[ -f "$UNIT_DIR/serverjack.service" ]] && cp -a "$UNIT_DIR/serverjack.service" "$backup_dir/"
   [[ -f "$UNIT_DIR/serverjack-ttyd.service" ]] && cp -a "$UNIT_DIR/serverjack-ttyd.service" "$backup_dir/"
   [[ -f $ENV_FILE ]] && cp -a "$ENV_FILE" "$backup_dir/env"
+  # The release being activated already replaced ~/.local/bin/serverjack-ctl
+  # with its own copy before install.sh even runs (that install happens
+  # inside THIS call, below) -- back it up too, or a failed release leaves
+  # its (possibly broken) serverjack-ctl in place even after everything else
+  # is rolled back.
+  [[ -f "$HOME/.local/bin/serverjack-ctl" ]] && cp -a "$HOME/.local/bin/serverjack-ctl" "$backup_dir/serverjack-ctl"
   printf '%s' "$backup_dir"
 }
 
-# Restores units/env from a backup_current_state() dir, points "current" back
-# at $2 (a symlink target, e.g. "releases/1.3.0"), restarts the units, and
-# waits for health -- best effort, used both by the auto-rollback inside
-# `update` and by the explicit `rollback` subcommand's own failure path.
+# Restores units/env/serverjack-ctl from a backup_current_state() dir, points
+# "current" back at $2 (a symlink target, e.g. "releases/1.3.0"), restarts
+# the units, and waits for health -- best effort, used both by the
+# auto-rollback inside `update` and by the explicit `rollback` subcommand's
+# own failure path.
 restore_from_backup() {  # $1 version being restored, $2 symlink target, $3 backup dir
   local version=$1 target=$2 backup_dir=$3
   swap_current "$target"
@@ -261,14 +325,15 @@ restore_from_backup() {  # $1 version being restored, $2 symlink target, $3 back
     cp -a "$backup_dir/env" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
   fi
+  if [[ -f "$backup_dir/serverjack-ctl" ]]; then
+    # `install`, not `cp`: this file may be the very one bash is currently
+    # executing (a plain rollback run by hand, not just the auto-rollback
+    # inside `update`). `install` replaces the directory entry with a fresh
+    # inode instead of overwriting the existing one in place, so a process
+    # already reading the old inode (this one) is unaffected.
+    install -m 755 "$backup_dir/serverjack-ctl" "$HOME/.local/bin/serverjack-ctl"
+  fi
   systemctl --user daemon-reload
-  # A broken release that just crash-looped (Restart=on-failure, RestartSec=3)
-  # can trip systemd's own StartLimitBurst within seconds -- found by this
-  # test failing the very rollback meant to recover from it. Without this,
-  # the GOOD release we are restoring to would also be refused with "start
-  # of the service was attempted too often", for a unit that was never
-  # itself the problem.
-  systemctl --user reset-failed serverjack serverjack-ttyd 2>/dev/null || true
   # Never restart tmux -- only the two units. KillMode=process on both keeps
   # every tmux session (and the terminal a browser has attached to) alive.
   systemctl --user restart serverjack serverjack-ttyd || true
@@ -291,7 +356,12 @@ cmd_status() {
       ;;
     git)
       local v
-      v=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$GIT_REPO/bin/serverjack" 2>/dev/null)
+      # `|| true`: sed itself exits non-zero when its input file is simply
+      # missing (a moved/deleted checkout, or -- found by the test for
+      # finding 9 -- a fabricated GIT_REPO with no bin/serverjack at all),
+      # and 2>/dev/null only silences the message, not the exit status --
+      # same class of bug as finding 6, just a different command.
+      v=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$GIT_REPO/bin/serverjack" 2>/dev/null || true)
       echo "channel:  git checkout ($GIT_REPO)"
       echo "current:  ${v:-unknown}"
       ;;
@@ -300,7 +370,12 @@ cmd_status() {
       ;;
   esac
   local active
-  active=$(systemctl --user is-active serverjack serverjack-ttyd 2>/dev/null | paste -sd' ' -)
+  # `systemctl --user is-active` exits non-zero (under pipefail, so this
+  # whole pipeline) whenever EITHER unit isn't active -- which is the normal
+  # case right after a stop or a crash, not a script bug. Without the
+  # `|| true`, `set -e` aborted the entire `status` subcommand on exactly
+  # the situation someone runs `status` to look at.
+  active=$( { systemctl --user is-active serverjack serverjack-ttyd 2>/dev/null || true; } | paste -sd' ' -)
   echo "units:    serverjack=${active%% *} serverjack-ttyd=${active#* }"
   local listen; listen=$(env_get SERVERJACK_LISTEN tcp)
   if [[ $listen == unix ]]; then
@@ -369,34 +444,54 @@ for a in json.load(sys.stdin).get("assets", []):
 # Downloads the resolved release's bootstrap script + SHA256SUMS, parses the
 # archive URL and pinned sha256 back out of the bootstrap (it is the one
 # place that pairing is defined -- see bootstrap/serverjack-bootstrap.sh.in),
-# downloads and verifies the archive, and extracts it to
-# $RELEASES/<version>/ WITHOUT touching "current". Sets STAGED_DIR.
+# downloads and verifies the archive, and extracts it into $RELEASES/<version>/
+# WITHOUT TOUCHING "current". Sets STAGED_DIR. Caller must have already
+# called resolve_release() (cmd_update does this itself, before staging, so
+# it can compare the resolved version against the installed one -- see
+# there for why that order matters).
+#
+# The extraction lands in a scratch directory first and is only mv'd to its
+# final $RELEASES/$REL_VERSION name once it is a complete, checksum-verified
+# release -- that name is never rm -rf'd to make room first. It used to be:
+# stage a fresh copy by deleting and re-extracting straight into
+# $RELEASES/$REL_VERSION. For an ordinary new version that is merely
+# wasteful (nothing was there yet); for a NO-OP re-stage of the version
+# that is already current, $RELEASES/$REL_VERSION IS the live release
+# directory "current" resolves to, and that rm -rf deleted it out from under
+# the running install for the length of the extraction. cmd_update now
+# compares versions and returns before ever calling this for that case, but
+# the guard below stays anyway -- a live directory should never be removed
+# by this function, full stop, however it ends up being called.
 stage_release() {
-  resolve_release
   local tmp; tmp=$(mktemp -d)
+  # Double-quoted so $tmp is substituted NOW, not when the trap eventually
+  # fires: $tmp is `local` to this function, so a deferred (single-quoted)
+  # expansion would see an unbound variable by the time the script actually
+  # exits, well after this function has returned.
+  # shellcheck disable=SC2064  # immediate expansion is the point, see above
+  trap "rm -rf '$tmp'" EXIT
   say "Fetching release metadata for $REL_VERSION"
   fetch -o "$tmp/serverjack-bootstrap.sh" "$REL_BOOTSTRAP_URL" \
-    || { echo "download failed: $REL_BOOTSTRAP_URL" >&2; rm -rf "$tmp"; exit 1; }
+    || { echo "download failed: $REL_BOOTSTRAP_URL" >&2; exit 1; }
   fetch -o "$tmp/SHA256SUMS" "$REL_SUMS_URL" \
-    || { echo "download failed: $REL_SUMS_URL" >&2; rm -rf "$tmp"; exit 1; }
+    || { echo "download failed: $REL_SUMS_URL" >&2; exit 1; }
 
   local archive_url archive_sha
   archive_url=$(sed -n 's/^EMBEDDED_ARCHIVE_URL="\(.*\)"$/\1/p' "$tmp/serverjack-bootstrap.sh" | head -1)
   archive_sha=$(sed -n 's/^EMBEDDED_ARCHIVE_SHA256="\(.*\)"$/\1/p' "$tmp/serverjack-bootstrap.sh" | head -1)
   [[ -n $archive_url && -n $archive_sha ]] \
-    || { echo "could not parse the archive URL/sha256 out of the downloaded bootstrap script" >&2; rm -rf "$tmp"; exit 1; }
+    || { echo "could not parse the archive URL/sha256 out of the downloaded bootstrap script" >&2; exit 1; }
   if [[ -n ${SERVERJACK_RELEASE_BASE_URL:-} && $archive_url == "$DEFAULT_BASE_URL"* ]]; then
     archive_url="${SERVERJACK_RELEASE_BASE_URL%/}${archive_url#"$DEFAULT_BASE_URL"}"
   fi
 
   local archive="$tmp/serverjack-$REL_VERSION.tar.gz"
   fetch -o "$archive" "$archive_url" \
-    || { echo "download failed: $archive_url" >&2; rm -rf "$tmp"; exit 1; }
-  [[ -s $archive ]] || { echo "downloaded archive is empty: $archive_url" >&2; rm -rf "$tmp"; exit 1; }
+    || { echo "download failed: $archive_url" >&2; exit 1; }
+  [[ -s $archive ]] || { echo "downloaded archive is empty: $archive_url" >&2; exit 1; }
   local got; got=$(sha256sum "$archive" | awk '{print $1}')
   if [[ $got != "$archive_sha" ]]; then
     echo "checksum mismatch for $(basename "$archive"): got $got, want $archive_sha -- refusing to stage a corrupted or tampered archive" >&2
-    rm -rf "$tmp"
     exit 1
   fi
   if grep -q " $(basename "$archive")\$" "$tmp/SHA256SUMS" 2>/dev/null; then
@@ -405,12 +500,20 @@ stage_release() {
   fi
   say "Checksum OK for serverjack $REL_VERSION ($got)"
 
-  local staged="$RELEASES/$REL_VERSION"
-  rm -rf "$staged"
-  mkdir -p "$staged"
-  tar -xzf "$archive" -C "$staged" --strip-components=1
-  rm -rf "$tmp"
-  STAGED_DIR=$staged
+  mkdir -p "$RELEASES"
+  local scratch; scratch=$(mktemp -d "$RELEASES/.stage.XXXXXX")
+  tar -xzf "$archive" -C "$scratch" --strip-components=1
+
+  local final="$RELEASES/$REL_VERSION" live_target
+  live_target=$(readlink -f "$CURRENT" 2>/dev/null || true)
+  if [[ -n $live_target && $(readlink -f "$final" 2>/dev/null || true) == "$live_target" ]]; then
+    echo "internal error: refusing to replace $final -- \"current\" resolves to it" >&2
+    rm -rf "$scratch"
+    exit 1
+  fi
+  rm -rf "$final"
+  mv -T "$scratch" "$final"
+  STAGED_DIR=$final
 }
 
 cmd_update() {
@@ -441,24 +544,34 @@ cmd_update() {
     exit 1
   }
 
-  stage_release
+  # Resolve BEFORE staging: a no-op update (the resolved version is already
+  # current) must never touch $RELEASES at all, let alone the live release
+  # directory "current" points at -- see stage_release()'s own comment.
+  resolve_release
   local new_version=$REL_VERSION
   local current_version; current_version=$(installed_version)
   if [[ $new_version == "$current_version" ]]; then
-    say "serverjack $current_version is already current (re-staged $STAGED_DIR, not reactivating)."
+    say "serverjack $current_version is already current."
     return
   fi
   ask_confirm "Activate serverjack $new_version (currently $current_version)?"
+
+  # install_args persist across every update/rollback until changed on
+  # purpose -- a flag chosen at bootstrap time (most importantly --no-serve)
+  # has nothing in the env file to remember it by, so without replaying it
+  # here install.sh would run with its defaults on the very next update.
+  local -a persisted_args=()
+  mapfile -t persisted_args < <(installed_args)
+
+  stage_release
+  say "Staged serverjack $new_version -> $STAGED_DIR"
 
   local prev_target; prev_target=$(readlink "$CURRENT" 2>/dev/null || true)
   local backup_dir; backup_dir=$(backup_current_state)
 
   swap_current "releases/$new_version"
-  # See the matching comment in restore_from_backup(): a prior crash-looping
-  # release can leave the units rate-limited well after IT is gone.
-  systemctl --user reset-failed serverjack serverjack-ttyd 2>/dev/null || true
-  if bash "$CURRENT/install.sh" && wait_healthy 30; then
-    write_install_json "$new_version" "$current_version"
+  if bash "$CURRENT/install.sh" "${persisted_args[@]}" && wait_healthy 30; then
+    write_install_json "$new_version" "$current_version" "${persisted_args[@]}"
     say "Activated serverjack $new_version"
     return
   fi
@@ -484,11 +597,13 @@ cmd_rollback() {
   local cur; cur=$(installed_version)
   ask_confirm "Roll back serverjack from $cur to $prev?"
 
+  local -a persisted_args=()
+  mapfile -t persisted_args < <(installed_args)
+
   local backup_dir; backup_dir=$(backup_current_state)
   swap_current "releases/$prev"
-  systemctl --user reset-failed serverjack serverjack-ttyd 2>/dev/null || true
-  if bash "$CURRENT/install.sh" && wait_healthy 30; then
-    write_install_json "$prev" "$cur"
+  if bash "$CURRENT/install.sh" "${persisted_args[@]}" && wait_healthy 30; then
+    write_install_json "$prev" "$cur" "${persisted_args[@]}"
     say "Rolled back to $prev"
     return
   fi

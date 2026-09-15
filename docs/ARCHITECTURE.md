@@ -279,14 +279,23 @@ read once and reported in `/api/status`'s `"channel"` field and behind the
     `bin/serverjack-ctl` to `~/.local/bin/`, for both channels.
   - `bin/serverjack-ctl` (`status`/`versions`/`update`/`rollback`/
     `uninstall`/`prune`) is the lifecycle helper: `update` stages a release
-    under `releases/` without touching the running one, backs up the current
-    units and env, swaps `current`, runs `install.sh`, and waits on
-    `/healthz` + `/term/` — restoring the backup automatically on failure.
-    `rollback` does the same using `install.json`'s `previous` field. Every
-    mutating subcommand takes an `flock` on `~/.local/share/serverjack/.lock`
-    and asks for confirmation on `/dev/tty` unless `--yes`. `SERVERJACK_RELEASE_BASE_URL`
-    overrides the GitHub base URL both the bootstrap and `serverjack-ctl`
-    resolve archives against — a test/enterprise-mirror hook, exercised by
+    into a scratch directory under `releases/` (only renamed into its final
+    `releases/<version>/` name once fully extracted and checksum-verified —
+    the version currently `current` resolves to is never removed to make
+    room, including for a same-version no-op), backs up the current units,
+    env and `serverjack-ctl` itself, swaps `current`, re-runs `install.sh`
+    with the install flags (e.g. `--no-serve`) persisted from the original
+    bootstrap in `install.json`'s `install_args`, and waits on `/healthz`
+    plus both units being active — restoring the backup automatically on
+    failure. (Health deliberately does not probe `/term/`: unlike
+    `/healthz`, it is not in `Handler.OPEN_PATHS`, so a `SERVERJACK_ALLOW`-
+    restricted install would 403 every probe and auto-roll-back a perfectly
+    healthy update.) `rollback` does the same using `install.json`'s
+    `previous` field. Every mutating subcommand takes an `flock` on
+    `~/.local/share/serverjack/.lock` and asks for confirmation on
+    `/dev/tty` unless `--yes`. `SERVERJACK_RELEASE_BASE_URL` overrides the
+    GitHub base URL both the bootstrap and `serverjack-ctl` resolve archives
+    against — a test/enterprise-mirror hook, exercised by
     `tests/managed-install.sh` against a `python3 -m http.server` so the
     container test needs no GitHub reachability for the release itself.
 

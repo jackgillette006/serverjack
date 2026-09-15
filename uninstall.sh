@@ -7,6 +7,37 @@ set -uo pipefail
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 UNIT_DIR=$HOME/.config/systemd/user
 
+# A copy of this file inside a managed release
+# (~/.local/share/serverjack/releases/<v>/uninstall.sh) run BY HAND (not via
+# serverjack-ctl, which sets SERVERJACK_CTL_MANAGED and knows to also clean
+# up ~/.local/share/serverjack/install.json and the release tree afterward)
+# would remove the units but leave install.json pointing at a release whose
+# units it just deleted -- the bootstrap would then see that as an existing
+# install and refuse to reinstall, and serverjack-ctl would report a channel
+# that no longer has any units. Refuse and point at the helper that handles
+# all of that instead of duplicating its bookkeeping here.
+if [[ -z ${SERVERJACK_CTL_MANAGED:-} ]]; then
+  SHARE_RELEASES_REAL=$(readlink -f "$HOME/.local/share/serverjack/releases" 2>/dev/null || true)
+  SELF_DIR=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd || true)
+  if [[ -n $SHARE_RELEASES_REAL && -n $SELF_DIR ]]; then
+    case "$SELF_DIR" in
+      "$SHARE_RELEASES_REAL"/*)
+        cat >&2 <<EOF
+This uninstall.sh is inside a managed release ($SELF_DIR).
+
+Running it directly would remove the units but leave
+$HOME/.local/share/serverjack/install.json pointing at a release that no
+longer has any -- a later bootstrap run would then see a phantom install and
+refuse to reinstall. Use the lifecycle helper instead, which also asks for
+confirmation and cleans up $HOME/.local/share/serverjack properly:
+  ~/.local/bin/serverjack-ctl uninstall
+EOF
+        exit 1
+        ;;
+    esac
+  fi
+fi
+
 systemctl --user disable --now serverjack serverjack-ttyd 2>/dev/null
 rm -f "$UNIT_DIR"/serverjack.service "$UNIT_DIR"/serverjack-ttyd.service
 
