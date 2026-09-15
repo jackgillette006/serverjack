@@ -20,6 +20,10 @@
 #      real functions (bin/serverjack-ctl sourced, HOME pointed at a
 #      private sandbox for the whole file so nothing here can ever touch a
 #      real account's actual serverjack install).
+# And for A3:
+#   4. bin/serverjack-lib.sh's update_install_json() -- the shared install.json
+#      read-modify-write -- actually preserves keys it isn't told to touch
+#      (most importantly "state"), proven directly against the real function.
 set -Eeuo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 REPO=$(cd .. && pwd)
@@ -188,6 +192,41 @@ restore_from_backup "1.0.0" "releases/1.0.0" "$backup_dir" >/dev/null 2>&1 || tr
   || { echo "  FAIL (c) restore_from_backup() left ttyd as: $(cat "$HOME/.local/bin/ttyd" 2>/dev/null)"; failures=$((failures + 1)); }
 [[ $(cat "$HOME/.local/bin/fzf" 2>/dev/null) == GOOD_FZF_V1 ]] && echo "  PASS (c) restore_from_backup() restores the OLD fzf bytes, not a new download" \
   || { echo "  FAIL (c) restore_from_backup() left fzf as: $(cat "$HOME/.local/bin/fzf" 2>/dev/null)"; failures=$((failures + 1)); }
+
+echo "================================================================"
+echo "(d) update_install_json() (A3): a caller that touches one field can't"
+echo "    drop any other -- most importantly \"state\""
+
+IJSON="$WORK/install.json"
+rm -f "$IJSON"
+update_install_json "$IJSON" channel release version 1.0.0 installed_at 2026-01-01T00:00:00Z \
+  previous __NULL__ state installing --set-args --no-serve --title box
+
+py_get() { python3 -c "import json,sys; print(json.load(open('$IJSON')).get('$1'))"; }
+result "(d) version set" "1.0.0" "$(py_get version)"
+result "(d) previous is JSON null (Python None)" "None" "$(py_get previous)"
+result "(d) state set" "installing" "$(py_get state)"
+result "(d) install_args set" "['--no-serve', '--title', 'box']" "$(py_get install_args)"
+
+# The A3 regression itself: a caller that ONLY passes --set-args (exactly
+# what serverjack-setup's record_install_args() does) must not touch
+# "state" (or version, or anything else) at all.
+update_install_json "$IJSON" --set-args --unix --title box2
+result "(d) --set-args-only call updates install_args" "['--unix', '--title', 'box2']" "$(py_get install_args)"
+result "(d) --set-args-only call leaves state untouched" "installing" "$(py_get state)"
+result "(d) --set-args-only call leaves version untouched" "1.0.0" "$(py_get version)"
+
+# __DELETE__ actually removes the key (ctl's write_install_json uses this
+# to clear "state" once an update/rollback is confirmed healthy).
+update_install_json "$IJSON" state __DELETE__ --keep-args
+has_state=$(python3 -c "import json; print('state' in json.load(open('$IJSON')))")
+result "(d) __DELETE__ removes the key entirely" "False" "$has_state"
+result "(d) --keep-args left install_args alone" "['--unix', '--title', 'box2']" "$(py_get install_args)"
+
+# A missing/corrupt file starts from {} rather than erroring.
+rm -f "$IJSON"
+update_install_json "$IJSON" version 2.0.0 --keep-args
+result "(d) starts fresh from a missing file" "2.0.0" "$(py_get version)"
 
 echo
 if (( failures > 0 )); then

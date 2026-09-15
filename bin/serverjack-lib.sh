@@ -144,3 +144,80 @@ wait_local_healthz() {  # $1 = timeout seconds, $2.. = curl args (as local_http_
   done
   return 1
 }
+
+# A3: ONE read-modify-write for ~/.local/share/serverjack/install.json,
+# shared by the bootstrap, serverjack-ctl and serverjack-setup -- each used
+# to hand-roll its own write of a FIXED set of keys, so a caller that only
+# meant to change ONE field (serverjack-setup's record_install_args(), for
+# install_args alone, after the rerun menu's publish option runs install.sh
+# again) silently dropped every OTHER key a different writer had set that
+# it didn't know about -- most importantly "state": "activating", left by
+# an interrupted `serverjack-ctl update`/`rollback` (see cmd_update()'s own
+# comment on why that field has to survive an interrupt to keep `status`/
+# `rollback` honest). This preserves any key it isn't explicitly told to
+# touch, so a caller that only cares about one field can only ever affect
+# that field.
+#
+# Usage: update_install_json PATH  [KEY VALUE]...  (--keep-args | --set-args ARG...)
+#   KEY VALUE pairs are applied in order; VALUE "__NULL__" stores JSON null,
+#   VALUE "__DELETE__" removes that key entirely, anything else is stored as
+#   a plain JSON string. The KEY VALUE pairs MUST be followed by exactly one
+#   of:
+#     --keep-args          leave "install_args" exactly as it already is
+#     --set-args ARG...    replace "install_args" with these (may be none)
+#   Creates the file (starting from {}) if it doesn't exist yet, or isn't
+#   valid JSON. Atomic (write to a temp file, then os.replace).
+update_install_json() {
+  local path=$1; shift
+  local -a kv=()
+  local mode='' args_marker_seen=0
+  local -a args=()
+  while (( $# )); do
+    case "$1" in
+      --keep-args) mode="keep"; shift; args_marker_seen=1; break ;;
+      --set-args)  mode="set"; shift; args=("$@"); args_marker_seen=1; break ;;
+      *) kv+=("$1" "${2?update_install_json: KEY '$1' has no VALUE}"); shift 2 ;;
+    esac
+  done
+  (( args_marker_seen )) \
+    || { echo "update_install_json: missing --keep-args or --set-args" >&2; return 1; }
+  python3 - "$path" "$mode" "${#kv[@]}" "${kv[@]}" -- "${args[@]}" <<'PY'
+import json
+import os
+import sys
+
+path, mode, nkv = sys.argv[1], sys.argv[2], int(sys.argv[3])
+rest = sys.argv[4:]
+kv = rest[:nkv]
+args = rest[nkv + 1:]  # rest[nkv] is the "--" separator this function always passes
+
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    if not isinstance(doc, dict):
+        doc = {}
+except (OSError, ValueError):
+    doc = {}
+
+it = iter(kv)
+for key in it:
+    val = next(it)
+    if val == "__DELETE__":
+        doc.pop(key, None)
+    elif val == "__NULL__":
+        doc[key] = None
+    else:
+        doc[key] = val
+
+if mode == "set":
+    doc["install_args"] = args
+
+directory = os.path.dirname(path) or "."
+os.makedirs(directory, exist_ok=True)
+tmp = path + ".tmp.%d" % os.getpid()
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, path)
+PY
+}
