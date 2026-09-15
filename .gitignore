@@ -1,3 +1,4 @@
 tests/shots/
 __pycache__/
 *.pyc
+/dist/

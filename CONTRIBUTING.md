@@ -62,14 +62,41 @@ Out of scope, on purpose:
    or security assumptions change. Add an entry under `Unreleased` in
    [CHANGELOG.md](CHANGELOG.md) for anything user-facing.
 3. Run `bash tests/run.sh` (needs Docker; it starts its own serverjack and
-   ttyd, nothing else has to be running). If Docker is unavailable, say which
-   checks you could run and which remain unverified.
+   ttyd, nothing else has to be running — this also runs
+   `tests/managed-install.sh` if Docker can run `--privileged` containers
+   with real systemd; it skips itself with a message otherwise). If Docker is
+   unavailable, say which checks you could run and which remain unverified.
 4. Check screenshots and logs before attaching them. Remove usernames, home
    directories, hostnames, tailnet names, login identities, tokens, session
    links, and unrelated terminal history.
 
 Pull requests from forks are treated as untrusted input. Maintainer automation
 labels them but never checks out or executes their code with a write token.
+
+## Releasing
+
+1. Bump `VERSION` in `bin/serverjack`.
+2. Add a dated section to [CHANGELOG.md](CHANGELOG.md), moving the
+   `Unreleased` entries under it.
+3. Commit, then tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+4. `.github/workflows/release.yml` checks out that tag, verifies `VERSION`
+   matches it, runs `scripts/build-release.sh X.Y.Z`, and opens a **draft**
+   GitHub release with three assets: `serverjack-X.Y.Z.tar.gz`,
+   `serverjack-bootstrap.sh`, `SHA256SUMS`. Wait for that workflow to finish.
+5. Verify the draft before publishing it — this step is manual on purpose:
+   - Download all three assets and confirm their digests against
+     `SHA256SUMS` (`sha256sum -c SHA256SUMS`).
+   - `tar tzf serverjack-X.Y.Z.tar.gz` — check the top-level directory name
+     and that `bin/`, `systemd/`, `install.sh`, `uninstall.sh`, `LICENSE`,
+     `README.md`, `CHANGELOG.md`, `docs/FAQ.md` and `RELEASE` are all there.
+   - Skim `serverjack-bootstrap.sh` for the embedded version, URL and sha256
+     matching this release.
+   - Optionally run `tests/managed-install.sh` (or the relevant parts of it
+     by hand) against the draft's assets before publishing.
+6. Publish the draft release on GitHub. `serverjack-bootstrap.sh`'s stable
+   `.../releases/latest/download/...` URL and the GitHub API's "latest
+   release" (what `serverjack-ctl update` resolves against with no
+   `--version`) only see it from this point.
 
 ## Reporting a bug
 
