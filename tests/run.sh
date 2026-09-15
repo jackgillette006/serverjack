@@ -196,17 +196,9 @@ cat > "$CFG/tools.json" <<JSON
   "paths": ["$TOOLPATH_DIR"]}]
 JSON
 
-# A scratch HOME for every serverjack/ttyd instance below (not just the tmux
-# pty sessions further down, which already got one) -- so the directory
-# picker's default SERVERJACK_DIRS (~/projects:~/src:~/code:~) resolves under
-# here instead of this machine's real home, and pwland.py's directory-search
-# assertions are deterministic. Created before the instances start, since they
-# read HOME at import time.
-TEST_HOME=$RUN_ROOT/home
-mkdir -m 700 "$TEST_HOME"
-printf '%s\n' "PS1='serverjack-test\$ '" > "$TEST_HOME/bashrc"
-printf -v session_shell 'exec env HOME=%q bash --noprofile --rcfile %q -i' \
-  "$TEST_HOME" "$TEST_HOME/bashrc"
+# The directory picker's default SERVERJACK_DIRS (~/projects:~/src:~/code:~)
+# resolves under TEST_HOME above, so pwland.py's directory-search assertions
+# are deterministic on any machine.
 # A nested project dir under ~/projects, three levels deep with one child of
 # its own -- pwland.py types "3d", expects it to surface from that depth, Tabs
 # into it, and checks the child directory shows up too.
