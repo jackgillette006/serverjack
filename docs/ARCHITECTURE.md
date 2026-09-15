@@ -238,6 +238,58 @@ session is left alone; an idle (exited-to-shell) session is killed and
 recreated. Stopping something from the page calls `drop_autostart()` so a
 deliberate stop doesn't return on the next restart.
 
+## Install channels
+
+Two ways to get `bin/serverjack` onto a machine, both ending in the same
+`install.sh` doing the same work (ttyd/fzf, the env file, the units, `serve`).
+`bin/serverjack`'s own `_install_channel()` tells them apart at import time,
+read once and reported in `/api/status`'s `"channel"` field and behind the
+"Update serverjack" shortcut (`UPDATE_CMD`/`update_available()`):
+
+- **`git`** — `REPO` (`bin/serverjack`'s own directory, two levels up) has a
+  `.git` next to it. `git pull --ff-only && bash install.sh` is both the
+  update shortcut and the whole story: nothing else is versioned here.
+- **`release`** — `~/.local/share/serverjack/install.json` says
+  `"channel": "release"`. This is the bootstrap/`serverjack-ctl` path:
+  - `scripts/build-release.sh <version>` packages `bin/`, `systemd/`,
+    `install.sh`, `uninstall.sh`, docs and a `RELEASE` file (version, git SHA,
+    build date) into `dist/serverjack-<version>.tar.gz`, refusing to build if
+    `VERSION` in `bin/serverjack` disagrees with `<version>`, and renders
+    `dist/serverjack-bootstrap.sh` from `bootstrap/serverjack-bootstrap.sh.in`
+    with that archive's URL and sha256 embedded. `.github/workflows/release.yml`
+    runs it on a pushed `v*` tag and attaches all three (archive, bootstrap,
+    `SHA256SUMS`) to a draft GitHub release.
+  - The rendered bootstrap is a single downloadable script: refuses root and
+    an existing install (git or managed) outright, downloads and
+    checksum-verifies the archive (against the embedded digest by default, or
+    a downloaded `SHA256SUMS` for an explicit `--version`), extracts it to
+    `~/.local/share/serverjack/releases/<version>/`, atomically symlinks
+    `~/.local/share/serverjack/current` at it, writes `install.json`, then
+    `exec`s that release's `install.sh` with the caller's own args and
+    terminal. Every function is defined before `main "$@"` runs as the very
+    last line, so a truncated `curl | bash` transfer hits an unterminated
+    function body and a syntax error before anything executes — never a
+    partial install.
+  - `install.sh` detects it is running from inside
+    `.../releases/<v>/` (by realpath prefix on its own resolved location) and
+    bakes the STABLE `.../current/...` path into the systemd units'
+    `ExecStart` instead of that specific release directory (`UNIT_REPO` vs.
+    `REPO` in the script) — so a later release only needs its symlink swapped
+    and the units restarted, never reinstalled. It also always installs
+    `bin/serverjack-ctl` to `~/.local/bin/`, for both channels.
+  - `bin/serverjack-ctl` (`status`/`versions`/`update`/`rollback`/
+    `uninstall`/`prune`) is the lifecycle helper: `update` stages a release
+    under `releases/` without touching the running one, backs up the current
+    units and env, swaps `current`, runs `install.sh`, and waits on
+    `/healthz` + `/term/` — restoring the backup automatically on failure.
+    `rollback` does the same using `install.json`'s `previous` field. Every
+    mutating subcommand takes an `flock` on `~/.local/share/serverjack/.lock`
+    and asks for confirmation on `/dev/tty` unless `--yes`. `SERVERJACK_RELEASE_BASE_URL`
+    overrides the GitHub base URL both the bootstrap and `serverjack-ctl`
+    resolve archives against — a test/enterprise-mirror hook, exercised by
+    `tests/managed-install.sh` against a `python3 -m http.server` so the
+    container test needs no GitHub reachability for the release itself.
+
 ## Single-file, stdlib-only: rationale and tradeoffs
 
 The whole app — HTTP handling, HTML/CSS/JS templates, tmux driver, agent

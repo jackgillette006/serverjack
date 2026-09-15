@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Headless-browser tests, entirely in containers (needs docker; nothing else
 # has to be running -- the harness starts its own serverjack and ttyd).
-#   bash tests/run.sh            # all suites
-#   bash tests/run.sh pwclip     # one suite
+#   bash tests/run.sh                 # all suites, plus managed-install.sh
+#   bash tests/run.sh pwclip          # one Playwright suite only (fast)
+#   bash tests/run.sh managed-install # just the release/bootstrap/serverjack-ctl
+#                                      # container test (see managed-install.sh);
+#                                      # needs docker able to run --privileged
+#                                      # containers with real systemd, and skips
+#                                      # itself with a message otherwise
 #
 # There is one listener per instance now: serverjack serves the terminal itself
 # by proxying /term/ to ttyd's Unix socket, so the browsers talk straight to
@@ -255,32 +260,64 @@ else
 fi
 tmux kill-session -t =pwauto 2>/dev/null
 
-suites=("$@"); [[ ${#suites[@]} -eq 0 ]] && suites=(pwtest pwclip pwmobile pwpop pwland pwauth pwwin)
+# "managed-install" is not a Playwright suite (no managed-install.py) -- it
+# selects the separate, heavier container test below instead. No args means
+# the full default suite list AND managed-install; explicit suite names
+# (e.g. `pwclip`) mean just those, for fast iteration, unless
+# "managed-install" is named among them too.
+run_managed=0
+explicit_args=("$@")
+if (( ${#explicit_args[@]} == 0 )); then
+  run_managed=1
+fi
+suites=()
+for a in "${explicit_args[@]}"; do
+  if [[ $a == managed-install ]]; then
+    run_managed=1
+  else
+    suites+=("$a")
+  fi
+done
+[[ ${#suites[@]} -eq 0 && ${#explicit_args[@]} -eq 0 ]] \
+  && suites=(pwtest pwclip pwmobile pwpop pwland pwauth pwwin)
 for suite in "${suites[@]}"; do
   [[ $suite =~ ^[a-zA-Z0-9_-]+$ && -f $suite.py ]] \
     || { echo "unknown test suite: $suite" >&2; exit 2; }
 done
 set +e
-docker run --rm --cidfile "$BROWSER_CID" --network host \
-  -v "$PWD:/w" -w /w -v "$RUN_ROOT:$RUN_ROOT" -v "$PWD/../bin:/repo-bin:ro" \
-  -e TMUX_SOCK="$TMUX_SOCK" -e SERVERJACK_TEST_BASE="$BASE" \
-  -e SERVERJACK_TEST_AUTH_BASE="$AUTH_BASE" -e SERVERJACK_TEST_THEME_BASE="$THEME_BASE" \
-  "$IMG" bash -c '
-  set -euo pipefail
-  # Pillow: pwtest.py decodes a screenshot clip to prove a terminal glyph is
-  # visible against its cursor cell (more than one color in it).
-  pip install -q --timeout 15 --retries 1 playwright==1.62.0 Pillow >/dev/null 2>&1
-  (apt-get -qq update && apt-get -qq install -y tmux) >/dev/null 2>&1
-  failed=0
-  for s in "$@"; do
-    echo "== $s"
-    if ! python3 "$s.py"; then failed=1; fi
-  done
-  exit "$failed"' browser-tests "${suites[@]}" 2>&1 \
-  | grep -v 'GL Driver\|maybe unknown option' | tee shots/browser.log
-browser_status=${PIPESTATUS[0]}
+browser_status=0
+if (( ${#suites[@]} )); then
+  docker run --rm --cidfile "$BROWSER_CID" --network host \
+    -v "$PWD:/w" -w /w -v "$RUN_ROOT:$RUN_ROOT" -v "$PWD/../bin:/repo-bin:ro" \
+    -e TMUX_SOCK="$TMUX_SOCK" -e SERVERJACK_TEST_BASE="$BASE" \
+    -e SERVERJACK_TEST_AUTH_BASE="$AUTH_BASE" -e SERVERJACK_TEST_THEME_BASE="$THEME_BASE" \
+    "$IMG" bash -c '
+    set -euo pipefail
+    # Pillow: pwtest.py decodes a screenshot clip to prove a terminal glyph is
+    # visible against its cursor cell (more than one color in it).
+    pip install -q --timeout 15 --retries 1 playwright==1.62.0 Pillow >/dev/null 2>&1
+    (apt-get -qq update && apt-get -qq install -y tmux) >/dev/null 2>&1
+    failed=0
+    for s in "$@"; do
+      echo "== $s"
+      if ! python3 "$s.py"; then failed=1; fi
+    done
+    exit "$failed"' browser-tests "${suites[@]}" 2>&1 \
+    | grep -v 'GL Driver\|maybe unknown option' | tee shots/browser.log
+  browser_status=${PIPESTATUS[0]}
+fi
+
+# Optional, host-side, needs docker able to run --privileged containers with
+# real systemd -- managed-install.sh itself detects that and skips (exit 0)
+# with a clear message when it can't, rather than failing the whole suite.
+managed_status=0
+if (( run_managed )); then
+  echo "== managed-install (host-side)"
+  bash ./managed-install.sh 2>&1 | tee shots/managed-install.log
+  managed_status=${PIPESTATUS[0]}
+fi
 set -e
 if (( failures > 0 )); then
   echo "$failures host-side check(s) failed" >&2
 fi
-(( browser_status == 0 && failures == 0 ))
+(( browser_status == 0 && managed_status == 0 && failures == 0 ))
