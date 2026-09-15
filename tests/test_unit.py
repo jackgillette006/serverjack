@@ -482,5 +482,84 @@ class DefaultSessionNameTests(unittest.TestCase):
             mod.default_session_name("shell", "/home/x/src", "sudo apt install ffmpeg"), "apt-src-2")
 
 
+class InstallChannelTests(unittest.TestCase):
+    """_install_channel() backs update_available()/UPDATE_CMD and the
+    "channel" field in /api/status -- see bin/serverjack-ctl and
+    bootstrap/serverjack-bootstrap.sh.in for the install.json writers this
+    reads. Each test points mod.HOME/mod.REPO at fresh throwaway
+    directories (never the real ones setUpModule already redirected
+    XDG_RUNTIME_DIR/SERVERJACK_CONFIG to) so it never reads this machine's
+    actual install, whatever channel it happens to be on."""
+
+    def setUp(self):
+        self._orig_home = mod.HOME
+        self._orig_repo = mod.REPO
+
+    def tearDown(self):
+        mod.HOME = self._orig_home
+        mod.REPO = self._orig_repo
+
+    def _fresh_dirs(self):
+        home = tempfile.mkdtemp(prefix="sj-unit-home-")
+        repo = tempfile.mkdtemp(prefix="sj-unit-repo-")
+        _tmpdirs.extend([home, repo])
+        return home, repo
+
+    def _channel_for(self, home, repo):
+        mod.HOME, mod.REPO = home, repo
+        return mod._install_channel()
+
+    def test_release_channel_from_install_json(self):
+        home, repo = self._fresh_dirs()
+        share = os.path.join(home, ".local", "share", "serverjack")
+        os.makedirs(share)
+        with open(os.path.join(share, "install.json"), "w", encoding="utf-8") as fh:
+            json.dump({"channel": "release", "version": "1.4.0", "installed_at": "x",
+                       "previous": None}, fh)
+        self.assertEqual(self._channel_for(home, repo), ("release", "1.4.0"))
+
+    def test_git_channel_when_no_install_json(self):
+        home, repo = self._fresh_dirs()
+        os.makedirs(os.path.join(repo, ".git"))
+        self.assertEqual(self._channel_for(home, repo), ("git", None))
+
+    def test_unknown_channel_when_neither(self):
+        home, repo = self._fresh_dirs()
+        self.assertEqual(self._channel_for(home, repo), ("unknown", None))
+
+    def test_install_json_wins_over_a_git_directory(self):
+        # A managed install's release directory is never a git checkout in
+        # practice, but if install.json says "release", trust it over
+        # incidentally finding a .git next to bin/serverjack.
+        home, repo = self._fresh_dirs()
+        share = os.path.join(home, ".local", "share", "serverjack")
+        os.makedirs(share)
+        with open(os.path.join(share, "install.json"), "w", encoding="utf-8") as fh:
+            json.dump({"channel": "release", "version": "2.0.0"}, fh)
+        os.makedirs(os.path.join(repo, ".git"))
+        self.assertEqual(self._channel_for(home, repo), ("release", "2.0.0"))
+
+    def test_malformed_install_json_falls_back_to_git(self):
+        home, repo = self._fresh_dirs()
+        share = os.path.join(home, ".local", "share", "serverjack")
+        os.makedirs(share)
+        with open(os.path.join(share, "install.json"), "w", encoding="utf-8") as fh:
+            fh.write("{not valid json")
+        os.makedirs(os.path.join(repo, ".git"))
+        self.assertEqual(self._channel_for(home, repo), ("git", None))
+
+    def test_install_json_with_other_channel_falls_back(self):
+        # Only "release" is a channel this file recognizes; anything else
+        # (a future channel value, a hand-edited file) must not be trusted
+        # as one -- fall through to the git/unknown checks like a missing
+        # file would.
+        home, repo = self._fresh_dirs()
+        share = os.path.join(home, ".local", "share", "serverjack")
+        os.makedirs(share)
+        with open(os.path.join(share, "install.json"), "w", encoding="utf-8") as fh:
+            json.dump({"channel": "something-else"}, fh)
+        self.assertEqual(self._channel_for(home, repo), ("unknown", None))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

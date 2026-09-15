@@ -230,8 +230,33 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 VERSION = "1.3.0"
 HOME = os.path.expanduser("~")
 # The checkout this file lives in: <repo>/bin/serverjack. Used for the built-in
-# "Update serverjack" shortcut, which only appears when <repo>/.git exists.
+# "Update serverjack" shortcut, which only appears when <repo>/.git exists (a
+# git-checkout install) or ~/.local/share/serverjack/install.json says so (a
+# managed, bootstrap-installed release) -- see _install_channel() below.
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def _install_channel():
+    """("release", version) for a managed install (bin/serverjack-ctl,
+    bootstrap/serverjack-bootstrap.sh.in) -- read once at import, since the
+    answer cannot change without this unit restarting (serverjack-ctl update
+    always restarts it). ("git", None) for a plain git checkout. Otherwise
+    ("unknown", None): a tarball copy someone extracted by hand, or anything
+    else this process doesn't recognize -- update_available() is False."""
+    install_json = os.path.join(HOME, ".local", "share", "serverjack", "install.json")
+    try:
+        with open(install_json, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        if doc.get("channel") == "release":
+            return "release", doc.get("version")
+    except (OSError, ValueError, UnicodeDecodeError):
+        pass
+    if os.path.exists(os.path.join(REPO, ".git")):
+        return "git", None
+    return "unknown", None
+
+
+CHANNEL, _INSTALL_JSON_VERSION = _install_channel()
 LISTEN = (os.environ.get("SERVERJACK_LISTEN") or "tcp").strip().lower()
 if LISTEN not in ("tcp", "unix"):
     raise SystemExit("serverjack: SERVERJACK_LISTEN must be tcp or unix")
@@ -1155,11 +1180,17 @@ def add_shortcut(label, cmd, cwd):
 # reconnects to the same session as soon as the new process is listening.
 
 UPDATE_ID = "builtin-update"
-UPDATE_CMD = f"cd {shlex.quote(REPO)} && git pull --ff-only && bash install.sh"
+if CHANNEL == "release":
+    # Absolute path: this runs inside a login shell in a fresh tmux session,
+    # not necessarily with the unit's own PATH, and install.sh puts
+    # serverjack-ctl at exactly this path for a managed install.
+    UPDATE_CMD = shlex.quote(os.path.join(HOME, ".local", "bin", "serverjack-ctl")) + " update"
+else:
+    UPDATE_CMD = f"cd {shlex.quote(REPO)} && git pull --ff-only && bash install.sh"
 
 
 def update_available():
-    return os.path.exists(os.path.join(REPO, ".git"))   # a file in a git worktree
+    return CHANNEL in ("release", "git")
 
 
 # ---------- autostart: servers and daemons to bring up when serverjack starts
@@ -1373,6 +1404,7 @@ def status():
         "agents": agents,
         "agents_summary": " · ".join(parts),
         "version": VERSION,
+        "channel": CHANNEL,
     }
     out.update(system_stats())
     return out
@@ -3657,7 +3689,7 @@ class Handler(BaseHTTPRequestHandler):
             sid = f.get("id", "")
             if sid == UPDATE_ID:
                 if not update_available():
-                    return self.send_html(render("This copy of serverjack is not a git checkout."), 400)
+                    return self.send_html(render("This copy of serverjack is neither a git checkout nor a managed release install."), 400)
                 # install.sh restarts the unit at the end; KillMode=process
                 # keeps the tmux server (and this session) alive, so the
                 # result stays on screen and the page reconnects to it.
