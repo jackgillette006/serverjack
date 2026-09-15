@@ -2,10 +2,11 @@
 # docs/shots/fixture.sh -- the isolated, neutral serverjack instance shared by
 # make.sh and make-gif.sh: a throwaway repo copy with no .git, a fake $HOME
 # with example project dirs (3d-lab, game, media-stack, src) and real git
-# history in two of them, a fixture "claude" binary plus a scratch
-# SERVERJACK_CONFIG that names it, and an isolated tmux server with the three
-# demo sessions already seeded. This is what keeps the README stills (from
-# make.sh) and the demo GIF (from make-gif.sh) showing the exact same data.
+# history in two of them, the real OpenCode binary copied in (not a fake
+# stand-in -- the demo opens its actual TUI) plus a scratch SERVERJACK_CONFIG,
+# and an isolated tmux server with the three demo sessions already seeded.
+# This is what keeps the README stills (from make.sh) and the demo GIF (from
+# make-gif.sh) showing the exact same data.
 #
 # Sourced, not run: `source fixture.sh` from a script that has already `cd`ed
 # to docs/shots, set `set -Eeuo pipefail`, and set RUN_ROOT_PREFIX (e.g.
@@ -15,14 +16,19 @@
 # make-gif.sh's recording container id, its ffmpeg output dir -- needs to run
 # its own steps around it).
 #
-# Sets: RUN_ROOT, NEUTRAL_REPO, FAKE_HOME, FIXTURE_BIN, CFG, TMUX_TMPDIR,
+# Sets: RUN_ROOT, NEUTRAL_REPO, FAKE_HOME, OPENCODE_VERSION, CFG, TMUX_TMPDIR,
 # TMUX_SOCK, T (a `tmux -S ...` invocation array), session_shell. Starts three
 # tmux sessions (game, media-stack, 3d-lab) with game's pane already fed a
 # short `ls` / `git log` transcript.
 #
+# Requires the real OpenCode binary to already be installed on this machine
+# (checks $PATH, then ~/.opencode/bin/opencode) -- see the OpenCode section
+# below. Never touches the host's own ~/.opencode or PATH: it's copied once
+# into this throwaway fixture's own fake $HOME.
+#
 # tests/run.sh predates this file and has its own, differently-shaped fixture
-# (a plain shell prompt, no fake "claude", no git history) -- it is
-# deliberately left alone rather than folded in here.
+# (a plain shell prompt, no OpenCode, no git history) -- it is deliberately
+# left alone rather than folded in here.
 
 : "${RUN_ROOT_PREFIX:?fixture.sh: set RUN_ROOT_PREFIX before sourcing}"
 
@@ -129,48 +135,51 @@ TXT
 # shows something rather than a flat "nothing to commit".
 : > "$FAKE_HOME/projects/3d-lab/renders/frame-001.png"
 
-# A fixture "claude" on PATH -- an honest stand-in, not a fake product UI. It
-# just execs a plain interactive bash (reading the fake HOME's rcfiles set up
-# below), so a session launched through it shows a real, if scripted, shell.
-# Having a real `claude` executable resolvable via TOOL_PATH is also what
-# makes tool_kinds() offer the "Claude Code" pill at all, and what the Start
-# card's hint text ("Runs <code>") names -- so make.sh's stills and
-# make-gif.sh's recording show the exact same thing.
-FIXTURE_BIN="$RUN_ROOT/bin"
-mkdir -m 700 "$FIXTURE_BIN"
-cat > "$FIXTURE_BIN/claude" <<'SH'
-#!/usr/bin/env bash
-# Fixture stand-in for the real Claude Code CLI, used only by this
-# throwaway demo instance. Honest: it just hands you a plain shell.
-exec bash "$@"
-SH
-chmod +x "$FIXTURE_BIN/claude"
-# Ahead of the real PATH so this fixture wins over any real `claude` CLI
-# installed on the host running this script. This export reaches the server
-# and ttyd processes (started below via `env`, which inherits the rest of
-# this shell's environment) and is what makes tool_kinds() report claude
-# "installed". command_args() in bin/serverjack resolves a launched tool's
-# absolute path from that same TOOL_PATH itself and re-exports it inside the
-# session's login shell, so a session started through the browser's Start
-# button finds this fixture too -- no PATH games needed in the session's own
-# rcfiles any more.
-export PATH="$FIXTURE_BIN:$PATH"
+# -------------------------------------------------------------- opencode --
+# The real OpenCode binary, not a fake stand-in: the demo opens its actual
+# TUI, so it has to be the genuine program. bin/serverjack's builtin tools
+# registry already has an "opencode" entry with "paths": ["~/.opencode/bin"],
+# so copying it in there is all that's needed -- no tools.json override, and
+# no PATH games (command_args() resolves it through that same "paths" list,
+# not a plain PATH search -- see bin/serverjack). Never touches the host's
+# own ~/.opencode or PATH: this copy lives only under the fake HOME below,
+# which is only ever HOME for the throwaway serverjack/ttyd processes and
+# tmux sessions this file starts.
+OPENCODE_SRC=$(command -v opencode || true)
+[[ -n $OPENCODE_SRC ]] || OPENCODE_SRC="$HOME/.opencode/bin/opencode"
+if [[ ! -x $OPENCODE_SRC ]]; then
+  echo 'fixture.sh: OpenCode not found ($PATH, then ~/.opencode/bin/opencode) --' >&2
+  echo "the demo needs the real program, not a fake stand-in. Install it first:" >&2
+  echo "  curl -fsSL https://opencode.ai/install | bash" >&2
+  exit 1
+fi
+mkdir -p "$FAKE_HOME/.opencode/bin"
+cp "$OPENCODE_SRC" "$FAKE_HOME/.opencode/bin/opencode"
+chmod +x "$FAKE_HOME/.opencode/bin/opencode"
+OPENCODE_VERSION=$("$FAKE_HOME/.opencode/bin/opencode" --version 2>/dev/null || echo unknown)
+echo "fixture.sh: using OpenCode $OPENCODE_VERSION from $OPENCODE_SRC" >&2
 
-# A generic prompt -- no real username or hostname. \w expands relative to
-# $HOME, and HOME below is this fake one, so it renders as "~" / "~/projects/game".
-printf '%s\n' "PS1='dev@homeserver:\\w\$ '" "unset HISTFILE" > "$FAKE_HOME/bashrc"
+# A generic, colored prompt -- Debian's default look (bold green user@host,
+# bold blue path), no real username or hostname. The \[...\] pairs wrap the
+# color escapes so bash's line-wrapping math skips over them instead of
+# counting them as visible columns -- without that the prompt miscounts
+# itself on a resize. \w expands relative to $HOME, and HOME below is this
+# fake one, so it renders as "~" / "~/projects/game".
+cat > "$FAKE_HOME/bashrc" <<'RC'
+PS1='\[\e[01;32m\]dev@homeserver\[\e[00m\]:\[\e[01;34m\]\w\[\e[00m\]\$ '
+unset HISTFILE
+RC
 printf -v session_shell 'exec env HOME=%q bash --noprofile --rcfile %q -i' \
   "$FAKE_HOME" "$FAKE_HOME/bashrc"
 cp "$FAKE_HOME/bashrc" "$FAKE_HOME/.bashrc"
-printf '%s\n' "PS1='dev@homeserver:\\w\$ '" "unset HISTFILE" > "$FAKE_HOME/.bash_profile"
+cp "$FAKE_HOME/bashrc" "$FAKE_HOME/.bash_profile"
 
 # --------------------------------------------------------------- scratch cfg
 CFG="$RUN_ROOT/cfg"
 mkdir -m 700 "$CFG"
-cat > "$CFG/tools.json" <<'JSON'
-[{"id": "claude", "label": "Claude Code", "bin": "claude", "login": "true",
-  "login_check": "true", "run": "claude"}]
-JSON
+# No tools.json needed: bin/serverjack's builtin "opencode" entry already
+# points "paths" at ~/.opencode/bin, which now holds the real binary copied
+# in above.
 cat > "$CFG/shortcuts.json" <<'JSON'
 [{"id": "sc-media", "label": "Rebuild media stack",
   "cmd": "cd ~/projects/media-stack && docker compose pull && docker compose up -d"},
@@ -207,12 +216,12 @@ T=(tmux -S "$TMUX_SOCK")
 "${T[@]}" new-session -d -s game -x 100 -y 30 -c "$FAKE_HOME/projects/game" "$session_shell"
 "${T[@]}" set-environment -g HOME "$FAKE_HOME"
 "${T[@]}" new-session -d -s media-stack -x 100 -y 30 -c "$FAKE_HOME/projects/media-stack" "$session_shell"
-# Looks like Claude Code is working in 3d-lab, without running anything real:
+# Looks like OpenCode is working in 3d-lab, without running anything real:
 # rename this pane's own process via exec -a so tmux reports its command as
-# "claude". "exec -a" is a bash-ism (dash lacks it), so force bash explicitly
-# rather than trust tmux's default-shell.
+# "opencode". "exec -a" is a bash-ism (dash lacks it), so force bash
+# explicitly rather than trust tmux's default-shell.
 "${T[@]}" new-session -d -s 3d-lab -x 100 -y 30 -c "$FAKE_HOME/projects/3d-lab" \
-  'bash -c "exec -a claude sleep infinity"'
+  'bash -c "exec -a opencode sleep infinity"'
 
 # Feed the "game" pane its transcript now, over tmux itself -- not by typing
 # into the live xterm later. Typing through the browser raced against
@@ -222,5 +231,5 @@ T=(tmux -S "$TMUX_SOCK")
 sleep 0.5   # let the login shell print its first prompt before send-keys
 "${T[@]}" send-keys -t game "ls" Enter
 sleep 0.4
-"${T[@]}" send-keys -t game "git log --oneline -3" Enter
+"${T[@]}" send-keys -t game "git log --oneline --graph --color=always -3" Enter
 sleep 0.6

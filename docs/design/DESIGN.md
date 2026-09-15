@@ -147,9 +147,27 @@ When implementing or refactoring UI:
 - Keep effects subtle enough that removing blur/texture would not break the hierarchy.
 - When uncertain, choose the cleaner/more modern option rather than increasing retro decoration.
 
+## Terminal theme
+
+The terminal itself is ttyd's xterm.js, not this UI layer -- the wrapper bar, soft keys, compose bar and the landing page are what actually follow this document's components. But by default (`SERVERJACK_TERM_THEME` unset or not `off`) `bin/serverjack-ttyd` passes ttyd a `-t theme=...` built straight from the color tokens above, so the terminal blends with the surrounding page instead of showing xterm.js's stock look next to it:
+
+| xterm.js theme key | Token | Reasoning |
+|---|---|---|
+| `background` | `--bg-primary` | The page's own background, so the iframe has no visible seam |
+| `foreground` | `--text-primary` | Same as the rest of the UI's primary text |
+| `cursor` / `cursorAccent` | `--accent` | The one precious green, same rule as everywhere else in this doc |
+| `selectionBackground` | translucent `--accent` (`rgba(57,255,136,0.3)`) | Visible highlight without competing with the cursor |
+| ANSI `green` / `brightGreen` | `--accent` / a brightened tint of it | Keeps the app's green consistent inside the terminal too |
+| ANSI `red` / `yellow` / `blue` / `magenta` | `--danger` / `--warning` / `--info` / `--agent-purple` | Reuses the semantic tokens rather than inventing terminal-only colors |
+| ANSI `black` / `white` and the `bright*` variants | brightened tints of the above | Standard hues stay recognizable, but readable against `--bg-primary` -- xterm.js's own stock dark colors read as near-invisible on a background this dark |
+
+`fontSize` and `fontFamily` are left at ttyd's own defaults (13px, `Consolas, Liberation Mono, Menlo, Courier, monospace`). A larger `fontSize` (xterm.js's own default is 15, which reads better on a phone) was tried, but it changes the terminal's row/column grid enough to break mouse-drag text selection (confirmed against `tests/pwtest.py`'s "Ctrl+C with selection copies" check) -- not worth it for a font a couple of px bigger.
+
+Set `SERVERJACK_TERM_THEME=off` to skip all of this and get ttyd's stock xterm.js theme back; a `-t theme=...` of your own in `TTYD_EXTRA_ARGS` always overrides the default regardless of that setting (see the README's config table).
+
 ## Implementation constraints for serverjack
 
 - **System fonts only.** No webfont downloads: use the fallback stacks (`ui-monospace, SFMono-Regular, Menlo, Consolas, monospace` and `system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`). The page must work offline and anywhere.
 - **No external assets.** Everything inline in `bin/serverjack`; no CDN, no icon fonts. Icons are inline SVG or plain glyphs.
-- **The terminal itself is ttyd's xterm.js.** Its theming is out of scope for the UI layer; only the wrapper bar, soft keys, compose bar and the landing page follow this document.
+- **The terminal itself is ttyd's xterm.js.** Only its default *theme* is driven from these tokens (see "Terminal theme" above, implemented in `bin/serverjack-ttyd`); the wrapper bar, soft keys, compose bar and the landing page are the actual UI layer this document governs.
 - The reference design boards are not checked in (large PNGs); the tokens above are the source of truth.

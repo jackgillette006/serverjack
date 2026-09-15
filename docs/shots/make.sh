@@ -7,11 +7,12 @@
 #   bash docs/shots/make.sh
 #
 # The fixture setup below (neutral repo copy, fake $HOME with example
-# project dirs and a tiny git history, a fixture "claude" binary, scratch
-# SERVERJACK_CONFIG, isolated tmux server, three seeded sessions) lives in
-# fixture.sh, shared with make-gif.sh so the README stills and the demo GIF
-# always come from the same data -- read that file first if this needs
-# changing. This script does not depend on anything under tests/ at runtime,
+# project dirs and a tiny git history, the real OpenCode binary copied in,
+# scratch SERVERJACK_CONFIG, isolated tmux server, three seeded sessions)
+# lives in fixture.sh, shared with make-gif.sh so the README stills and the
+# demo GIF always come from the same data -- read that file first if this
+# needs changing (it also requires OpenCode to already be installed on this
+# machine). This script does not depend on anything under tests/ at runtime,
 # and it never touches the real serverjack units, the real tmux server, or
 # ~/.config/serverjack.
 #
@@ -22,9 +23,8 @@
 #     so the built-in "Update serverjack" shortcut (which names this
 #     checkout's real path) never renders
 #   - SERVERJACK_SSH=off, so no user@host line is computed at all
-#   - one saved shortcut and a fixture "Claude Code" agent (its `claude` is a
-#     real, if stubbed, binary on PATH -- see fixture.sh) so the Shortcuts
-#     and Agents cards aren't empty, without running anything real
+#   - one saved shortcut and the real OpenCode binary (see fixture.sh -- not
+#     a fake stand-in) so the Shortcuts and Agents cards aren't empty
 set -Eeuo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 IMG=mcr.microsoft.com/playwright/python:v1.62.0-noble@sha256:aa81288e738725378becba5b3e06cb0f3a7f012a610e87e8d767a090ea3f740d
@@ -53,7 +53,7 @@ PY
 BASE="http://127.0.0.1:$PORT"
 
 common=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE="Home server" SERVERJACK_FX=off
-        SERVERJACK_CONFIG="$CFG" SERVERJACK_TOOLS=claude SERVERJACK_SSH=off
+        SERVERJACK_CONFIG="$CFG" SERVERJACK_TOOLS=opencode SERVERJACK_SSH=off
         SERVERJACK_DIRS="~/projects/3d-lab:~/projects/game:~/projects/media-stack:~/src:~"
         HOME="$FAKE_HOME" XDG_RUNTIME_DIR="$RT")
 env "${common[@]}" SERVERJACK_PORT="$PORT" \

@@ -9,6 +9,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Terminal uses the app's color theme by default (`SERVERJACK_TERM_THEME=off`
+  to keep ttyd's default).
 - README "Why serverjack" opens with what serverjack does (start an agent in
   the right directory, paste the command it asked for, close finished tmux
   sessions) rather than with checking on a running agent, which is what the

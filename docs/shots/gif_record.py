@@ -3,25 +3,24 @@
 Records a video of the demo flow against the same isolated, neutral
 serverjack instance make.sh uses for the three static screenshots (see
 make-gif.sh, which sets it up identically): land on the phone-emulated
-landing page, pick the "Claude Code" pill, type the ~/projects/3d-lab path
+landing page, pick the "OpenCode" pill, type the ~/projects/3d-lab path
 into the "...or type a path" input (the <select> picker doesn't render as a
 native popup under emulation, so typing is the only part of the directory
 picker that's actually visible on screen), tap Start, sit on the live
-terminal for a few seconds, tap back to the session list.
+terminal while the real OpenCode TUI opens in that directory, tap back to
+the session list.
 
-The fake "Claude Code" tool in the scratch cfg still just execs a plain bash
-shell under the hood (see make-gif.sh's tools.json and its fixture `claude`
-wrapper on PATH) -- nothing real starts, and the terminal never fakes a
-product UI. To put something visible on screen without racing ttyd's
-WebSocket with live keystrokes (see shots.py's docstring -- typing through
-the browser under load once left a capture showing a blank pane), this
-script hands the new session's name to make-gif.sh over
-SHOTS_OUT/session_name.txt the moment Start lands it on the terminal page,
-and waits for SHOTS_OUT/typed_done: the host feeds that session a short,
-honest, neutral transcript (`ls --color=always`, `git status`, then a live
-`ls`) directly over tmux (guaranteed to be the same tmux binary/version as
-the server, unlike one apt-installed inside this container) while the video
-is rolling.
+OpenCode in the scratch cfg is the genuine binary (see fixture.sh -- it's
+copied into the fake HOME, never a fake stand-in), so nothing needs typing
+into the session after Start: the terminal just shows the real program
+booting and rendering its own ready state on its own. That also sidesteps
+what used to be the reason for feeding a scripted transcript over tmux here
+(see shots.py's docstring -- typing through the browser under load once
+raced ttyd's WebSocket and left a capture showing a blank pane): there's no
+shell prompt in this pane to type a command at any more, real or fake, so
+this script hands the new session's name to make-gif.sh over
+SHOTS_OUT/session_name.txt (only so the host-side /tmp/ regression check
+knows which tmux session to look at) and otherwise just waits.
 
 A small tap-ring overlay is injected via add_init_script (persists across
 the full-page navigations the Start form and the "All sessions" link both
@@ -34,14 +33,12 @@ converts it with ffmpeg.
 """
 import os
 import re
-import time
 
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ["SHOTS_BASE"]
 OUT = os.environ["SHOTS_OUT"]
 NAME_FILE = os.path.join(OUT, "session_name.txt")
-DONE_FILE = os.path.join(OUT, "typed_done")
 
 TAP_RING_SCRIPT = """
 (() => {
@@ -93,15 +90,6 @@ TAP_RING_SCRIPT = """
   else install();
 })();
 """
-
-
-def wait_for_file(path, timeout=8.0):
-    end = time.time() + timeout
-    while time.time() < end:
-        if os.path.exists(path):
-            return True
-        time.sleep(0.1)
-    return False
 
 
 with sync_playwright() as p:
@@ -157,8 +145,8 @@ with sync_playwright() as p:
     page.wait_for_selector("h2:text-is('Sessions')")
     page.wait_for_timeout(1500)   # brief hold on the landing page
 
-    # ---------------------------------------------- pick Claude Code, 3d-lab
-    tap(page.locator('.seg label:has(input[name=what][value="claude"])'))
+    # -------------------------------------------------- pick OpenCode, 3d-lab
+    tap(page.locator('.seg label:has(input[name=what][value="opencode"])'))
     page.wait_for_timeout(800)
 
     # The <select> directory picker never renders as a native popup under
@@ -177,15 +165,20 @@ with sync_playwright() as p:
     name = m.group(1) if m else ""
     with open(NAME_FILE, "w") as f:
         f.write(name)
-    print(f"started session {name!r}, waiting for make-gif.sh to feed it")
+    print(f"started session {name!r}")
 
     term = page.frame_locator("#frame").locator(".xterm-helper-textarea")
     term.wait_for(state="attached", timeout=15000)
-    page.wait_for_timeout(500)
-
-    if not wait_for_file(DONE_FILE, timeout=4.0):
-        print("warning: never saw typed_done -- recording may lack the fed transcript")
-    page.wait_for_timeout(3500)   # hold on the terminal, content visible
+    # OpenCode is a real ~180 MB binary, not an instant fake shell -- give it
+    # a real beat to start and draw its ready-state TUI (its own ASCII
+    # banner, the "Ask anything..." input, the /connect tip) before the hold
+    # below that's meant to show it fully rendered. Measured against a cold
+    # container (first run, no page/fs cache warm) it took ~4s after the
+    # textarea attached for the TUI to actually finish painting -- 3000ms
+    # here left the earlier version of this recording mostly showing a
+    # blank pane. 5000ms leaves real margin.
+    page.wait_for_timeout(5000)
+    page.wait_for_timeout(3000)   # hold on the rendered terminal
 
     # ---------------------------------------------------------- back out --
     tap(page.locator('a.ib[title="All sessions"]'), pre_delay=250)
@@ -193,10 +186,10 @@ with sync_playwright() as p:
     sessions_h2.wait_for(state="visible")
     # The Sessions list sits below the Start-a-session and Shortcuts cards,
     # off the bottom of a phone viewport -- scroll it into view so the
-    # recording actually shows the new claude-3d-lab session card, not just
-    # the top of the page again.
+    # recording actually shows the new opencode-3d-lab session card, not
+    # just the top of the page again.
     sessions_h2.scroll_into_view_if_needed()
-    page.wait_for_timeout(1500)   # hold on the list, showing claude-3d-lab
+    page.wait_for_timeout(1500)   # hold on the list, showing opencode-3d-lab
 
     ctx.close()   # finalizes the .webm -- ends the recording right here
     b.close()
