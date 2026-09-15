@@ -232,8 +232,9 @@ VERSION = "1.3.0"
 HOME = os.path.expanduser("~")
 # The checkout this file lives in: <repo>/bin/serverjack. Used for the built-in
 # "Update serverjack" shortcut, which only appears when <repo>/.git exists (a
-# git-checkout install) or ~/.local/share/serverjack/install.json says so (a
-# managed, bootstrap-installed release) -- see _install_channel() below.
+# git-checkout install) or this process is physically running out of
+# ~/.local/share/serverjack/releases/ (a managed, bootstrap-installed
+# release) -- see _install_channel() below.
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 
@@ -243,15 +244,38 @@ def _install_channel():
     answer cannot change without this unit restarting (serverjack-ctl update
     always restarts it). ("git", None) for a plain git checkout. Otherwise
     ("unknown", None): a tarball copy someone extracted by hand, or anything
-    else this process doesn't recognize -- update_available() is False."""
-    install_json = os.path.join(HOME, ".local", "share", "serverjack", "install.json")
-    try:
-        with open(install_json, "r", encoding="utf-8") as fh:
-            doc = json.load(fh)
-        if doc.get("channel") == "release":
-            return "release", doc.get("version")
-    except (OSError, ValueError, UnicodeDecodeError):
-        pass
+    else this process doesn't recognize -- update_available() is False.
+
+    Decided by WHERE THIS FILE PHYSICALLY LIVES first (realpath(REPO) under
+    ~/.local/share/serverjack/releases/), not by whether install.json
+    happens to exist -- install.json is consulted only for the version
+    number to report, once the channel is already known. Getting this
+    backwards misclassifies a plain git checkout as "release" on any account
+    that also has an unrelated managed install sitting in
+    ~/.local/share/serverjack (install.json existing there says nothing
+    about which install THIS running process is)."""
+    releases_root = os.path.realpath(os.path.join(HOME, ".local", "share", "serverjack", "releases"))
+    if REPO == releases_root or REPO.startswith(releases_root + os.sep):
+        install_json = os.path.join(HOME, ".local", "share", "serverjack", "install.json")
+        try:
+            with open(install_json, "r", encoding="utf-8") as fh:
+                doc = json.load(fh)
+            if doc.get("channel") == "release":
+                return "release", doc.get("version")
+        except (OSError, ValueError, UnicodeDecodeError):
+            pass
+        # install.json is missing, unreadable, or does not (yet) name this
+        # version -- e.g. mid-bootstrap, or a tarball extracted by hand into
+        # releases/ -- fall back to the RELEASE file this release shipped
+        # with, which lives right next to this file regardless.
+        try:
+            with open(os.path.join(REPO, "RELEASE"), "r", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("version="):
+                        return "release", line.strip().split("=", 1)[1] or None
+        except OSError:
+            pass
+        return "release", None
     if os.path.exists(os.path.join(REPO, ".git")):
         return "git", None
     return "unknown", None

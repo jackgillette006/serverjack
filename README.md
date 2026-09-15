@@ -604,17 +604,21 @@ serverjack-ctl prune [--yes]       # delete releases other than current/previous
 ```
 
 `update` resolves the latest release (or the named `--version`), downloads
-and verifies it, stages it under `~/.local/share/serverjack/releases/` without
-touching the running install, backs up the current systemd units and env
-file, activates the new release, and waits up to 30s for `/healthz` (and
-`/term/`) to answer. If that fails, it restores the prior units, env and
+and verifies it, stages it into a scratch directory under
+`~/.local/share/serverjack/releases/` (only renamed into place once fully
+extracted and verified) without touching the running install, backs up the
+current systemd units, env file and `serverjack-ctl` itself, activates the
+new release, and waits up to 30s for `/healthz` and both units being active.
+If that fails, it restores the prior units, env, `serverjack-ctl` and
 `current` symlink and reports it — automatically, no second command needed.
-tmux is never restarted by any of this; the units are `KillMode=process`, so
-sessions (and a browser attached to one) survive an update, a failed update's
-rollback, or an explicit `rollback`. Every subcommand that changes anything
-asks for confirmation on `/dev/tty` unless you pass `--yes`, and they
-serialize against each other with a lock file, so a concurrent run waits
-rather than races.
+Any install flags the original bootstrap was given (most importantly
+`--no-serve`) are replayed on every later `update`/`rollback`, so they don't
+silently stop applying. tmux is never restarted by any of this; the units
+are `KillMode=process`, so sessions (and a browser attached to one) survive
+an update, a failed update's rollback, or an explicit `rollback`. Every
+subcommand that changes anything asks for confirmation on `/dev/tty` unless
+you pass `--yes`, and they serialize against each other with a lock file, so
+a concurrent run waits rather than races.
 
 ## Configure
 
