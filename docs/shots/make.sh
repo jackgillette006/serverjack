@@ -7,7 +7,7 @@
 #   bash docs/shots/make.sh
 #
 # The fixture setup below (neutral repo copy, fake $HOME with example
-# project dirs and a tiny git history, the real OpenCode binary copied in,
+# project dirs and a tiny git history, the real OpenCode binary linked in,
 # scratch SERVERJACK_CONFIG, isolated tmux server, three seeded sessions)
 # lives in fixture.sh, shared with make-gif.sh so the README stills and the
 # demo GIF always come from the same data -- read that file first if this
@@ -52,10 +52,14 @@ PY
 )
 BASE="http://127.0.0.1:$PORT"
 
+# $FAKE_HOME/.opencode/bin is prepended so the fixture's own OpenCode is what
+# a bare `opencode` resolves to, even on a machine whose ambient PATH (which
+# bin/serverjack's TOOL_PATH searches before a tool's own "paths" entries --
+# see fixture.sh's OpenCode section) already has a real one on it.
 common=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE="Home server" SERVERJACK_FX=off
         SERVERJACK_CONFIG="$CFG" SERVERJACK_TOOLS=opencode SERVERJACK_SSH=off
         SERVERJACK_DIRS="~/projects/3d-lab:~/projects/game:~/projects/media-stack:~/src:~"
-        HOME="$FAKE_HOME" XDG_RUNTIME_DIR="$RT")
+        HOME="$FAKE_HOME" XDG_RUNTIME_DIR="$RT" PATH="$FAKE_HOME/.opencode/bin:$PATH")
 env "${common[@]}" SERVERJACK_PORT="$PORT" \
   python3 "$NEUTRAL_REPO/bin/serverjack" >"$RUN_ROOT/web.log" 2>&1 & pids+=($!)
 env "${common[@]}" \

@@ -1,9 +1,46 @@
-import os, time, subprocess
+import io, os, re, time, subprocess
 from playwright.sync_api import sync_playwright
+from PIL import Image
 
 BASE = os.environ.get("SERVERJACK_TEST_BASE", "http://127.0.0.1:7690")
 SESS = "pwtest"
 fails = 0
+
+# Read bin/serverjack's TOKENS text directly (no import -- that would run the
+# whole module) so expected colors below come from the token, not a
+# hand-typed duplicate of it. This script runs inside tests/run.sh's browser
+# container, which only bind-mounts tests/ itself plus, read-only, the repo's
+# bin/ (as /repo-bin) for exactly this -- fall back to the relative path for
+# a run straight on the host against an already-running instance.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _candidate in ("/repo-bin/serverjack", os.path.join(_HERE, "..", "bin", "serverjack")):
+    if os.path.exists(_candidate):
+        with open(_candidate) as _f:
+            _SERVERJACK_SRC = _f.read()
+        break
+else:
+    raise FileNotFoundError("bin/serverjack not found (checked /repo-bin and ../bin)")
+
+
+def token_hex(name):
+    m = re.search(r"--" + re.escape(name) + r":\s*#([0-9a-fA-F]{6})", _SERVERJACK_SRC)
+    assert m, f"token --{name} not found in bin/serverjack's TOKENS"
+    return m.group(1)
+
+
+def token_rgb_css(name):
+    h = token_hex(name)
+    return "rgb({}, {}, {})".format(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def png_color_count(png_bytes):
+    """Number of distinct RGB colors in a screenshot clip -- used to prove a
+    character is visible against its cell (more than one color) rather than
+    painted in the exact same color as its background (exactly one)."""
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    return len(img.getcolors(maxcolors=img.width * img.height))
+
+
 def pane():
     return subprocess.run(["tmux", "-S", os.environ.get("TMUX_SOCK", "/tmp/tmux-1000/default"), "capture-pane", "-p", "-t", SESS], capture_output=True, text=True).stdout
 def cmd():
@@ -32,15 +69,62 @@ with sync_playwright() as p:
     ok("bar shows current tab", page.locator("#tabs .tab.on").inner_text() == SESS)
     ok("terminal textarea focused", page.evaluate("document.getElementById('frame').contentDocument.activeElement.className.includes('xterm-helper-textarea')"))
 
-    # bin/serverjack-ttyd's default -t theme=... (SERVERJACK_TERM_THEME unset
-    # in tests/run.sh's common env, so this instance gets it) should paint
-    # the terminal in the app's own --bg-primary (#080f0e), not xterm.js's
-    # stock look. .xterm-screen and .xterm are transparent in this ttyd/
-    # xterm.js build (checked directly: getComputedStyle on both reports
-    # rgba(0,0,0,0) even with a theme applied) -- .xterm-viewport is the
-    # element that actually carries the painted background color.
+    # bin/serverjack's generated theme (?theme=... on the iframe src --
+    # SERVERJACK_TERM_THEME unset in tests/run.sh's common env, so this
+    # instance gets it) should paint the terminal in the app's own
+    # --bg-primary, not xterm.js's stock look. .xterm-screen and .xterm are
+    # transparent in this ttyd/xterm.js build (checked directly:
+    # getComputedStyle on both reports rgba(0,0,0,0) even with a theme
+    # applied) -- .xterm-viewport is the element that actually carries the
+    # painted background color.
+    expected_bg = token_rgb_css("bg-primary")
     bg = fr.locator(".xterm-viewport").evaluate("el => getComputedStyle(el).backgroundColor")
-    ok("terminal background matches the app's --bg-primary token (#080f0e)", bg == "rgb(8, 15, 14)", bg)
+    ok("terminal background matches the app's --bg-primary token", bg == expected_bg, f"{bg} != {expected_bg}")
+
+    # The theme actually applied inside the iframe (window.term is ttyd's
+    # client exposing its xterm.js Terminal instance globally) must be the
+    # one bin/serverjack generated, not ttyd's stock theme, and cursorAccent
+    # must differ from cursor: they were once the same value, which drew the
+    # character under a non-blinking block cursor in the same color as its
+    # own cursor cell -- invisible. The pixel check right after this proves
+    # it visually; this is the same fact at the value level.
+    applied_theme = page.evaluate(
+        "document.getElementById('frame').contentDocument.defaultView.term.options.theme")
+    ok("applied theme's cursorAccent differs from cursor",
+       applied_theme.get("cursorAccent") != applied_theme.get("cursor"), applied_theme)
+    ok("applied theme's cursorAccent matches --bg-primary (the fix)",
+       applied_theme.get("cursorAccent") == "#" + token_hex("bg-primary"), applied_theme)
+
+    # Visual proof the fix actually makes the glyph legible: clear the
+    # screen, print one character, move the cursor back onto it (ArrowLeft),
+    # then screenshot just that cursor cell (geometry from window.term's own
+    # cursorX/Y and the text canvas's rect, in real page coordinates) and
+    # count distinct colors in it. A single uniform color means the
+    # character and its cursor cell were painted the same color -- invisible
+    # -- which is exactly the bug this theme fixes.
+    page.keyboard.type("clear"); page.keyboard.press("Enter"); time.sleep(0.4)
+    page.keyboard.type("X"); time.sleep(0.2)
+    page.keyboard.press("ArrowLeft"); time.sleep(0.4)
+    cell = page.evaluate("""() => {
+        const frameEl = document.getElementById('frame');
+        const frameRect = frameEl.getBoundingClientRect();
+        const fd = frameEl.contentDocument;
+        const term = fd.defaultView.term;
+        const canvases = fd.querySelectorAll('.xterm-screen canvas');
+        const canvas = canvases[canvases.length - 1];
+        const canvasRect = canvas.getBoundingClientRect();
+        const cellW = canvasRect.width / term.cols, cellH = canvasRect.height / term.rows;
+        const cx = term.buffer.active.cursorX, cy = term.buffer.active.cursorY;
+        return {
+            x: frameRect.left + canvasRect.left + cx * cellW,
+            y: frameRect.top + canvasRect.top + cy * cellH,
+            width: cellW, height: cellH,
+        };
+    }""")
+    cell_png = page.screenshot(clip=cell)
+    n_colors = png_color_count(cell_png)
+    ok("cursor cell renders more than one color (glyph visible on its cursor)",
+       n_colors > 1, f"{n_colors} distinct color(s)")
 
     # typing reaches the shell
     page.keyboard.type("echo TYPED_OK"); page.keyboard.press("Enter"); time.sleep(0.8)

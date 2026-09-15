@@ -426,6 +426,12 @@ TITLE = os.environ.get("SERVERJACK_TITLE") or socket.gethostname().split(".")[0]
 # override either way (localStorage sj-fx), which is what the toggle writes.
 FX_CLASS = "" if (os.environ.get("SERVERJACK_FX") or "").strip().lower() in (
     "0", "off", "no", "false") else "fx"
+# Terminal color theme: on unless SERVERJACK_TERM_THEME says otherwise (same
+# spellings as SERVERJACK_FX above). The theme itself is built from TOKENS
+# further down (_term_theme()) and handed to ttyd_src() -- see there and
+# docs/design/DESIGN.md's "Terminal theme" section for how and why.
+TERM_THEME_OFF = (os.environ.get("SERVERJACK_TERM_THEME") or "").strip().lower() in (
+    "0", "off", "no", "false")
 TERM_PATH = os.environ.get("SERVERJACK_TERM", "/term/")
 if not TERM_PATH.endswith("/"):
     TERM_PATH += "/"          # ttyd builds its ws URL relative to the page path
@@ -1553,6 +1559,73 @@ TOKENS = """
   --focus-ring:0 0 0 3px rgb(57 255 136 / .24);
 }
 """
+
+
+def _token(name):
+    """A single value out of TOKENS, e.g. _token("bg-primary") -> "#080f0e".
+    The only place that reads the raw CSS text -- everything else that wants
+    a token color (the terminal theme below, in particular) goes through
+    this, so TOKENS stays the one place these colors are hand-typed."""
+    m = re.search(r"--" + re.escape(name) + r":\s*([^;]+);", TOKENS)
+    if not m:
+        raise SystemExit(f"serverjack: token --{name} missing from TOKENS")
+    return m.group(1).strip()
+
+
+def _hex_rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _term_theme():
+    """The terminal's xterm.js color theme, generated from TOKENS instead of
+    hand-typed -- this used to be duplicated in bin/serverjack-ttyd, this
+    function is now the only place it is written out. Handed to ttyd as
+    ?theme=<json> on the iframe src (see ttyd_src()): ttyd applies a URL
+    query's theme last, after any -t theme=... it was started with, so this
+    always wins over whatever bin/serverjack-ttyd does (nothing, now) or a
+    user's own TTYD_EXTRA_ARGS -t theme=... unless SERVERJACK_TERM_THEME=off
+    also drops this from the URL. See docs/design/DESIGN.md's "Terminal
+    theme" section for the full key-by-key mapping and reasoning.
+
+    Most keys reuse an app token outright. `cyan`/`brightCyan` and the plain
+    `bright*` tints have no matching semantic role in the app UI -- xterm.js
+    wants all 16 ANSI slots filled, so those are hand-picked here instead of
+    derived, kept in this one function rather than retyped anywhere else."""
+    accent = _token("accent")
+    r, g, b = _hex_rgb(accent)
+    return {
+        "background": _token("bg-primary"),
+        "foreground": _token("text-primary"),
+        "cursor": accent,
+        # The background token, not the accent: xterm.js paints the
+        # non-blinking block cursor as a solid `cursor`-colored cell with the
+        # character drawn in `cursorAccent` on top. Setting the two equal
+        # (the bug this replaced) drew the glyph in the same color as its
+        # own background -- invisible while the cursor sat on it.
+        "cursorAccent": _token("bg-primary"),
+        "selectionBackground": f"rgba({r},{g},{b},0.3)",
+        "black": _token("surface-alt"),
+        "red": _token("danger"),
+        "green": accent,
+        "yellow": _token("warning"),
+        "blue": _token("info"),
+        "magenta": _token("agent-purple"),
+        "cyan": "#56d4c8",           # terminal-only: no app token for cyan
+        "white": _token("text-secondary"),
+        "brightBlack": "#3f5148",    # hand-picked tints below, not token-derived --
+        "brightRed": "#ff7b72",      # standard ANSI hues stay recognizable but
+        "brightGreen": "#6dffab",    # readable against --bg-primary, which reads
+        "brightYellow": "#ffd479",   # xterm.js's own stock dark colors as
+        "brightBlue": "#7fb8ff",     # near-invisible
+        "brightMagenta": "#d896ff",
+        "brightCyan": "#7ee8db",     # terminal-only, brightened tint of cyan above
+        "brightWhite": _token("text-primary"),
+    }
+
+
+TERM_THEME = None if TERM_THEME_OFF else _term_theme()
+TERM_THEME_JSON = json.dumps(TERM_THEME) if TERM_THEME else None
 
 # ---- CRT effects. Opacity/transform only (compositor-cheap), every rule gated
 # on body.fx, and switched off wholesale under prefers-reduced-motion, so the
@@ -2699,7 +2772,16 @@ def term_href(name):                 # the wrapper page with the menu bar
 def ttyd_src(name):                  # what the wrapper's frame loads
     # ttyd -a turns the single ?arg= into argv[1] for bin/tmux-attach.sh: the
     # session name. TERM_PATH is served by this same process (proxy_term).
-    return f"{TERM_PATH}?arg={quote(name, safe='')}"
+    #
+    # &theme=... is how the terminal gets its color theme: ttyd's client
+    # applies a URL query's theme last (after any -t theme=... it started
+    # with), so this is the single source of truth -- see _term_theme() and
+    # docs/design/DESIGN.md's "Terminal theme" section. Skipped entirely
+    # when SERVERJACK_TERM_THEME=off (TERM_THEME_JSON is then None).
+    src = f"{TERM_PATH}?arg={quote(name, safe='')}"
+    if TERM_THEME_JSON:
+        src += f"&theme={quote(TERM_THEME_JSON, safe='')}"
+    return src
 
 
 def js(obj):

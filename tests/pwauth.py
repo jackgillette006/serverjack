@@ -151,8 +151,13 @@ with sync_playwright() as p:
     gp.goto(f"{AUTH}/s/{SESS}")
     gp.wait_for_selector("#tabs .tab.on")
     src = gp.get_attribute("#frame", "src")
-    ok("frame url carries the session name and nothing else",
-       src == f"/term/?arg={SESS}", src)
+    # ...and nothing unexpected: ?arg=<name> is the identity-carrying part
+    # this check cares about; an optional &theme=<json> (bin/serverjack's
+    # generated terminal color theme, see ttyd_src()) is the only other
+    # thing allowed to follow it -- not asserting its content here, that's
+    # tests/test_unit.py's TermThemeTests and tests/pwtest.py's job.
+    ok("frame url carries the session name and nothing unexpected",
+       src == f"/term/?arg={SESS}" or src.startswith(f"/term/?arg={SESS}&theme="), src)
     gp.frame_locator("#frame").locator(".xterm-helper-textarea").wait_for(state="attached", timeout=15000)
     time.sleep(1.5)
     gp.keyboard.type(f"echo AUTH_{TAG}")

@@ -2,11 +2,19 @@
 # docs/shots/fixture.sh -- the isolated, neutral serverjack instance shared by
 # make.sh and make-gif.sh: a throwaway repo copy with no .git, a fake $HOME
 # with example project dirs (3d-lab, game, media-stack, src) and real git
-# history in two of them, the real OpenCode binary copied in (not a fake
-# stand-in -- the demo opens its actual TUI) plus a scratch SERVERJACK_CONFIG,
-# and an isolated tmux server with the three demo sessions already seeded.
-# This is what keeps the README stills (from make.sh) and the demo GIF (from
-# make-gif.sh) showing the exact same data.
+# history in two of them, the real OpenCode binary linked in (see the
+# OpenCode section below) plus a scratch SERVERJACK_CONFIG, and an isolated
+# tmux server with the three demo sessions already seeded. This is what
+# keeps the README stills (from make.sh) and the demo GIF (from make-gif.sh)
+# showing the exact same data.
+#
+# The real binary is what opens whenever OpenCode's own TUI is actually
+# shown on screen -- the demo GIF's live session (gif_record.py drives an
+# actual Start), and any real session a maintainer opens against this
+# fixture by hand. The seeded "3d-lab" session below is the one exception:
+# make.sh only screenshots the landing page's session *list*, never that
+# pane's live content, so it's labeled "opencode" (`exec -a`) without
+# actually running it -- see that seeding below for why.
 #
 # Sourced, not run: `source fixture.sh` from a script that has already `cd`ed
 # to docs/shots, set `set -Eeuo pipefail`, and set RUN_ROOT_PREFIX (e.g.
@@ -16,21 +24,39 @@
 # make-gif.sh's recording container id, its ffmpeg output dir -- needs to run
 # its own steps around it).
 #
-# Sets: RUN_ROOT, NEUTRAL_REPO, FAKE_HOME, OPENCODE_VERSION, CFG, TMUX_TMPDIR,
-# TMUX_SOCK, T (a `tmux -S ...` invocation array), session_shell. Starts three
-# tmux sessions (game, media-stack, 3d-lab) with game's pane already fed a
-# short `ls` / `git log` transcript.
+# Sets: OPENCODE_SRC, RUN_ROOT, NEUTRAL_REPO, FAKE_HOME, OPENCODE_VERSION,
+# CFG, TMUX_TMPDIR, TMUX_SOCK, T (a `tmux -S ...` invocation array),
+# session_shell. Starts three tmux sessions (game, media-stack, 3d-lab) with
+# game's pane already fed a short `ls` / `git log` transcript.
 #
 # Requires the real OpenCode binary to already be installed on this machine
-# (checks $PATH, then ~/.opencode/bin/opencode) -- see the OpenCode section
-# below. Never touches the host's own ~/.opencode or PATH: it's copied once
-# into this throwaway fixture's own fake $HOME.
+# (checks ~/.opencode/bin/opencode, then $PATH) -- see the OpenCode section
+# below. Never touches the host's own ~/.opencode or PATH: it's symlinked
+# once into this throwaway fixture's own fake $HOME.
 #
 # tests/run.sh predates this file and has its own, differently-shaped fixture
 # (a plain shell prompt, no OpenCode, no git history) -- it is deliberately
 # left alone rather than folded in here.
 
 : "${RUN_ROOT_PREFIX:?fixture.sh: set RUN_ROOT_PREFIX before sourcing}"
+
+# Resolved and checked before anything else is created: a missing OpenCode
+# must fail before RUN_ROOT (or anything else) exists, or this exit would
+# leak a throwaway directory -- the caller's own cleanup trap isn't
+# installed until after `source ./fixture.sh` returns (see make.sh /
+# make-gif.sh), so an exit from inside this file before that point isn't
+# caught by it. ~/.opencode/bin/opencode is preferred over a bare `opencode`
+# on PATH: the fixture wants the same real, single install this box's own
+# `curl -fsSL https://opencode.ai/install | bash` produces, not whatever
+# happens to shadow it on the caller's PATH.
+OPENCODE_SRC="$HOME/.opencode/bin/opencode"
+[[ -x $OPENCODE_SRC ]] || OPENCODE_SRC=$(command -v opencode || true)
+if [[ -z $OPENCODE_SRC || ! -x $OPENCODE_SRC ]]; then
+  echo 'fixture.sh: OpenCode not found (~/.opencode/bin/opencode, then $PATH) --' >&2
+  echo "the demo needs the real program, not a fake stand-in. Install it first:" >&2
+  echo "  curl -fsSL https://opencode.ai/install | bash" >&2
+  exit 1
+fi
 
 TEST_TMP_BASE=${TMPDIR:-/tmp}
 TEST_TMP_BASE=${TEST_TMP_BASE%/}
@@ -139,24 +165,36 @@ TXT
 # The real OpenCode binary, not a fake stand-in: the demo opens its actual
 # TUI, so it has to be the genuine program. bin/serverjack's builtin tools
 # registry already has an "opencode" entry with "paths": ["~/.opencode/bin"],
-# so copying it in there is all that's needed -- no tools.json override, and
-# no PATH games (command_args() resolves it through that same "paths" list,
-# not a plain PATH search -- see bin/serverjack). Never touches the host's
-# own ~/.opencode or PATH: this copy lives only under the fake HOME below,
-# which is only ever HOME for the throwaway serverjack/ttyd processes and
-# tmux sessions this file starts.
-OPENCODE_SRC=$(command -v opencode || true)
-[[ -n $OPENCODE_SRC ]] || OPENCODE_SRC="$HOME/.opencode/bin/opencode"
-if [[ ! -x $OPENCODE_SRC ]]; then
-  echo 'fixture.sh: OpenCode not found ($PATH, then ~/.opencode/bin/opencode) --' >&2
-  echo "the demo needs the real program, not a fake stand-in. Install it first:" >&2
-  echo "  curl -fsSL https://opencode.ai/install | bash" >&2
+# so putting it there is all that's needed -- no tools.json override. This is
+# NOT a strict "paths"-only resolution, though: bin/serverjack's TOOL_PATH is
+# built as the *inherited* PATH first, with each tool's own "paths" entries
+# only appended after (see _tool_path() in bin/serverjack), so a bare
+# `opencode` command can still resolve to a real one earlier on whatever
+# PATH the caller of make.sh/make-gif.sh happens to have -- those scripts'
+# own `common` env arrays additionally prepend
+# "$FAKE_HOME/.opencode/bin" onto PATH itself to make sure it's this fixture's
+# own link that actually runs. Symlinked rather than copied: `exec` and
+# `shutil.which()` both follow a symlink, and OpenCode is a ~180 MB binary --
+# no reason to duplicate those bytes into a throwaway run every time. Never
+# touches the host's own ~/.opencode or PATH: this link lives only under the
+# fake HOME below, which is only ever HOME for the throwaway serverjack/ttyd
+# processes and tmux sessions this file starts. OPENCODE_SRC itself was
+# already resolved and checked executable before RUN_ROOT was even created,
+# at the top of this file.
+mkdir -p "$FAKE_HOME/.opencode/bin"
+ln -s "$OPENCODE_SRC" "$FAKE_HOME/.opencode/bin/opencode"
+# Run under the fake HOME (OpenCode would otherwise create ~/.config/opencode
+# etc. under the *real* one) and under a timeout -- a copied/symlinked npm
+# launcher shim that doesn't actually run in its new location would hang or
+# error here rather than print a version, and that's exactly the case this
+# probe exists to catch: fail loudly rather than silently record a demo of
+# a broken binary.
+if ! OPENCODE_VERSION=$(env HOME="$FAKE_HOME" timeout 10 "$FAKE_HOME/.opencode/bin/opencode" --version 2>&1); then
+  echo "fixture.sh: OpenCode at $OPENCODE_SRC did not run (--version failed or timed out):" >&2
+  echo "$OPENCODE_VERSION" >&2
+  fixture_cleanup
   exit 1
 fi
-mkdir -p "$FAKE_HOME/.opencode/bin"
-cp "$OPENCODE_SRC" "$FAKE_HOME/.opencode/bin/opencode"
-chmod +x "$FAKE_HOME/.opencode/bin/opencode"
-OPENCODE_VERSION=$("$FAKE_HOME/.opencode/bin/opencode" --version 2>/dev/null || echo unknown)
 echo "fixture.sh: using OpenCode $OPENCODE_VERSION from $OPENCODE_SRC" >&2
 
 # A generic, colored prompt -- Debian's default look (bold green user@host,

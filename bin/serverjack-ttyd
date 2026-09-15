@@ -20,10 +20,13 @@
 #       names the browser used.
 # reconnect stays ON: phones drop the socket on screen lock; ttyd re-attaches.
 #
-# -t theme=<json> below gives the terminal the app's own color tokens instead
-# of xterm.js's stock look, so it blends with the page instead of showing a
-# black-ish box with mismatched ANSI colors. SERVERJACK_TERM_THEME (README's
-# config table) opts out.
+# The terminal's color theme is NOT set here. bin/serverjack builds it from
+# its own TOKENS (_term_theme()) and passes it as ?theme=<json> on the iframe
+# URL it points at this ttyd (ttyd_src()) -- the client applies a URL query's
+# theme last, after anything -t sent it, so that always wins anyway. Keeping
+# it out of this file means there is exactly one place the colors are
+# written down. SERVERJACK_TERM_THEME (README's config table) opts out, read
+# in bin/serverjack, not here.
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
 
@@ -76,40 +79,12 @@ if [[ -e $sock || -L $sock ]]; then
   rm -f -- "$sock"                   # stale socket from a hard kill
 fi
 
-# Default terminal theme: the app's own color tokens (bin/serverjack's
-# TOKENS block -- background is --bg-primary, foreground --text-primary,
-# cursor/green is --accent, the rest of the 16 ANSI colors are the app's
-# warning/danger/info/agent-purple tokens or a brightened variant of them so
-# dark hues stay legible on a near-black background. Built once, ahead of
-# TTYD_EXTRA_ARGS below -- ttyd keeps the *last* value it sees for a repeated
-# -t key (verified against this ttyd build: two `-t theme=...` flags leave
-# the second one in effect), so a user's own `-t theme=...` in
-# TTYD_EXTRA_ARGS still wins.
-#
 # fontSize was tried too (ttyd's built-in default of 13 is smaller than
 # xterm.js's own default of 15, and reads small on a phone) but a bigger
 # font shrinks the terminal's row/column grid, and that broke mouse-drag
 # text selection (tests/pwtest.py's "Ctrl+C with selection copies" started
 # failing at 15px -- passed again with the override removed): a real
 # regression, not just a cosmetic risk, so it's left at ttyd's default.
-#
-# SERVERJACK_TERM_THEME=off (or 0/no/false, same spelling as SERVERJACK_FX)
-# skips the theme and leaves ttyd's stock xterm.js look.
-theme_args=()
-case ${SERVERJACK_TERM_THEME:-} in
-  [Oo][Ff][Ff]|0|[Nn][Oo]|[Ff][Aa][Ll][Ss][Ee]) ;;  # opted out -- ttyd's stock theme
-  *)
-    theme_args=(
-      -t 'theme={"background":"#080f0e","foreground":"#e6f7e9","cursor":"#39ff88",'\
-'"cursorAccent":"#39ff88","selectionBackground":"rgba(57,255,136,0.3)",'\
-'"black":"#232e28","red":"#ff5f56","green":"#39ff88","yellow":"#ffc857",'\
-'"blue":"#58a6ff","magenta":"#c678ff","cyan":"#56d4c8","white":"#9fb3a8",'\
-'"brightBlack":"#3f5148","brightRed":"#ff7b72","brightGreen":"#6dffab",'\
-'"brightYellow":"#ffd479","brightBlue":"#7fb8ff","brightMagenta":"#d896ff",'\
-'"brightCyan":"#7ee8db","brightWhite":"#e6f7e9"}'
-    )
-    ;;
-esac
 
 # TTYD_EXTRA_ARGS is a convenience string in the systemd EnvironmentFile, not
 # shell code. Parse shell-style quoting without eval or expansion, then accept
@@ -171,4 +146,4 @@ fi
 
 exec ttyd -i "$sock" -W -a -O \
   -t "titleFixed=${SERVERJACK_TITLE:-serverjack}" -t disableLeaveAlert=true \
-  "${theme_args[@]}" "${extra[@]}" "$here/tmux-attach.sh"
+  "${extra[@]}" "$here/tmux-attach.sh"

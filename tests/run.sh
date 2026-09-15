@@ -121,9 +121,15 @@ cat > "$CFG/tools.json" <<JSON
 JSON
 # SERVERJACK_TRUST_UIDS=101 is not needed to reach anything here any more (no
 # proxy in front), but the peer-uid check below still proves it works.
+# SERVERJACK_TERM_THEME= and TTYD_EXTRA_ARGS= pin those two to empty rather
+# than whatever a maintainer's own shell happens to have set (both have been
+# found already set in a real terminal session here) -- otherwise an
+# opted-out or customized ambient environment could make the suite fail for
+# a reason that has nothing to do with the change under test.
 # shellcheck disable=SC2054  # the comma is inside SERVERJACK_TOOLS's value, not an array separator
 common=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE=test SERVERJACK_CONFIG="$CFG"
-        SERVERJACK_TOOLS=fake,fake2,pathfake SERVERJACK_TRUST_UIDS=101)
+        SERVERJACK_TOOLS=fake,fake2,pathfake SERVERJACK_TRUST_UIDS=101
+        SERVERJACK_TERM_THEME= TTYD_EXTRA_ARGS=)
 env "${common[@]}" XDG_RUNTIME_DIR="$RT" SERVERJACK_PORT="$PORT" \
     python3 ../bin/serverjack >shots/web.log 2>&1 & pids+=($!)
 env "${common[@]}" XDG_RUNTIME_DIR="$RT" \
@@ -233,11 +239,13 @@ for suite in "${suites[@]}"; do
 done
 set +e
 docker run --rm --cidfile "$BROWSER_CID" --network host \
-  -v "$PWD:/w" -w /w -v "$RUN_ROOT:$RUN_ROOT" \
+  -v "$PWD:/w" -w /w -v "$RUN_ROOT:$RUN_ROOT" -v "$PWD/../bin:/repo-bin:ro" \
   -e TMUX_SOCK="$TMUX_SOCK" -e SERVERJACK_TEST_BASE="$BASE" \
   -e SERVERJACK_TEST_AUTH_BASE="$AUTH_BASE" "$IMG" bash -c '
   set -euo pipefail
-  pip install -q --timeout 15 --retries 1 playwright==1.62.0 >/dev/null 2>&1
+  # Pillow: pwtest.py decodes a screenshot clip to prove a terminal glyph is
+  # visible against its cursor cell (more than one color in it).
+  pip install -q --timeout 15 --retries 1 playwright==1.62.0 Pillow >/dev/null 2>&1
   (apt-get -qq update && apt-get -qq install -y tmux) >/dev/null 2>&1
   failed=0
   for s in "$@"; do
