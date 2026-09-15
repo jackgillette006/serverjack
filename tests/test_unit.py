@@ -648,6 +648,26 @@ class InstallChannelTests(unittest.TestCase):
             fh.write("version=1.6.0\n")
         self.assertEqual(self._channel_for(home, repo), ("release", "1.6.0"))
 
+    def test_valid_json_non_object_install_json_falls_back_to_release_file(self):
+        # install.json that parses as JSON but isn't an object (a bare
+        # number, string, list, ...) used to crash the whole import: doc.get()
+        # doesn't exist on those types, raising AttributeError, which wasn't
+        # one of the exceptions this caught. A corrupted install.json must
+        # degrade to "treat it as absent", not take down the process at
+        # startup -- REPO's physical location still makes this "release",
+        # falling back to the RELEASE file exactly like a missing file would.
+        for bad_doc in (42, "just a string", [1, 2, 3], True, None):
+            with self.subTest(bad_doc=bad_doc):
+                home = tempfile.mkdtemp(prefix="sj-unit-home-")
+                _tmpdirs.append(home)
+                repo = self._release_dir(home, "1.7.0")
+                share = os.path.join(home, ".local", "share", "serverjack")
+                with open(os.path.join(share, "install.json"), "w", encoding="utf-8") as fh:
+                    json.dump(bad_doc, fh)
+                with open(os.path.join(repo, "RELEASE"), "w", encoding="utf-8") as fh:
+                    fh.write("version=1.7.0\n")
+                self.assertEqual(self._channel_for(home, repo), ("release", "1.7.0"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

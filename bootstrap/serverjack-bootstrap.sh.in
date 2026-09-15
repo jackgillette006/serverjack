@@ -73,12 +73,17 @@ EOF
 }
 
 # Every network fetch goes through here. HTTPS-only and no redirect may leave
-# it -- UNLESS SERVERJACK_RELEASE_BASE_URL overrides the download location (a
-# test/enterprise-mirror hook, see the container test in tests/managed-install.sh
-# and CONTRIBUTING.md); that is an explicit opt-in the operator set themselves,
-# so an internal mirror without TLS is their call, not a default weakened here.
+# it -- UNLESS SERVERJACK_RELEASE_BASE_URL is set AND literally starts with
+# "http://" (a test/enterprise-mirror hook, see the container test in
+# tests/managed-install.sh and CONTRIBUTING.md); that is an explicit,
+# unambiguous opt-in into plain HTTP the operator set themselves, so an
+# internal mirror without TLS is their call, not a default weakened here.
+# Merely SETTING the variable used to drop the pin regardless of its own
+# scheme, including an https:// mirror -- which meant a compromised or
+# misconfigured https mirror could 302 a download down to plain http and
+# curl would silently follow, exactly what --proto-redir exists to refuse.
 fetch() {
-  if [[ -n ${SERVERJACK_RELEASE_BASE_URL:-} ]]; then
+  if [[ ${SERVERJACK_RELEASE_BASE_URL:-} == http://* ]]; then
     curl -fsSL "$@"
   else
     curl -fsSL --proto '=https' --proto-redir '=https' "$@"
@@ -318,7 +323,14 @@ main() {
   refuse_if_existing_install
 
   download_and_verify
-  stage_and_activate "${install_args[@]}"
+  # ${install_args[@]+"${install_args[@]}"}, not a bare "${install_args[@]}":
+  # on bash older than 4.4, expanding an EMPTY array with "${arr[@]}" under
+  # `set -u` raises "unbound variable" -- and install_args is empty on the
+  # ordinary case (no extra flags at all, e.g. a bare bootstrap with no
+  # --no-serve). Nothing here documents a bash floor, so this can't assume
+  # 4.4+. The `+` form sidesteps it: it tests whether the array is SET, not
+  # whether it's non-empty, which bash gets right in every version.
+  stage_and_activate ${install_args[@]+"${install_args[@]}"}
   rm -rf "$DOWNLOAD_TMPDIR"
 
   say "Installed serverjack $TARGET_VERSION -> $RELEASE_DIR (current -> releases/$TARGET_VERSION)"
@@ -328,7 +340,7 @@ main() {
   # sudo prompt it might need to print for later) preserved exactly as if
   # they had run it themselves.
   exec 9>&-
-  exec bash "$share/current/install.sh" "${install_args[@]}"
+  exec bash "$share/current/install.sh" ${install_args[@]+"${install_args[@]}"}
 }
 
 main "$@"

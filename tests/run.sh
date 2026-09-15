@@ -115,6 +115,19 @@ bash ./security-wrapper.sh
 echo "== unit tests (host-side)"
 python3 ./test_unit.py
 
+# A throwaway HOME, created before anything below reads it: bin/serverjack's
+# channel detection (_install_channel()) resolves ~/.local/share/serverjack
+# off the REAL HOME unless told otherwise, so on a machine that has (or ever
+# gets) a real managed install for this account, these test instances would
+# read ITS install.json/current -- unrelated to, and possibly misclassifying,
+# the checkout under test. Every serverjack/serverjack-ttyd instance below
+# gets this HOME, not just the tmux login shells that already needed one.
+TEST_HOME=$RUN_ROOT/home
+mkdir -m 700 "$TEST_HOME"
+printf '%s\n' "PS1='serverjack-test\$ '" > "$TEST_HOME/bashrc"
+printf -v session_shell 'exec env HOME=%q bash --noprofile --rcfile %q -i' \
+  "$TEST_HOME" "$TEST_HOME/bashrc"
+
 # A throwaway config dir with two fake agents, so the agent-card tests are
 # deterministic and never touch a real coding CLI or the user's shortcuts.
 CFG=$RUN_ROOT/cfg
@@ -145,7 +158,7 @@ JSON
 # SERVERJACK_TRUST_UIDS=101 is not needed to reach anything here any more (no
 # proxy in front), but the peer-uid check below still proves it works.
 # shellcheck disable=SC2054  # the comma is inside SERVERJACK_TOOLS's value, not an array separator
-common=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE=test SERVERJACK_CONFIG="$CFG"
+common=(HOME="$TEST_HOME" SERVERJACK_LISTEN=tcp SERVERJACK_TITLE=test SERVERJACK_CONFIG="$CFG"
         SERVERJACK_TOOLS=fake,fake2,pathfake SERVERJACK_TRUST_UIDS=101)
 env "${common[@]}" XDG_RUNTIME_DIR="$RT" SERVERJACK_PORT="$PORT" \
     python3 ../bin/serverjack >shots/web.log 2>&1 & pids+=($!)
@@ -160,11 +173,6 @@ env "${common[@]}" XDG_RUNTIME_DIR="$RT_AUTH" SERVERJACK_ALLOW=alice@example.com
 env "${common[@]}" XDG_RUNTIME_DIR="$RT_AUTH" SERVERJACK_ALLOW=alice@example.com \
     TTYD_EXTRA_ARGS='-t screenReaderMode=true' \
     bash ../bin/serverjack-ttyd >shots/ttyd-auth.log 2>&1 & pids+=($!)
-TEST_HOME=$RUN_ROOT/home
-mkdir -m 700 "$TEST_HOME"
-printf '%s\n' "PS1='serverjack-test\$ '" > "$TEST_HOME/bashrc"
-printf -v session_shell 'exec env HOME=%q bash --noprofile --rcfile %q -i' \
-  "$TEST_HOME" "$TEST_HOME/bashrc"
 tmux new-session -d -s pwtest -x 120 -y 30 -c "$TEST_HOME" "$session_shell"
 tmux new-session -d -s pwother -x 120 -y 30 -c "$TEST_HOME" "$session_shell"
 for _ in $(seq 1 30); do curl -sf -o /dev/null "$BASE/" && break; sleep 0.2; done
@@ -231,7 +239,7 @@ JSON
 cat > "$ACFG/autostart.json" <<'JSON'
 [{"tool": "fakesrv", "kind": "server", "dir": "."}]
 JSON
-auto=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE=test XDG_RUNTIME_DIR="$RT_AUTO" SERVERJACK_CONFIG="$ACFG"
+auto=(HOME="$TEST_HOME" SERVERJACK_LISTEN=tcp SERVERJACK_TITLE=test XDG_RUNTIME_DIR="$RT_AUTO" SERVERJACK_CONFIG="$ACFG"
       SERVERJACK_TOOLS=fakesrv SERVERJACK_PORT="$PORT_AUTO" SERVERJACK_AUTOSTART_DELAY=2)
 env "${auto[@]}" python3 ../bin/serverjack >shots/web-auto.log 2>&1 & pids+=($!)
 for _ in $(seq 1 30); do tmux has-session -t =pwauto 2>/dev/null && break; sleep 0.5; done
