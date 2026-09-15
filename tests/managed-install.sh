@@ -190,6 +190,13 @@ V4="9.9.6-corrupt-test"
 V5="9.9.7-resume-test"
 V6="9.9.3-slow-test"
 V7="9.9.4-resume-live-test"
+# V8 = A7: a good release (like V2/V4) whose SERVED SHA256SUMS entry is
+# edited to disagree with the ARCHIVE and the bootstrap's own embedded
+# sha256 (which still match each other -- unlike V4, this is not a
+# corrupted download; it's the two published assets contradicting each
+# other, which serverjack-ctl's own stage_release() used to treat as merely
+# advisory).
+V8="9.9.12-sumsmismatch-test"
 [[ -n $V1 ]] || { echo "could not read VERSION from bin/serverjack" >&2; exit 1; }
 V3_CTL_MARKER="SJMI_TEST_MARKER_V3_CTL"
 V3_SETUP_MARKER="SJMI_TEST_MARKER_V3_SETUP"
@@ -198,7 +205,7 @@ V7_LATE_FAIL_MARKER="/tmp/sjmi-late-fail-marker"
 
 WEBROOT="$WORK/webroot"
 mkdir -p "$WEBROOT/v$V1" "$WEBROOT/v$V2" "$WEBROOT/v$V3" "$WEBROOT/v$V4" "$WEBROOT/v$V5" \
-  "$WEBROOT/v$V6" "$WEBROOT/v$V7" "$WEBROOT/trunc" "$WEBROOT/tools"
+  "$WEBROOT/v$V6" "$WEBROOT/v$V7" "$WEBROOT/v$V8" "$WEBROOT/trunc" "$WEBROOT/tools"
 
 build_variant() {  # $1 version  $2 dir-to-copy-from  $3 mode: real|bump|broken|flaky|flaky-late|slow
   local version=$1 src=$2 mode=$3
@@ -310,7 +317,7 @@ PY
     "$WEBROOT/v$version/"
 }
 
-say "Building test releases V1=$V1 (real) V2=$V2 (bump) V3=$V3 (broken) V4=$V4 (to be corrupted) V5=$V5 (flaky) V6=$V6 (slow) V7=$V7 (flaky-late)"
+say "Building test releases V1=$V1 (real) V2=$V2 (bump) V3=$V3 (broken) V4=$V4 (to be corrupted) V5=$V5 (flaky) V6=$V6 (slow) V7=$V7 (flaky-late) V8=$V8 (SHA256SUMS to be mismatched)"
 build_variant "$V1" "$REPO" real
 build_variant "$V2" "$REPO" bump
 build_variant "$V3" "$REPO" broken
@@ -318,6 +325,7 @@ build_variant "$V4" "$REPO" bump
 build_variant "$V5" "$REPO" flaky
 build_variant "$V6" "$REPO" slow
 build_variant "$V7" "$REPO" flaky-late
+build_variant "$V8" "$REPO" bump
 
 # One byte flipped in the SERVED archive only -- the bootstrap's own embedded
 # sha256 (and SHA256SUMS) still say what the archive should have hashed to.
@@ -329,6 +337,32 @@ p = pathlib.Path(sys.argv[1])
 data = bytearray(p.read_bytes())
 data[100] ^= 0xFF
 p.write_bytes(data)
+PY
+
+# A7: the SERVED SHA256SUMS entry for V8's archive is edited to a bogus
+# hash -- the archive itself and the bootstrap's own embedded sha256 still
+# agree with each other (this is NOT the V4 corrupted-download case); only
+# SHA256SUMS disagrees, which serverjack-ctl's stage_release() must now
+# treat as a failed stage, not merely note.
+python3 - "$WEBROOT/v$V8/SHA256SUMS" "serverjack-$V8.tar.gz" <<'PY'
+import pathlib
+import sys
+
+path, archive_name = sys.argv[1], sys.argv[2]
+p = pathlib.Path(path)
+lines = p.read_text().splitlines()
+out = []
+found = False
+for line in lines:
+    parts = line.split(None, 1)
+    if len(parts) == 2 and parts[1].strip() == archive_name:
+        out.append("0" * 64 + "  " + archive_name)
+        found = True
+    else:
+        out.append(line)
+if not found:
+    raise SystemExit("could not find %s in %s" % (archive_name, path))
+p.write_text("\n".join(out) + "\n")
 PY
 
 # The exact truncation the spec names, plus a deliberately mid-function cut
@@ -418,6 +452,10 @@ docker exec "$TESTER" useradd -m -s /bin/bash tester6
 # path, never a FRESH bootstrap install) -- kept off every other account so
 # its deliberately-never-healthy units can't shadow anything else.
 docker exec "$TESTER" useradd -m -s /bin/bash tester7
+# tester8: dedicated to A7's SHA256SUMS-vs-bootstrap-mismatch scenario, kept
+# off every other account so a refused, un-staged update can't be confused
+# with anything else's release history.
+docker exec "$TESTER" useradd -m -s /bin/bash tester8
 docker exec "$TESTER" loginctl enable-linger tester
 docker exec "$TESTER" loginctl enable-linger tester2
 docker exec "$TESTER" loginctl enable-linger tester3
@@ -425,7 +463,8 @@ docker exec "$TESTER" loginctl enable-linger tester4
 docker exec "$TESTER" loginctl enable-linger tester5
 docker exec "$TESTER" loginctl enable-linger tester6
 docker exec "$TESTER" loginctl enable-linger tester7
-for u in tester tester2 tester3 tester4 tester5 tester6 tester7; do
+docker exec "$TESTER" loginctl enable-linger tester8
+for u in tester tester2 tester3 tester4 tester5 tester6 tester7 tester8; do
   for _ in $(seq 1 30); do
     docker exec "$TESTER" test -S "/run/user/$(docker exec "$TESTER" id -u "$u")/bus" 2>/dev/null && break
     sleep 0.5
@@ -441,7 +480,8 @@ TESTER4_UID=$(docker exec "$TESTER" id -u tester4)
 TESTER5_UID=$(docker exec "$TESTER" id -u tester5)
 TESTER6_UID=$(docker exec "$TESTER" id -u tester6)
 TESTER7_UID=$(docker exec "$TESTER" id -u tester7)
-run_as() {  # $1 = user ("tester".."tester7"), remaining args = one command string
+TESTER8_UID=$(docker exec "$TESTER" id -u tester8)
+run_as() {  # $1 = user ("tester".."tester8"), remaining args = one command string
   local user=$1 uid; shift
   case "$user" in
     tester2) uid=$TESTER2_UID ;;
@@ -450,6 +490,7 @@ run_as() {  # $1 = user ("tester".."tester7"), remaining args = one command stri
     tester5) uid=$TESTER5_UID ;;
     tester6) uid=$TESTER6_UID ;;
     tester7) uid=$TESTER7_UID ;;
+    tester8) uid=$TESTER8_UID ;;
     *)       uid=$TESTER_UID ;;
   esac
   docker exec --user "$user" -e XDG_RUNTIME_DIR="/run/user/$uid" \
@@ -473,6 +514,7 @@ run_as_answering() {  # $1 = user, $2 = the line to send once, remaining args = 
     tester5) uid=$TESTER5_UID ;;
     tester6) uid=$TESTER6_UID ;;
     tester7) uid=$TESTER7_UID ;;
+    tester8) uid=$TESTER8_UID ;;
     *)       uid=$TESTER_UID ;;
   esac
   printf '%s\n' "$answer" | docker exec -i --user "$user" -e XDG_RUNTIME_DIR="/run/user/$uid" \
@@ -1159,6 +1201,23 @@ result "tester6: plain re-run (no flags) exits 0" "0" "$rc"
 tsc=$(run_as tester6 "grep -c '^serve' $FAKE_TAILSCALE_LOG || true")
 result "tester6: A5 -- persisted --no-serve means a plain re-run never calls tailscale serve" "0" "$tsc"
 run_as tester6 "cd ~/checkout2 && bash uninstall.sh" >/dev/null 2>&1
+
+echo "================================================================"
+echo "== (zz) A7: serverjack-ctl update refuses when SHA256SUMS disagrees"
+echo "     with the bootstrap's own embedded sha256 (V8)"
+provision_ttyd_fzf tester8
+out=$(run_as tester8 "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --no-serve --port 7790" 2>&1); rc=$?
+result "tester8: fresh V1 install exits 0" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+out=$(run_as tester8 "~/.local/bin/serverjack-ctl update --version $V8 --yes" 2>&1); rc=$?
+[[ $rc -ne 0 ]] && echo "  PASS tester8: update to V8 (SHA256SUMS mismatch) exits non-zero" \
+  || { echo "  FAIL tester8: update to V8 unexpectedly exited 0 -- got: $out"; failures=$((failures + 1)); }
+[[ $out == *"SHA256SUMS disagrees"* ]] && echo "  PASS tester8: explains SHA256SUMS disagrees" \
+  || { echo "  FAIL tester8: does not explain the mismatch -- got: $out"; failures=$((failures + 1)); }
+code=$(run_as tester8 "~/.local/bin/serverjack-ctl status | sed -n 's/^current:  //p'")
+result "tester8: current version is still V1 (V8 never activated)" "$V1" "$code"
+staged=$(run_as tester8 "test -d ~/.local/share/serverjack/releases/$V8 && echo present || echo absent")
+result "tester8: V8 was never left staged either" "absent" "$staged"
 
 echo
 if (( failures > 0 )); then

@@ -657,9 +657,23 @@ stage_release() {
     echo "checksum mismatch for $(basename "$archive"): got $got, want $archive_sha -- refusing to stage a corrupted or tampered archive" >&2
     exit 1
   fi
-  if grep -q " $(basename "$archive")\$" "$tmp/SHA256SUMS" 2>/dev/null; then
-    grep -q "^$archive_sha  $(basename "$archive")\$" "$tmp/SHA256SUMS" \
-      || echo "  note: archive matches the bootstrap's pinned hash but not SHA256SUMS (release re-cut?)" >&2
+  # A7 (Codex): require SHA256SUMS to independently confirm this archive,
+  # not just note a disagreement -- same policy the bootstrap's own
+  # --version path already uses when it has no embedded pin of its own to
+  # check against (see download_and_verify() there). This process re-
+  # downloads the bootstrap script itself fresh on every call (it has no
+  # built-in pin the way a real install's bootstrap.sh does), so its
+  # embedded archive_sha is exactly that same "no independent pin" case --
+  # treating a missing entry or a mismatch as advisory-only would accept a
+  # release whose two published assets (the bootstrap's embedded sha256 and
+  # SHA256SUMS) simply disagree with each other as if that were fine.
+  local sums_sha
+  sums_sha=$(awk -v f="$(basename "$archive")" '$2==f{print $1}' "$tmp/SHA256SUMS" 2>/dev/null | head -1)
+  [[ -n $sums_sha ]] \
+    || { echo "$(basename "$archive") is not listed in SHA256SUMS ($REL_SUMS_URL) -- refusing to stage an unverified archive" >&2; exit 1; }
+  if [[ $sums_sha != "$archive_sha" ]]; then
+    echo "SHA256SUMS disagrees with the bootstrap's embedded sha256 for $(basename "$archive") (SHA256SUMS: $sums_sha, bootstrap: $archive_sha) -- treating this as a failed stage (inconsistent release assets)" >&2
+    exit 1
   fi
   say "Checksum OK for serverjack $REL_VERSION ($got)"
 
