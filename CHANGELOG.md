@@ -7,6 +7,44 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- **One-command managed install.** `scripts/build-release.sh <version>`
+  packages a release archive (`dist/serverjack-<version>.tar.gz`) and renders
+  `dist/serverjack-bootstrap.sh` from `bootstrap/serverjack-bootstrap.sh.in`,
+  with the archive's URL and sha256 embedded. The rendered bootstrap installs
+  a specific released version with no git checkout: downloads and verifies
+  the archive, extracts it to `~/.local/share/serverjack/releases/<version>/`,
+  points `~/.local/share/serverjack/current` at it, writes `install.json`,
+  then hands off to that release's own `install.sh`. Refuses to run as root
+  or to silently take over an existing (git or managed) install.
+- `bin/serverjack-ctl`, a lifecycle helper installed to `~/.local/bin/` for
+  every install: `status`, `versions`, `update [--version X]` (stages and
+  health-checks a new release without touching the running one, auto-rolling
+  back on failure), `rollback`, `uninstall [--yes]` (keeps
+  `~/.config/serverjack` and tmux sessions), `prune [--yes]`. Works from the
+  terminal even if the web UI is unhealthy.
+- `install.sh` now bakes the stable `~/.local/share/serverjack/current/...`
+  path into the systemd units when run from inside a managed release
+  directory, so a later release only needs its `current` symlink swapped and
+  the units restarted, never reinstalled. Git-checkout installs are
+  unchanged.
+- The "Update serverjack" shortcut and `update_available()` now cover managed
+  installs too (running `serverjack-ctl update`), alongside the existing git
+  `git pull` behavior; `/api/status` gains a `"channel"` field
+  (`"release"`/`"git"`/`"unknown"`).
+- `.github/workflows/release.yml`: pushing a `vX.Y.Z` tag builds and attaches
+  the release archive, bootstrap and `SHA256SUMS` to a **draft** GitHub
+  release (publishing stays a manual step — see CONTRIBUTING.md "Releasing").
+- `tests/managed-install.sh`, a container test (privileged Debian 13 systemd,
+  no git, no GitHub reachable for the release) proving the whole path: a
+  piped install, a rerun preserving env/shortcuts, an update with a live tmux
+  session surviving, a broken release being auto-rolled-back, a no-`--yes`
+  update with no tty refusing cleanly, an explicit rollback, a truncated
+  bootstrap and a corrupted archive both executing/installing nothing, an
+  uninstall keeping config and tmux, and root being refused. Optional,
+  host-side, wired into `bash tests/run.sh`.
+
 ### Changed
 
 - Terminal uses the app's color theme by default (`SERVERJACK_TERM_THEME=off`
@@ -58,6 +96,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
   instead of a hand-copied stylesheet and SVG path data that could drift from
   what actually ships; `gif_record.py`'s tap-ring color now reads `--accent`
   off the live page instead of a hardcoded hex.
+- README "Install" section leads with the managed one-command install
+  (`curl -fsSL .../serverjack-bootstrap.sh | bash`); the git checkout is now
+  documented as the development path. Works once a release with these assets
+  exists (v1.4.0 will be the first).
 
 ### Fixed
 

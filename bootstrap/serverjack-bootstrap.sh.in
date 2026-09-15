@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+# serverjack bootstrap -- installs a specific released version with no git
+# checkout required. Rendered from this template by scripts/build-release.sh,
+# which fills in the three @...@ placeholders below and publishes the result
+# as the "serverjack-bootstrap.sh" asset on each GitHub release.
+#
+#   curl -fsSL https://github.com/jackgillette006/serverjack/releases/latest/download/serverjack-bootstrap.sh | bash
+#
+# Also works downloaded and run directly:
+#   curl -fsSLO https://github.com/jackgillette006/serverjack/releases/latest/download/serverjack-bootstrap.sh
+#   less serverjack-bootstrap.sh   # inspect it first
+#   bash serverjack-bootstrap.sh
+#
+# What it does:
+#   1. Refuses to run as root, and refuses if this account already has a
+#      serverjack install it does not recognize as its own (a git checkout,
+#      or an existing managed install) -- no silent takeover.
+#   2. Downloads the release archive embedded below (or the one named by
+#      --version), verifies its sha256 against the digest embedded below (or,
+#      for --version, against that release's own SHA256SUMS).
+#   3. Extracts it to ~/.local/share/serverjack/releases/<version>/, points
+#      ~/.local/share/serverjack/current at it (atomic symlink swap), and
+#      writes ~/.local/share/serverjack/install.json recording the channel.
+#   4. Execs that release's install.sh with your arguments and terminal
+#      intact -- from here on it is the ordinary serverjack installer: ttyd/
+#      fzf downloads, the env file, the systemd user units, tailscale serve.
+#
+# Flags:
+#   --version X.Y.Z   install this exact released version instead of the one
+#                      this bootstrap was built for (downloads that tag's
+#                      archive and SHA256SUMS and verifies against them)
+# Any other flag (--no-serve, --tcp, --unix, --port, ...) is passed straight
+# through to install.sh; see `bash install.sh --help` after install, or the
+# README, for what those do.
+#
+# No confirmation prompt: like install.sh itself ("it never prompts for a
+# password: any root step is printed for you to paste"), a fresh install here
+# only ever ADDS new, not-yet-existing files -- refuse_if_existing_install()
+# below is what stands between this and silently replacing something, and it
+# fails closed with no prompt to bypass. Read the script first (the
+# "download and inspect" instructions above) if you want to review it before
+# it runs; there's no [y/N] to click through instead.
+#
+# Everything below is inside a function; main() is the LAST line of this
+# file, called only after every function is fully defined. That is
+# deliberate: if this script is piped into bash and the download is cut off
+# partway through, bash hits an unterminated function body and aborts with a
+# syntax error before main() is ever reached -- a truncated transfer cannot
+# half-run an install.
+set -Eeuo pipefail
+
+EMBEDDED_VERSION="@VERSION@"
+EMBEDDED_ARCHIVE_URL="@ARCHIVE_URL@"
+EMBEDDED_ARCHIVE_SHA256="@ARCHIVE_SHA256@"
+DEFAULT_BASE_URL="https://github.com/jackgillette006/serverjack/releases/download"
+
+say() { printf '\033[1m%s\033[0m\n' "$*"; }
+
+usage() {
+  # Not `sed`-extracted from this file's own header: piped in as `curl | bash`,
+  # $0 is just "bash", not a readable path to this script.
+  cat <<'EOF'
+serverjack-bootstrap.sh [--version X.Y.Z] [install.sh flags...]
+
+  --version X.Y.Z   install this exact released version (default: the one
+                     this bootstrap was built for)
+
+Any other flag is passed through to the installed release's install.sh
+(--no-serve, --tcp, --unix, --port N, --https-port N, --title NAME, ...).
+See the top of this file, or the README, for what those do.
+EOF
+  exit "${1:-0}"
+}
+
+# Every network fetch goes through here. HTTPS-only and no redirect may leave
+# it -- UNLESS SERVERJACK_RELEASE_BASE_URL overrides the download location (a
+# test/enterprise-mirror hook, see the container test in tests/managed-install.sh
+# and CONTRIBUTING.md); that is an explicit opt-in the operator set themselves,
+# so an internal mirror without TLS is their call, not a default weakened here.
+fetch() {
+  if [[ -n ${SERVERJACK_RELEASE_BASE_URL:-} ]]; then
+    curl -fsSL "$@"
+  else
+    curl -fsSL --proto '=https' --proto-redir '=https' "$@"
+  fi
+}
+
+refuse_root() {
+  if [[ $(id -u) -eq 0 ]]; then
+    cat >&2 <<'EOF'
+Do not run this as root.
+
+serverjack installs entirely inside an ordinary user account (systemd --user
+units, ~/.local, ~/.config) and never needs root itself, beyond two one-time
+steps install.sh prints for you to paste with sudo afterwards. Running it as
+root would create a root-owned terminal service -- the opposite of what this
+is for.
+
+Run it as the account that should own serverjack instead, e.g. log in as
+that user (or `su - youruser`) and re-run:
+  curl -fsSL https://github.com/jackgillette006/serverjack/releases/latest/download/serverjack-bootstrap.sh | bash
+EOF
+    exit 1
+  fi
+}
+
+# "This phase: refuse with instructions; phase C may add migration" -- so this
+# deliberately does not try to reconcile or move an existing install.
+refuse_if_existing_install() {
+  local share="$HOME/.local/share/serverjack"
+  if [[ -f "$share/install.json" ]]; then
+    cat >&2 <<EOF
+serverjack is already installed here as a managed release ($share).
+
+This bootstrap only performs a fresh install and refuses to silently take
+over an existing one. To update, roll back or inspect it instead:
+  ~/.local/bin/serverjack-ctl status
+  ~/.local/bin/serverjack-ctl update
+EOF
+    exit 3
+  fi
+  local unit="$HOME/.config/systemd/user/serverjack.service"
+  if [[ -f $unit ]]; then
+    cat >&2 <<EOF
+serverjack already has a user systemd unit installed here ($unit), but no
+$share/install.json -- most likely an existing git-checkout install (or one
+this bootstrap does not recognize). Refusing to install a second, conflicting
+copy.
+
+If this is a git checkout you want to keep using, update it directly:
+  cd <that checkout> && git pull --ff-only && bash install.sh
+
+If you want to replace it with a managed release install, remove the
+existing one first (its own uninstall.sh, or serverjack-ctl uninstall for a
+managed install), then re-run this bootstrap.
+EOF
+    exit 3
+  fi
+}
+
+# Resolves what to install into TARGET_VERSION / TARGET_ARCHIVE_URL /
+# TARGET_SUMS_URL / TARGET_SHA256 (the last is empty when it must instead be
+# looked up in a downloaded SHA256SUMS, i.e. whenever --version names a
+# release other than the one this bootstrap was built for).
+resolve_target() {
+  local base_url=${SERVERJACK_RELEASE_BASE_URL:-$DEFAULT_BASE_URL}
+  base_url=${base_url%/}
+  if [[ -n $OPT_VERSION ]]; then
+    TARGET_VERSION=$OPT_VERSION
+    TARGET_ARCHIVE_URL="$base_url/v$TARGET_VERSION/serverjack-$TARGET_VERSION.tar.gz"
+    TARGET_SUMS_URL="$base_url/v$TARGET_VERSION/SHA256SUMS"
+    TARGET_SHA256=""
+  else
+    TARGET_VERSION=$EMBEDDED_VERSION
+    TARGET_SUMS_URL="$base_url/v$TARGET_VERSION/SHA256SUMS"
+    TARGET_SHA256=$EMBEDDED_ARCHIVE_SHA256
+    if [[ -n ${SERVERJACK_RELEASE_BASE_URL:-} ]]; then
+      # A mirror override still applies to the embedded version -- construct
+      # its URL the same way instead of trusting the GitHub URL baked in above.
+      TARGET_ARCHIVE_URL="$base_url/v$TARGET_VERSION/serverjack-$TARGET_VERSION.tar.gz"
+    else
+      TARGET_ARCHIVE_URL=$EMBEDDED_ARCHIVE_URL
+    fi
+  fi
+  [[ -n $TARGET_VERSION && -n $TARGET_ARCHIVE_URL ]] \
+    || { echo "internal error: could not resolve a release to install" >&2; exit 1; }
+}
+
+# Downloads the archive to a fresh temp dir and verifies its sha256, either
+# against the pinned TARGET_SHA256 or, when that is empty, against a freshly
+# downloaded SHA256SUMS (only reached for an explicit --version, exactly like
+# install.sh's own verify() falls back to a project sums file). Sets
+# ARCHIVE_TMP and DOWNLOAD_TMPDIR (the caller removes DOWNLOAD_TMPDIR).
+download_and_verify() {
+  local tmp; tmp=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }
+  DOWNLOAD_TMPDIR=$tmp
+  ARCHIVE_TMP="$tmp/$(basename "$TARGET_ARCHIVE_URL")"
+
+  say "Downloading serverjack $TARGET_VERSION"
+  echo "  $TARGET_ARCHIVE_URL"
+  if ! fetch -o "$ARCHIVE_TMP" "$TARGET_ARCHIVE_URL"; then
+    echo "download failed: $TARGET_ARCHIVE_URL" >&2
+    echo "nothing was installed." >&2
+    exit 1
+  fi
+  # A failed/partial transfer that curl still exits 0 on (rare, but -f alone
+  # doesn't cover every case) must not be treated as a real archive.
+  [[ -s $ARCHIVE_TMP ]] || { echo "downloaded archive is empty: $TARGET_ARCHIVE_URL" >&2; exit 1; }
+
+  local want=$TARGET_SHA256
+  if [[ -z $want ]]; then
+    local sums_tmp="$tmp/SHA256SUMS"
+    if ! fetch -o "$sums_tmp" "$TARGET_SUMS_URL"; then
+      echo "could not download $TARGET_SUMS_URL to verify the archive -- refusing to install an unverified download" >&2
+      exit 1
+    fi
+    want=$(awk -v f="$(basename "$ARCHIVE_TMP")" '$2==f{print $1}' "$sums_tmp" | head -1)
+    [[ -n $want ]] || { echo "$(basename "$ARCHIVE_TMP") is not listed in $TARGET_SUMS_URL -- refusing to install" >&2; exit 1; }
+  fi
+  local got
+  got=$(sha256sum "$ARCHIVE_TMP" | awk '{print $1}')
+  if [[ $got != "$want" ]]; then
+    echo "checksum mismatch for $(basename "$ARCHIVE_TMP"): got $got, want $want -- refusing to install a corrupted or tampered archive" >&2
+    exit 1
+  fi
+  say "Checksum OK ($got)"
+}
+
+# Extracts ARCHIVE_TMP to ~/.local/share/serverjack/releases/<version>/ and
+# atomically swaps "current" to point at it. Sets RELEASE_DIR.
+stage_and_activate() {
+  local share="$HOME/.local/share/serverjack"
+  local releases="$share/releases"
+  RELEASE_DIR="$releases/$TARGET_VERSION"
+  mkdir -p "$releases"
+  # A leftover partial extraction from an earlier failed attempt at the same
+  # version must not be trusted; start clean.
+  rm -rf "$RELEASE_DIR"
+  mkdir -p "$RELEASE_DIR"
+  tar -xzf "$ARCHIVE_TMP" -C "$RELEASE_DIR" --strip-components=1
+
+  local current="$share/current"
+  if [[ -e $current && ! -L $current ]]; then
+    echo "$current exists and is not a symlink -- refusing to overwrite it" >&2
+    exit 1
+  fi
+  local tmp_link="$share/.current.$$"
+  ln -s "releases/$TARGET_VERSION" "$tmp_link"
+  mv -T "$tmp_link" "$current"
+
+  local now; now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  local tmp_json; tmp_json=$(mktemp "$share/.install.json.XXXXXX")
+  python3 - "$TARGET_VERSION" "$now" > "$tmp_json" <<'PY'
+import json
+import sys
+
+version, installed_at = sys.argv[1], sys.argv[2]
+json.dump({"channel": "release", "version": version, "installed_at": installed_at,
+           "previous": None}, sys.stdout, indent=2)
+print()
+PY
+  mv -f "$tmp_json" "$share/install.json"
+}
+
+main() {
+  OPT_VERSION=
+  local -a install_args=()
+  while (( $# )); do
+    case "$1" in
+      --version)      OPT_VERSION=${2:?--version needs X.Y.Z}; shift ;;
+      --version=*)     OPT_VERSION=${1#*=} ;;
+      -h|--help)      usage 0 ;;
+      *)              install_args+=("$1") ;;
+    esac
+    shift
+  done
+  if [[ -n $OPT_VERSION && ! $OPT_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+    echo "--version must look like X.Y.Z, got: $OPT_VERSION" >&2
+    exit 1
+  fi
+
+  for c in curl sha256sum tar python3 systemctl tmux flock; do
+    command -v "$c" >/dev/null 2>&1 || { echo "missing required command: $c" >&2; exit 1; }
+  done
+
+  refuse_root
+  refuse_if_existing_install
+  resolve_target
+
+  local share="$HOME/.local/share/serverjack"
+  mkdir -p "$share"
+  local lock="$share/.lock"
+  exec 9>"$lock"
+  if ! flock -n 9; then
+    say "Waiting for another serverjack install/update to finish..."
+    flock 9
+  fi
+  # Re-check now that the lock is held: the two checks above ran before we
+  # could serialize against a concurrent bootstrap run that got here first
+  # and finished while we were downloading/confirming.
+  refuse_if_existing_install
+
+  download_and_verify
+  stage_and_activate
+  rm -rf "$DOWNLOAD_TMPDIR"
+
+  say "Installed serverjack $TARGET_VERSION -> $RELEASE_DIR (current -> releases/$TARGET_VERSION)"
+  say "Handing off to install.sh"
+  # Release the lock and exec: from here on this IS install.sh, with the
+  # user's own arguments and terminal (stdin/stdout/stderr, job control for a
+  # sudo prompt it might need to print for later) preserved exactly as if
+  # they had run it themselves.
+  exec 9>&-
+  exec bash "$share/current/install.sh" "${install_args[@]}"
+}
+
+main "$@"
