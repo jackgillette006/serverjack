@@ -755,11 +755,32 @@ except Exception:
   check_serve_clash
 }
 
+# Sets OWN_BACKENDS -- this account's own candidate backend strings, the
+# same shape install.sh's own OWN_BACKENDS array builds (A1). Used before
+# treating an existing serve mapping as a clash: a mapping that is already
+# THIS account's own (its configured port or Unix socket, from an earlier
+# run) is never a foreign clash.
+compute_own_backends() {
+  local port; port=${OPT_PORT:-$(env_get SERVERJACK_PORT 7680)}
+  local runtime="${XDG_RUNTIME_DIR}/serverjack"
+  local legacy; legacy=$(env_get TTYD_PORT '')
+  OWN_BACKENDS=("http://127.0.0.1:$port" "unix:$runtime/web.sock" "unix:$runtime/ttyd.sock")
+  if [[ $legacy =~ ^[0-9]{1,5}$ ]] && (( 10#$legacy >= 1 && 10#$legacy <= 65535 )); then
+    OWN_BACKENDS+=("http://127.0.0.1:$((10#$legacy))")
+  fi
+}
+
 check_serve_clash() {
   (( NO_SERVE )) && return 0
   command -v tailscale >/dev/null 2>&1 || return 0
   local backend; backend=$(serve_backend_for "$HTTPS_PORT" /)
   [[ -z $backend ]] && return 0
+  # A1: this account's OWN existing mapping (published by an earlier run) is
+  # not a clash -- without this check, the rerun menu's "3) publish" treated
+  # its own already-published serve route as foreign every time, since
+  # setup had no equivalent of install.sh's backend_is_ours() at all.
+  compute_own_backends
+  backend_is_ours "$backend" "${OWN_BACKENDS[@]}" && return 0
   say "https://<host>:$HTTPS_PORT/ already proxies to $backend (not serverjack) -- leaving it alone."
   local choice
   while :; do

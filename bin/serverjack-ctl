@@ -54,6 +54,39 @@ DEFAULT_BASE_URL="https://github.com/jackgillette006/serverjack/releases/downloa
 
 YES=0
 
+# install.sh always installs this FLAT at ~/.local/bin/serverjack-ctl (both
+# channels), with no bin/serverjack-lib.sh beside it, so "next to this
+# script" only resolves when serverjack-ctl is run straight from a checkout
+# or release directory (dev use, or the tests). The two real installed
+# cases fall back to the same places bin/serverjack-setup's resolve_self()
+# already uses: the managed "current" symlink, then a git checkout's own
+# recorded path. Sourced for local_http_code()/wait_local_healthz() (A8: no
+# more separately hand-rolled "000000" curl fallback) and the tailscale-
+# serve helpers (A11: one remove_owned_mapping, not a third drifting copy).
+resolve_lib() {
+  local src=${BASH_SOURCE[0]}
+  local self; self=$(readlink -f "$src" 2>/dev/null || printf '%s' "$src")
+  local candidate; candidate=$(dirname "$self")
+  if [[ -f "$candidate/serverjack-lib.sh" ]]; then
+    # shellcheck source=bin/serverjack-lib.sh
+    source "$candidate/serverjack-lib.sh"; return 0
+  fi
+  if [[ -f "$CURRENT/bin/serverjack-lib.sh" ]]; then
+    # shellcheck source=bin/serverjack-lib.sh
+    source "$CURRENT/bin/serverjack-lib.sh"; return 0
+  fi
+  local install_path="$HOME/.config/serverjack/install-path" repo=""
+  [[ -f $install_path ]] && repo=$(<"$install_path")
+  if [[ -n $repo && -f "$repo/bin/serverjack-lib.sh" ]]; then
+    # shellcheck source=bin/serverjack-lib.sh
+    source "$repo/bin/serverjack-lib.sh"; return 0
+  fi
+  return 1
+}
+resolve_lib || {
+  echo "warning: could not find bin/serverjack-lib.sh -- some checks will be degraded" >&2
+}
+
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 
 usage() {
@@ -286,12 +319,16 @@ swap_current() {
 healthz_code() {
   local listen port sock
   listen=$(env_get SERVERJACK_LISTEN tcp)
+  # local_http_code() (bin/serverjack-lib.sh) already handles the connection-
+  # failure case cleanly -- printing curl's own "000" once, not twice (A8:
+  # `curl ... || echo 000` after curl's OWN -w output had already printed
+  # "000" produced the six-character string "000000").
   if [[ $listen == unix ]]; then
     sock="${XDG_RUNTIME_DIR}/serverjack/web.sock"
-    curl -s -o /dev/null -w '%{http_code}' --unix-socket "$sock" http://serverjack/healthz 2>/dev/null || echo 000
+    local_http_code -m 5 --connect-timeout 5 --unix-socket "$sock" http://serverjack/healthz
   else
     port=$(env_get SERVERJACK_PORT 7680)
-    curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/healthz" 2>/dev/null || echo 000
+    local_http_code -m 5 --connect-timeout 5 "http://127.0.0.1:$port/healthz"
   fi
 }
 
@@ -428,43 +465,13 @@ remove_units_and_serve_route() {
       echo "tailscale serve routes left unchanged: could not inspect the current serve status" >&2
     else
       port=$((10#$port))
-      serve_backends_for() {
-        local wanted_port=$1 wanted_path=$2
-        awk -v wp="$wanted_port" -v wpath="$wanted_path" '
-          /^https:\/\// { h=$1; sub(/^https:\/\//,"",h); n=split(h,a,":");
-                          cur=(n>1 ? a[n] : "443"); next }
-          /^\|--/ && cur==wp && $2==wpath { print $NF }' <<< "$serve_status"
-      }
-      backend_is_ours() {
-        local backend=$1
-        [[ $backend == "http://127.0.0.1:$port" \
-           || $backend == "unix:$runtime/web.sock" \
-           || $backend == "unix:$runtime/ttyd.sock" \
-           || ( -n $legacy_port && $backend == "http://127.0.0.1:$legacy_port" ) ]]
-      }
-      remove_owned_mapping() {
-        local path=$1 label=$2 backend
-        local -a backends=()
-        mapfile -t backends < <(serve_backends_for "$https" "$path")
-        if (( ${#backends[@]} == 0 )); then
-          return
-        elif (( ${#backends[@]} != 1 )); then
-          echo "tailscale serve $label left unchanged: status was ambiguous" >&2
-          return
-        fi
-        backend=${backends[0]}
-        if ! backend_is_ours "$backend"; then
-          echo "tailscale serve $label left unchanged: it points to a foreign backend ($backend)" >&2
-          return
-        fi
-        if tailscale serve --https="$https" --set-path="$path" off >/dev/null 2>&1; then
-          echo "removed tailscale serve $label ($backend)"
-        else
-          echo "could not remove tailscale serve $label ($backend); it was left unchanged" >&2
-        fi
-      }
-      remove_owned_mapping / "https=$https path=/"
-      remove_owned_mapping "$mount" "https=$https path=$mount"
+      local -a own_backends=("http://127.0.0.1:$port" "unix:$runtime/web.sock" "unix:$runtime/ttyd.sock")
+      [[ -n $legacy_port ]] && own_backends+=("http://127.0.0.1:$legacy_port")
+      # remove_owned_mapping/serve_backends_for/backend_is_ours: bin/serverjack-lib.sh
+      # (A11) -- was three drifting copies of the same parsing and removal
+      # logic (here, uninstall.sh, and no equivalent at all in serverjack-setup).
+      remove_owned_mapping "https=$https path=/" "$serve_status" "$https" / "${own_backends[@]}"
+      remove_owned_mapping "https=$https path=$mount" "$serve_status" "$https" "$mount" "${own_backends[@]}"
     fi
   fi
 
