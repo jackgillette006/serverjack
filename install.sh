@@ -45,6 +45,22 @@ CFG_DIR=$HOME/.config/serverjack
 ENV_FILE=$CFG_DIR/env
 UNIT_DIR=$HOME/.config/systemd/user
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+# A managed install (bootstrap/serverjack-bootstrap.sh.in, bin/serverjack-ctl)
+# runs this file from ~/.local/share/serverjack/releases/<v>/ -- but the
+# readlink -f above resolves straight through the "current" symlink to that
+# physical release directory, which is exactly the path an upgrade replaces.
+# Detect that case (by realpath prefix, so it also catches running an old
+# release's install.sh directly) and bake the STABLE "current" path into the
+# systemd units instead: a later `serverjack-ctl update` only has to swap the
+# symlink and restart, never touch or reinstall the units. Everything else in
+# this script still reads its own files from $REPO (the physical location),
+# which is correct -- only the path written INTO the unit files changes.
+SHARE_RELEASES=$HOME/.local/share/serverjack/releases
+SHARE_RELEASES=$(readlink -f "$SHARE_RELEASES" 2>/dev/null || printf '%s' "$SHARE_RELEASES")
+UNIT_REPO=$REPO
+case "$REPO" in
+  "$SHARE_RELEASES"/*) UNIT_REPO=$HOME/.local/share/serverjack/current ;;
+esac
 NO_SERVE=0
 OPT_LISTEN=
 # Empty unless passed on the command line. A flag sets the value in a NEW env
@@ -154,6 +170,10 @@ if ! "$BIN/fzf" --version 2>/dev/null | grep -q "^$FZF_VER"; then
   tar -xzf "$tmp/$fzf_asset" -C "$tmp" fzf
   install -m 755 "$tmp/fzf" "$BIN/fzf"
 fi
+# The lifecycle helper: always installed, from this checkout's own copy (no
+# download). It works for a git checkout too (its `update` just delegates to
+# git pull), so this isn't gated on being a managed install.
+install -m 755 "$REPO/bin/serverjack-ctl" "$BIN/serverjack-ctl"
 
 # ---------------------------------------------------------------- config
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -375,7 +395,7 @@ done
 
 # ---------------------------------------------------------------- units
 for u in serverjack serverjack-ttyd; do
-  python3 - "$REPO" "systemd/$u.service" "$tmp/$u.service" <<'PY'
+  python3 - "$UNIT_REPO" "systemd/$u.service" "$tmp/$u.service" <<'PY'
 import pathlib
 import sys
 
@@ -496,3 +516,13 @@ cat <<TXT
   bash $REPO/install.sh                                 # re-run after a git pull (idempotent)
   bash $REPO/uninstall.sh
 TXT
+if [[ $UNIT_REPO != "$REPO" ]]; then
+  cat <<TXT
+This is a managed release install ($REPO). Prefer serverjack-ctl for update/
+rollback/uninstall -- it stages, health-checks and can revert automatically:
+  ~/.local/bin/serverjack-ctl status
+  ~/.local/bin/serverjack-ctl update
+  ~/.local/bin/serverjack-ctl rollback
+  ~/.local/bin/serverjack-ctl uninstall
+TXT
+fi

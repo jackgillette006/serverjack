@@ -21,7 +21,7 @@ Your coding agents, from your phone. Lightweight, private, self-hosted.
 - No Node, no sudo, no root.
 - Only reachable on your Tailscale network.
 - Never phones home: no telemetry, no analytics, no update checks.
-- Installs in three lines.
+- Installs with one command.
 
 ## Quick start
 
@@ -29,14 +29,36 @@ Requirements: Linux, systemd, tmux, Python 3.9+ and curl. Tailscale is optional
 but recommended.
 
 ```sh
-git clone https://github.com/jackgillette006/serverjack
-cd serverjack
-bash install.sh
+curl -fsSL https://github.com/jackgillette006/serverjack/releases/latest/download/serverjack-bootstrap.sh | bash
 ```
 
-Clone it anywhere you keep code. The installer records that path in the user
-units, and the built-in "Update serverjack" shortcut runs `git pull` there, so
-leave the checkout where it is; move it and re-run `install.sh` if you must.
+That downloads one specific released version — checksummed, with the digest
+embedded in the bootstrap script itself, not fetched separately — into
+`~/.local/share/serverjack/`, points a `current` symlink at it, and starts it.
+No checkout, no directory to remember. Prefer to look before you run it?
+
+```sh
+curl -fsSLO https://github.com/jackgillette006/serverjack/releases/latest/download/serverjack-bootstrap.sh
+less serverjack-bootstrap.sh          # it's short; read it
+bash serverjack-bootstrap.sh
+```
+
+Update, roll back or uninstall afterwards with the lifecycle helper it also
+installs, `~/.local/bin/serverjack-ctl` — it works from the terminal even if
+the web UI is unhealthy:
+
+```sh
+serverjack-ctl status                 # channel, current/previous version, health
+serverjack-ctl update                 # stage + activate the latest release, or --version X.Y.Z
+serverjack-ctl rollback               # back to the previous version
+serverjack-ctl uninstall              # remove the managed install; config and tmux stay
+```
+
+> The command above only works once a release with these assets has been
+> published (v1.4.0 will be the first — earlier tags predate this). Until
+> then, or if you're developing serverjack itself, clone the repository
+> instead: see [Install (no sudo)](#install-no-sudo) below, which covers both
+> paths side by side.
 
 serverjack has no password of its own. Anyone who can reach it gets a shell as
 the account running it. Keep it behind `tailscale serve` (what `install.sh`
@@ -96,8 +118,10 @@ remote control, why Tailscale and not a password, and whether it phones home.
   - [Residual risk](#residual-risk)
 - [FAQ](docs/FAQ.md)
 - [Install (no sudo)](#install-no-sudo)
+  - [Managed install (recommended)](#managed-install-recommended)
+  - [Development install (git checkout)](#development-install-git-checkout)
   - [Two accounts on one machine](#two-accounts-on-one-machine)
-  - [Upgrading an existing install](#upgrading-an-existing-install)
+  - [Updating and rolling back](#updating-and-rolling-back)
 - [Configure](#configure)
   - [Tools](#tools)
 - [Status line and /api/status](#status-line-and-apistatus)
@@ -138,21 +162,27 @@ a one-tap button in the Shortcuts list for next time. Shortcuts live in
 ### Update serverjack
 
 The Shortcuts list has one row you did not add: **Update serverjack**, marked
-*built-in* and with no delete button. It runs
+*built-in* and with no delete button. What it runs depends on how this copy
+was installed:
 
-```
-cd <the checkout this is running from> && git pull --ff-only && bash install.sh
-```
+- **Managed install** (the one-command bootstrap — see
+  [Install (no sudo)](#install-no-sudo)): `serverjack-ctl update`. It resolves
+  the latest release, stages and checksum-verifies it *without* touching the
+  running one, backs up the current units and env, activates the new release,
+  and waits for `/healthz` to answer before calling it done — rolling back
+  automatically, with the prior units and env restored, if it doesn't.
+- **Git checkout**: `cd <the checkout> && git pull --ff-only && bash
+  install.sh`, exactly as before.
 
-in an ordinary command session called `update`, so you watch the pull and the
-installer scroll past and are left at a prompt with the result. It only appears
-when the copy of serverjack you are running really is a git checkout (there is
-a `.git` next to `bin/`) — a tarball has nothing to pull.
+Either way it runs in an ordinary command session called `update`, so you
+watch it scroll past and are left at a prompt with the result. The row only
+appears when serverjack recognizes this as one of the two — a bare tarball
+extracted by hand has neither `serverjack-ctl` nor `git pull` to run.
 
-`install.sh` restarts the serverjack unit at the end, which is fine from inside
-the browser: the unit is `KillMode=process`, so the tmux server and this
-session outlive the restart, and the page reconnects to the same session as
-soon as the new process is listening.
+The unit restart either path ends in is fine from inside the browser: the
+unit is `KillMode=process`, so the tmux server and this session outlive the
+restart, and the page reconnects to the same session as soon as the new
+process is listening.
 
 ## Sessions
 
@@ -394,12 +424,49 @@ it runs, and it is the same one the vendor's own docs tell you to paste.
 
 ## Install (no sudo)
 
-Requirements: Linux, systemd, tmux, python3, curl. Tailscale optional.
+Requirements: Linux, systemd, tmux, python3, curl. Tailscale optional. Two
+paths, same result underneath — the same `install.sh`, env file and units —
+pick whichever fits:
+
+### Managed install (recommended)
+
+```
+curl -fsSL https://github.com/jackgillette006/serverjack/releases/latest/download/serverjack-bootstrap.sh | bash
+```
+
+(needs a published release with these assets — v1.4.0 is the first; see
+[Quick start](#quick-start) for the download-and-inspect alternative). The
+bootstrap downloads one specific version — sha256-verified against a digest
+embedded in the bootstrap script itself, not fetched separately — extracts it
+to `~/.local/share/serverjack/releases/<version>/`, points a `current` symlink
+at it, writes `~/.local/share/serverjack/install.json` recording the channel
+and version, then hands off to that release's own `install.sh` with your
+arguments and terminal intact. `--version X.Y.Z` installs a specific released
+version instead of the latest one; any other flag (`--no-serve`, `--tcp`,
+`--port N`, ...) passes straight through — see the flags table below. It
+refuses outright, with instructions, rather than silently take over an
+existing git-checkout or managed install; refuses as root; and reads any
+prompt of its own from `/dev/tty`, never your terminal's `curl | bash` stdin.
+
+Managing it afterwards — updates, rollback, uninstall — is `serverjack-ctl`
+(installed to `~/.local/bin/serverjack-ctl`): see
+[Updating and rolling back](#update-serverjack) above.
+
+### Development install (git checkout)
 
 ```
 git clone https://github.com/jackgillette006/serverjack
 bash serverjack/install.sh
 ```
+
+Clone it anywhere you keep code. The installer records that path in the user
+units, and the built-in "Update serverjack" shortcut runs `git pull` there, so
+leave the checkout where it is; move it and re-run `install.sh` if you must.
+Use this path to develop serverjack itself or run an unreleased commit;
+`serverjack-ctl` installs here too and works for `status`/`update`, but the
+other subcommands (`rollback`, `uninstall`, `prune`) are managed-install-only
+— a git checkout's "uninstall" is just `bash uninstall.sh` in the checkout,
+same as always.
 
 Afterwards, `bin/serverjack --check` (alias `--doctor`) runs a read-only
 diagnosis, one `ok`/`warn`/`fail` line per item (Python, tmux and ttyd
@@ -513,14 +580,41 @@ defense in depth, not the mechanism.
 The test harness chooses unused loopback ports and an isolated tmux socket, so
 concurrent runs do not share sessions or listeners.
 
-### Upgrading an existing install
+### Updating and rolling back
 
-Re-running `install.sh` after a pull is always safe, and from this version on
-it also **removes the old `/term` `tailscale serve` mount** if your machine
-still has one: the terminal now goes through serverjack, so a mount pointing
-straight at ttyd's port would be a way around every check. The installer says
-so when it takes one down. `uninstall.sh` turns off the `/` mount (and that old
-`/term` one, for installs that predate the change).
+**Git checkout:** re-running `install.sh` after a pull is always safe, and
+from this version on it also **removes the old `/term` `tailscale serve`
+mount** if your machine still has one: the terminal now goes through
+serverjack, so a mount pointing straight at ttyd's port would be a way around
+every check. The installer says so when it takes one down. `uninstall.sh`
+turns off the `/` mount (and that old `/term` one, for installs that predate
+the change).
+
+**Managed install:** use `serverjack-ctl` instead of re-running the bootstrap
+(the bootstrap refuses to touch an existing install on purpose — see
+[Install (no sudo)](#install-no-sudo)):
+
+```
+serverjack-ctl status              # channel, current/previous version, health
+serverjack-ctl versions            # every staged release, which is current
+serverjack-ctl update [--version X.Y.Z]
+serverjack-ctl rollback            # swap back to the previous version
+serverjack-ctl uninstall [--yes]   # keeps ~/.config/serverjack and tmux
+serverjack-ctl prune [--yes]       # delete releases other than current/previous
+```
+
+`update` resolves the latest release (or the named `--version`), downloads
+and verifies it, stages it under `~/.local/share/serverjack/releases/` without
+touching the running install, backs up the current systemd units and env
+file, activates the new release, and waits up to 30s for `/healthz` (and
+`/term/`) to answer. If that fails, it restores the prior units, env and
+`current` symlink and reports it — automatically, no second command needed.
+tmux is never restarted by any of this; the units are `KillMode=process`, so
+sessions (and a browser attached to one) survive an update, a failed update's
+rollback, or an explicit `rollback`. Every subcommand that changes anything
+asks for confirmation on `/dev/tty` unless you pass `--yes`, and they
+serialize against each other with a lock file, so a concurrent run waits
+rather than races.
 
 ## Configure
 
@@ -620,9 +714,15 @@ The same numbers, plus what the agents are doing, come out of `GET
               "servers_running": 1, "daemon_running": false}],
   "agents_summary": "1 server · 1 daemon",
   "load": [0.42, 0.5, 0.6], "mem_used_pct": 61,
-  "disk_free_gb": 1204.3, "uptime_s": 1051200, "version": "1.3.0"
+  "disk_free_gb": 1204.3, "uptime_s": 1051200, "version": "1.3.0",
+  "channel": "release"
 }
 ```
+
+`"channel"` is `"release"` for a managed (bootstrap-installed) copy, `"git"`
+for a checkout, or `"unknown"` for anything else (a bare tarball extracted by
+hand). It's the same detection that decides what the "Update serverjack"
+shortcut runs — see [Update serverjack](#update-serverjack).
 
 **Counts only.** No session names, no directories, not even the agents'
 labels: a dashboard should say how busy the box is, not what you called things
@@ -719,6 +819,22 @@ origin through the proxy; another starts a throwaway instance with an
 `autostart.json` pointing at a fake server to prove it comes up on its own.
 `docs/MANUAL-TESTS.md` is a checklist for real devices; iOS Safari's
 soft-keyboard behavior is only verifiable there.
+
+`tests/managed-install.sh` covers the release/bootstrap/`serverjack-ctl` path
+separately: a privileged, throwaway Debian 13 systemd container with **no
+git** and no GitHub reachable for the serverjack release itself (a
+`python3 -m http.server` on a private docker network stands in). It proves a
+piped bootstrap install, that a rerun preserves the env file and a shortcut,
+that `serverjack-ctl update` activates a second release while a live tmux
+session survives, that updating to a deliberately broken release is refused
+and auto-rolled-back, that a no-`--yes` update with no controlling terminal
+refuses cleanly instead of hanging, that `rollback` works, that a truncated
+download and a corrupted archive are both refused with nothing staged, that
+`uninstall --yes` keeps config and tmux, and that running as root is refused.
+Optional and host-side — needs docker able to run `--privileged` containers
+with real systemd, and skips itself with a message otherwise. `bash
+tests/run.sh` runs it as part of the full suite; `bash tests/run.sh
+managed-install` runs just that.
 
 ## Known limitations
 

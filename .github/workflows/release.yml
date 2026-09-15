@@ -1,0 +1,53 @@
+name: Release
+
+# Pushing a "vX.Y.Z" tag builds that tag's release archive and bootstrap and
+# attaches them to a DRAFT GitHub release. Publishing the draft stays a
+# manual maintainer step -- see CONTRIBUTING.md "Releasing".
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build and draft release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify the tag matches bin/serverjack's VERSION
+        run: |
+          set -euo pipefail
+          tag=${GITHUB_REF_NAME#v}
+          version=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' bin/serverjack)
+          if [[ "$tag" != "$version" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match bin/serverjack's VERSION ($version) -- refusing to release a mismatched build" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_ENV"
+
+      - name: Build the release archive and bootstrap
+        run: bash scripts/build-release.sh "$version"
+
+      - name: Create a draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "v$version" \
+            "dist/serverjack-$version.tar.gz" \
+            "dist/serverjack-bootstrap.sh" \
+            "dist/SHA256SUMS" \
+            --draft \
+            --title "v$version" \
+            --notes "See CHANGELOG.md for what changed. This draft is not public until a maintainer publishes it (CONTRIBUTING.md \"Releasing\": verify the three assets and their digests first)."

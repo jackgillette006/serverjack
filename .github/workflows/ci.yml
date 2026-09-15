@@ -56,7 +56,9 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/w -w /w koalaman/shellcheck-alpine:stable \
             shellcheck -S warning install.sh uninstall.sh bin/serverjack-ttyd \
-            bin/tmux-attach.sh bin/tmux-picker.sh tests/run.sh tests/security-wrapper.sh
+            bin/serverjack-ctl bin/tmux-attach.sh bin/tmux-picker.sh tests/run.sh \
+            tests/security-wrapper.sh tests/managed-install.sh scripts/build-release.sh \
+            bootstrap/serverjack-bootstrap.sh.in
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
