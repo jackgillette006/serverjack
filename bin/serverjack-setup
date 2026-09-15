@@ -958,6 +958,61 @@ except Exception:
 }
 
 # ----------------------------------------------------------------- 10. rerun
+# Case "3) publish" for the rerun menu (rerun_managed()/rerun_git() below --
+# shared here rather than duplicated in both, the same reasoning as every
+# other dedup in this codebase). $1 = this install's listen mode and $2 = its
+# https port BEFORE this call, $3 = "1" if it was published, else "0" (the
+# caller already computed all three for its own "Current state:" summary).
+#
+# B2 fixes two things the old inline version got wrong:
+#   - turning publishing OFF (or changing the https port) used to just pass
+#     --no-serve (or the new port) to install.sh and stop there, which
+#     leaves the OLD tailscale serve mapping proxying here regardless -- the
+#     summary said "local-only" while the app stayed reachable. Now the old
+#     mapping is actually removed (via remove_owned_mapping -- A11's shared
+#     helper, so this can never remove anything but this installation's own
+#     mapping), and removal is verified rather than assumed.
+#   - the local-only -> published transition used to skip the allow-list
+#     question entirely (step6_allow_list was never called from this menu
+#     option at all) -- a rerun could go from "nobody on the tailnet can
+#     reach this" to "published" with no identity decision made. Now
+#     step6_allow_list runs whenever this call is (still, or newly)
+#     publishing, same as a fresh install.
+rerun_publish_menu() {  # $1 old_listen  $2 old_https_port  $3 old_was_published(0/1)
+  local old_listen=$1 old_https=$2 old_was_published=$3
+  LISTEN=$old_listen
+  # An explicit --https-port on the rerun (e.g. `serverjack-ctl setup
+  # --https-port 8443`) is how this menu option actually changes the
+  # published port on purpose, rather than only via check_serve_clash's
+  # reactive offer when the OLD port turns out to be foreign now (which
+  # can't fire for an unchanged port that is still this account's own --
+  # see compute_own_backends/backend_is_ours above).
+  HTTPS_PORT=${OPT_HTTPS_PORT:-$old_https}
+  step5_tailscale
+  if (( ! NO_SERVE )); then
+    step6_allow_list
+    check_serve_clash
+  fi
+  build_install_args
+  bash "$INSTALL_SH" "${INSTALL_ARGS[@]}"
+  record_install_args
+  if command -v tailscale >/dev/null 2>&1 && (( old_was_published )) \
+      && { (( NO_SERVE )) || [[ $old_https != "$HTTPS_PORT" ]]; }; then
+    local status
+    if status=$(tailscale serve status 2>/dev/null); then
+      compute_own_backends
+      if remove_owned_mapping "https=$old_https path=/" "$status" "$old_https" / "${OWN_BACKENDS[@]}"; then
+        (( NO_SERVE )) && say "Stopped publishing; https://<host>:$old_https/ no longer proxies here."
+      else
+        echo "Warning: the old https://<host>:$old_https/ route could not be fully removed -- check \`tailscale serve status\`." >&2
+      fi
+    else
+      echo "Warning: could not inspect tailscale serve status to remove the old https://<host>:$old_https/ route." >&2
+    fi
+  fi
+  verify_and_report
+}
+
 rerun_managed() {
   say "serverjack is already installed here as a managed release -- this is a rerun."
   local version listen port https_port allow serve_state
@@ -1004,13 +1059,7 @@ except Exception:
       say "Updated the allow-list."
       ;;
     3)
-      LISTEN=$listen; HTTPS_PORT=$https_port
-      step5_tailscale
-      check_serve_clash
-      build_install_args
-      bash "$INSTALL_SH" "${INSTALL_ARGS[@]}"
-      record_install_args
-      verify_and_report
+      rerun_publish_menu "$listen" "$https_port" "$( [[ $serve_state == published* ]] && echo 1 || echo 0 )"
       ;;
     *) say "Leaving everything as it is." ;;
   esac
@@ -1067,12 +1116,7 @@ rerun_git() {  # $1 = the checkout's absolute path
       say "Updated the allow-list."
       ;;
     3)
-      LISTEN=$listen; HTTPS_PORT=$https_port
-      step5_tailscale
-      check_serve_clash
-      build_install_args
-      bash "$INSTALL_SH" "${INSTALL_ARGS[@]}"
-      verify_and_report
+      rerun_publish_menu "$listen" "$https_port" "$( [[ $serve_state == published* ]] && echo 1 || echo 0 )"
       ;;
     *) say "Leaving everything as it is." ;;
   esac
