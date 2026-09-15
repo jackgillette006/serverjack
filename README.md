@@ -454,7 +454,15 @@ curl -fsSL https://github.com/jackgillette006/serverjack/releases/latest/downloa
 
 (needs a published release with these assets — v1.4.0 is the first; see
 [Quick start](#quick-start) for the download-and-inspect alternative). The
-bootstrap downloads one specific version — sha256-verified against a digest
+project page also serves a thin physical launcher at
+`https://jackgillette.com/serverjack/install.sh` for
+`curl -fsSL https://jackgillette.com/serverjack/install.sh | bash` — it does
+nothing but download this exact bootstrap asset to a private temp file,
+sanity-check it is not truncated or an HTML error page, then hand off with
+your arguments, terminal and exit status intact. Its canonical source is
+`bootstrap/launcher.sh` in this repo (`scripts/export-launcher.sh` produces
+the website copy; edit the source, not the exported file). The bootstrap
+downloads one specific version — sha256-verified against a digest
 embedded in the bootstrap script itself, not fetched separately — extracts it
 to `~/.local/share/serverjack/releases/<version>/`, points a `current` symlink
 at it, writes `~/.local/share/serverjack/install.json` recording the channel

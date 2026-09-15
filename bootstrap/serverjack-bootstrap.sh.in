@@ -451,3 +451,8 @@ main() {
 }
 
 main "$@"
+# SERVERJACK-BOOTSTRAP-EOF -- do not remove: bootstrap/launcher.sh (and the
+# generated website copy) checks for this exact line to refuse a truncated
+# or otherwise partial download before ever running it. It is inert here --
+# main() above already ran and, for the normal `curl | bash` streaming case,
+# this line is read (and does nothing) only after main has already returned.
