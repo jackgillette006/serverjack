@@ -58,8 +58,12 @@ usage() {
   exit "${1:-0}"
 }
 
+# See the matching comment in bootstrap/serverjack-bootstrap.sh.in: the pin
+# is dropped only when SERVERJACK_RELEASE_BASE_URL literally starts with
+# "http://", never merely because it is set -- an https:// mirror keeps the
+# pin, so a 302 down to plain http from it is refused, not followed.
 fetch() {
-  if [[ -n ${SERVERJACK_RELEASE_BASE_URL:-} ]]; then
+  if [[ ${SERVERJACK_RELEASE_BASE_URL:-} == http://* ]]; then
     curl -fsSL "$@"
   else
     curl -fsSL --proto '=https' --proto-redir '=https' "$@"
@@ -205,6 +209,21 @@ except Exception:
     print("")' < "$INSTALL_JSON" 2>/dev/null
 }
 
+# "activating" while an update/rollback has swapped "current" and started
+# install.sh but has not yet confirmed the health check; empty once
+# confirmed (write_install_json omits the field entirely on success) or for
+# an install.json written before this existed. See cmd_update's own comment
+# on why "previous"/"version" are written BEFORE the swap, which is what
+# makes this record (and `rollback`) trustworthy even after an interrupt.
+installed_state() {
+  [[ -f $INSTALL_JSON ]] || return 0
+  python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("state") or "")
+except Exception:
+    print("")' < "$INSTALL_JSON" 2>/dev/null
+}
+
 # Prints, one per line, the install_args (e.g. --no-serve) the bootstrap was
 # first run with -- see bootstrap/serverjack-bootstrap.sh.in. These are
 # run-time-only install.sh flags with nothing in the env file to remember
@@ -223,20 +242,22 @@ except Exception:
     pass' < "$INSTALL_JSON" 2>/dev/null
 }
 
-write_install_json() {  # $1 version, $2 previous (may be empty), $3.. install_args
-  local version=$1 previous=$2 tmp
-  shift 2
+write_install_json() {  # $1 version, $2 previous (may be empty), $3 state ("" or "activating"), $4.. install_args
+  local version=$1 previous=$2 state=$3 tmp
+  shift 3
   mkdir -p "$SHARE"
   tmp=$(mktemp "$SHARE/.install.json.XXXXXX")
-  python3 - "$version" "$previous" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$@" > "$tmp" <<'PY'
+  python3 - "$version" "$previous" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$state" "$@" > "$tmp" <<'PY'
 import json
 import sys
 
-version, previous, installed_at = sys.argv[1], sys.argv[2], sys.argv[3]
-install_args = sys.argv[4:]
-json.dump({"channel": "release", "version": version, "installed_at": installed_at,
-           "previous": previous or None, "install_args": install_args},
-          sys.stdout, indent=2)
+version, previous, installed_at, state = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+install_args = sys.argv[5:]
+doc = {"channel": "release", "version": version, "installed_at": installed_at,
+       "previous": previous or None, "install_args": install_args}
+if state:
+    doc["state"] = state
+json.dump(doc, sys.stdout, indent=2)
 print()
 PY
   mv -f "$tmp" "$INSTALL_JSON"
@@ -344,15 +365,114 @@ restore_from_backup() {  # $1 version being restored, $2 symlink target, $3 back
   fi
 }
 
+# Removes serverjack's user units, its runtime sockets and any tailscale
+# serve route it owns -- the SAME operations $CURRENT/uninstall.sh performs
+# (see that file), reimplemented here so cmd_uninstall can still fully
+# remove a managed install when $CURRENT/uninstall.sh is missing or fails --
+# a dangling "current" symlink (its release directory pruned or deleted by
+# hand), a corrupted release, or an uninstall.sh that errors partway. This
+# process cannot rely on anything living under $CURRENT to do that job,
+# since $CURRENT is exactly what might be gone.
+#
+# Prints what it did/left, the same way uninstall.sh does. Returns non-zero
+# if either unit FILE is still present afterward -- that is the one thing
+# cmd_uninstall actually gates on (whether $SHARE is safe to remove and
+# whether to exit non-zero); the tailscale serve route stays best-effort/
+# advisory, same as uninstall.sh: leaving a foreign or ambiguous mapping
+# alone is correct behavior, not a failure of this function's job.
+remove_units_and_serve_route() {
+  systemctl --user disable --now serverjack serverjack-ttyd 2>/dev/null
+  rm -f "$UNIT_DIR/serverjack.service" "$UNIT_DIR/serverjack-ttyd.service"
+  systemctl --user daemon-reload
+
+  local runtime="${XDG_RUNTIME_DIR}/serverjack"
+  rm -f "$runtime/web.sock" "$runtime/ttyd.sock" "$runtime/secret"
+
+  if command -v tailscale >/dev/null 2>&1; then
+    local mount https port legacy_port config_ok=1
+    mount=$(env_get SERVERJACK_TERM /term/); mount=${mount%/}
+    https=$(env_get SERVERJACK_HTTPS_PORT 443)
+    port=$(env_get SERVERJACK_PORT 7680)
+    legacy_port=$(env_get TTYD_PORT)
+
+    [[ $https =~ ^(443|8443|10000)$ ]] || config_ok=0
+    [[ $port =~ ^[0-9]{1,5}$ ]] \
+      && (( 10#$port >= 1 && 10#$port <= 65535 )) || config_ok=0
+    [[ $mount =~ ^/[A-Za-z0-9._~/-]+$ && $mount != / ]] || config_ok=0
+    if [[ -n $legacy_port ]]; then
+      if [[ $legacy_port =~ ^[0-9]{1,5}$ ]] \
+          && (( 10#$legacy_port >= 1 && 10#$legacy_port <= 65535 )); then
+        legacy_port=$((10#$legacy_port))
+      else
+        legacy_port=
+      fi
+    fi
+
+    local serve_status
+    if (( ! config_ok )); then
+      echo "tailscale serve routes left unchanged: serverjack's saved port, HTTPS port or terminal path is invalid" >&2
+    elif ! serve_status=$(tailscale serve status 2>/dev/null); then
+      echo "tailscale serve routes left unchanged: could not inspect the current serve status" >&2
+    else
+      port=$((10#$port))
+      serve_backends_for() {
+        local wanted_port=$1 wanted_path=$2
+        awk -v wp="$wanted_port" -v wpath="$wanted_path" '
+          /^https:\/\// { h=$1; sub(/^https:\/\//,"",h); n=split(h,a,":");
+                          cur=(n>1 ? a[n] : "443"); next }
+          /^\|--/ && cur==wp && $2==wpath { print $NF }' <<< "$serve_status"
+      }
+      backend_is_ours() {
+        local backend=$1
+        [[ $backend == "http://127.0.0.1:$port" \
+           || $backend == "unix:$runtime/web.sock" \
+           || $backend == "unix:$runtime/ttyd.sock" \
+           || ( -n $legacy_port && $backend == "http://127.0.0.1:$legacy_port" ) ]]
+      }
+      remove_owned_mapping() {
+        local path=$1 label=$2 backend
+        local -a backends=()
+        mapfile -t backends < <(serve_backends_for "$https" "$path")
+        if (( ${#backends[@]} == 0 )); then
+          return
+        elif (( ${#backends[@]} != 1 )); then
+          echo "tailscale serve $label left unchanged: status was ambiguous" >&2
+          return
+        fi
+        backend=${backends[0]}
+        if ! backend_is_ours "$backend"; then
+          echo "tailscale serve $label left unchanged: it points to a foreign backend ($backend)" >&2
+          return
+        fi
+        if tailscale serve --https="$https" --set-path="$path" off >/dev/null 2>&1; then
+          echo "removed tailscale serve $label ($backend)"
+        else
+          echo "could not remove tailscale serve $label ($backend); it was left unchanged" >&2
+        fi
+      }
+      remove_owned_mapping / "https=$https path=/"
+      remove_owned_mapping "$mount" "https=$https path=$mount"
+    fi
+  fi
+
+  [[ ! -f "$UNIT_DIR/serverjack.service" && ! -f "$UNIT_DIR/serverjack-ttyd.service" ]]
+}
+
 # ------------------------------------------------------------------ status
 cmd_status() {
   detect_channel
   case $CHANNEL in
     release)
-      local prev; prev=$(previous_version)
+      local prev state; prev=$(previous_version); state=$(installed_state)
       echo "channel:  release"
       echo "current:  $(installed_version)"
       echo "previous: ${prev:-none}"
+      if [[ $state == activating ]]; then
+        echo "state:    activating -- an update/rollback was interrupted before it could"
+        echo "          confirm health. \"current\" above is already correct; run"
+        echo "          \`serverjack-ctl update\` to resume it, or \`serverjack-ctl rollback\`"
+        echo "          to go back to $prev directly."
+      fi
       ;;
     git)
       local v
@@ -503,6 +623,18 @@ stage_release() {
   mkdir -p "$RELEASES"
   local scratch; scratch=$(mktemp -d "$RELEASES/.stage.XXXXXX")
   tar -xzf "$archive" -C "$scratch" --strip-components=1
+  # $tmp (the downloaded bootstrap script, SHA256SUMS and the archive
+  # itself) is done being needed the moment extraction succeeds -- clean it
+  # up explicitly here rather than leaving it to the EXIT trap alone.
+  # cmd_update registers its OWN EXIT/INT/TERM/HUP trap right after this
+  # function returns (for the activation-interrupt record), which REPLACES
+  # this one -- bash allows only one handler per signal -- so relying solely
+  # on the trap would silently stop cleaning up $tmp on every successful
+  # `update` from that point on. The trap stays in place for every earlier,
+  # abnormal exit in this function (checksum mismatch, download failure,
+  # ...); this just also handles the ordinary success path explicitly.
+  rm -rf "$tmp"
+  trap - EXIT
 
   local final="$RELEASES/$REL_VERSION" live_target
   live_target=$(readlink -f "$CURRENT" 2>/dev/null || true)
@@ -514,6 +646,22 @@ stage_release() {
   rm -rf "$final"
   mv -T "$scratch" "$final"
   STAGED_DIR=$final
+}
+
+# Trap target for the window between write_install_json(...,"activating",...)
+# and the finalize-or-rollback that follows it in cmd_update -- see the
+# comment there. Registered as a bare function name (not an inline string)
+# for EXIT INT TERM HUP; ACTIVATING_* are plain globals, not locals, so they
+# stay reachable regardless of exactly where in that window the interrupt
+# lands. Guarded by ACTIVATING_FINISHED so it prints at most once even
+# though its own `exit` re-fires the EXIT half of the same trap.
+_activation_interrupted() {
+  local rc=$?
+  if (( ! ACTIVATING_FINISHED )); then
+    ACTIVATING_FINISHED=1
+    echo "update to $ACTIVATING_NEW_VERSION was interrupted while activating -- \"current\" already points at it and install.json already reflects that (see \`serverjack-ctl status\`). Run \`serverjack-ctl rollback\` to go back to $ACTIVATING_OLD_VERSION, or \`serverjack-ctl update\` again to resume." >&2
+  fi
+  exit "$rc"
 }
 
 cmd_update() {
@@ -544,6 +692,42 @@ cmd_update() {
     exit 1
   }
 
+  # Resume an update that was interrupted before it could confirm success
+  # (Ctrl-C, SIGHUP from a closed terminal, a reboot mid-install.sh or
+  # mid-health-wait): install.json still says "state": "activating", which
+  # only ever happens between the pre-swap write below and this command's
+  # own finalize/rollback -- a normal, completed update or rollback always
+  # clears it. "current" already points at the interrupted version (the
+  # write always immediately precedes the swap), so there is nothing to
+  # re-stage or re-swap; just retry install.sh + the health wait for what
+  # is already there, matching what would have happened if nothing had
+  # interrupted it.
+  local resume_state; resume_state=$(installed_state)
+  if [[ $resume_state == activating ]]; then
+    local resume_version resume_previous
+    resume_version=$(installed_version)
+    resume_previous=$(previous_version)
+    echo "note: a previous update to $resume_version was interrupted before it finished (\"current\" already points at it) -- resuming it." >&2
+    local -a resume_args=()
+    mapfile -t resume_args < <(installed_args)
+    if bash "$CURRENT/install.sh" ${resume_args[@]+"${resume_args[@]}"} && wait_healthy 30; then
+      write_install_json "$resume_version" "$resume_previous" "" ${resume_args[@]+"${resume_args[@]}"}
+      say "Resumed and activated serverjack $resume_version"
+      return
+    fi
+    echo "resuming $resume_version failed (install.sh or the health check) -- rolling back to $resume_previous" >&2
+    if [[ -n $resume_previous && -d "$RELEASES/$resume_previous" ]]; then
+      swap_current "releases/$resume_previous"
+      if bash "$CURRENT/install.sh" ${resume_args[@]+"${resume_args[@]}"} && wait_healthy 30; then
+        write_install_json "$resume_previous" "$resume_version" "" ${resume_args[@]+"${resume_args[@]}"}
+        say "Rolled back to $resume_previous"
+        return
+      fi
+    fi
+    echo "automatic rollback also failed -- run \`serverjack-ctl status\` to see where things stand, or fix the release and try \`serverjack-ctl update\`/\`rollback\` again." >&2
+    exit 1
+  fi
+
   # Resolve BEFORE staging: a no-op update (the resolved version is already
   # current) must never touch $RELEASES at all, let alone the live release
   # directory "current" points at -- see stage_release()'s own comment.
@@ -568,15 +752,46 @@ cmd_update() {
 
   local prev_target; prev_target=$(readlink "$CURRENT" 2>/dev/null || true)
   local backup_dir; backup_dir=$(backup_current_state)
+  # Captured BEFORE the pre-swap write below overwrites install.json's
+  # "previous" field: a NORMAL failure (install.sh/health, not an
+  # interrupt) restores install.json to exactly what it said before this
+  # attempt, and this is the one piece restore_from_backup() itself doesn't
+  # know (it restores units/env/serverjack-ctl, never install.json).
+  local orig_previous; orig_previous=$(previous_version)
+
+  # Record the activation BEFORE the swap: from here to the finalize/
+  # rollback below, an interrupt must not leave install.json still saying
+  # $current_version while "current" already points at $new_version -- that
+  # desync is exactly what made `status` misreport and `rollback` refuse
+  # after an interrupted update. Writing "previous" here (not only on
+  # success) is what makes `rollback` correct even if this process never
+  # gets back here to finish; "state": "activating" is what tells a later
+  # `update`/`status` that this record isn't confirmed yet.
+  write_install_json "$new_version" "$current_version" "activating" ${persisted_args[@]+"${persisted_args[@]}"}
+  ACTIVATING_NEW_VERSION=$new_version
+  ACTIVATING_OLD_VERSION=$current_version
+  ACTIVATING_FINISHED=0
+  trap _activation_interrupted EXIT INT TERM HUP
 
   swap_current "releases/$new_version"
-  if bash "$CURRENT/install.sh" "${persisted_args[@]}" && wait_healthy 30; then
-    write_install_json "$new_version" "$current_version" "${persisted_args[@]}"
+  if bash "$CURRENT/install.sh" ${persisted_args[@]+"${persisted_args[@]}"} && wait_healthy 30; then
+    ACTIVATING_FINISHED=1
+    trap - EXIT INT TERM HUP
+    unset ACTIVATING_FINISHED ACTIVATING_NEW_VERSION ACTIVATING_OLD_VERSION
+    write_install_json "$new_version" "$current_version" "" ${persisted_args[@]+"${persisted_args[@]}"}
     say "Activated serverjack $new_version"
     return
   fi
+  ACTIVATING_FINISHED=1
+  trap - EXIT INT TERM HUP
+  unset ACTIVATING_FINISHED ACTIVATING_NEW_VERSION ACTIVATING_OLD_VERSION
   echo "update to $new_version failed (install.sh or the health check) -- rolling back to $current_version" >&2
   restore_from_backup "$current_version" "${prev_target:-releases/$current_version}" "$backup_dir"
+  # This is a handled failure, not an interrupt: install.json must go back
+  # to exactly what it said before this attempt (still "activating" would
+  # be stale/wrong, and "version" must NOT be left naming the release that
+  # just failed and was rolled back away from).
+  write_install_json "$current_version" "$orig_previous" "" ${persisted_args[@]+"${persisted_args[@]}"}
   exit 1
 }
 
@@ -601,14 +816,33 @@ cmd_rollback() {
   mapfile -t persisted_args < <(installed_args)
 
   local backup_dir; backup_dir=$(backup_current_state)
+
+  # Same reasoning as cmd_update: record the swap BEFORE it happens, so an
+  # interrupt here can't leave install.json out of sync with "current".
+  write_install_json "$prev" "$cur" "activating" ${persisted_args[@]+"${persisted_args[@]}"}
+  ACTIVATING_NEW_VERSION=$prev
+  ACTIVATING_OLD_VERSION=$cur
+  ACTIVATING_FINISHED=0
+  trap _activation_interrupted EXIT INT TERM HUP
+
   swap_current "releases/$prev"
-  if bash "$CURRENT/install.sh" "${persisted_args[@]}" && wait_healthy 30; then
-    write_install_json "$prev" "$cur" "${persisted_args[@]}"
+  if bash "$CURRENT/install.sh" ${persisted_args[@]+"${persisted_args[@]}"} && wait_healthy 30; then
+    ACTIVATING_FINISHED=1
+    trap - EXIT INT TERM HUP
+    unset ACTIVATING_FINISHED ACTIVATING_NEW_VERSION ACTIVATING_OLD_VERSION
+    write_install_json "$prev" "$cur" "" ${persisted_args[@]+"${persisted_args[@]}"}
     say "Rolled back to $prev"
     return
   fi
+  ACTIVATING_FINISHED=1
+  trap - EXIT INT TERM HUP
+  unset ACTIVATING_FINISHED ACTIVATING_NEW_VERSION ACTIVATING_OLD_VERSION
   echo "rollback to $prev failed (install.sh or the health check) -- restoring $cur" >&2
   restore_from_backup "$cur" "releases/$cur" "$backup_dir"
+  # Handled failure, not an interrupt: install.json goes back to exactly
+  # what it said before this attempt (version=$cur, previous=$prev is
+  # literally the pre-attempt state here, no separate capture needed).
+  write_install_json "$cur" "$prev" "" ${persisted_args[@]+"${persisted_args[@]}"}
   exit 1
 }
 
@@ -624,14 +858,39 @@ cmd_uninstall() {
   require_release_channel uninstall
   local v; v=$(installed_version)
   ask_confirm "Uninstall serverjack $v? This removes the systemd units, the tailscale serve route it owns, and $SHARE. ~/.config/serverjack and your tmux sessions are kept."
+
+  # $CURRENT/uninstall.sh is preferred when it works, but its success is
+  # never assumed: a dangling "current" (release pruned or deleted by hand),
+  # a corrupted release, or an uninstall.sh that errors partway must not
+  # still report full success and delete $SHARE regardless -- that used to
+  # happen unconditionally. remove_units_and_serve_route() re-runs the same,
+  # idempotent removal either way and is what actually gates $SHARE and the
+  # exit status below, so the reported outcome matches what is really true
+  # on disk.
+  local units_gone=0
   if [[ -x "$CURRENT/uninstall.sh" ]]; then
-    bash "$CURRENT/uninstall.sh" || echo "warning: $CURRENT/uninstall.sh exited non-zero; continuing to remove $SHARE" >&2
+    if bash "$CURRENT/uninstall.sh"; then
+      units_gone=1
+    else
+      echo "warning: $CURRENT/uninstall.sh exited non-zero -- removing the units and serve route directly instead" >&2
+    fi
   else
-    echo "warning: $CURRENT/uninstall.sh not found; removing $SHARE without running it" >&2
+    echo "warning: $CURRENT/uninstall.sh not found (dangling or corrupted \"current\"?) -- removing the units and serve route directly instead" >&2
   fi
-  rm -rf "$SHARE"
-  echo "removed: serverjack/serverjack-ttyd units, their tailscale serve route, $SHARE"
-  echo "kept: ~/.config/serverjack, ~/.local/bin/serverjack-ctl, ~/.local/bin/ttyd and fzf, your tmux sessions"
+  if (( ! units_gone )) && remove_units_and_serve_route; then
+    units_gone=1
+  fi
+
+  if (( units_gone )); then
+    rm -rf "$SHARE"
+    echo "removed: serverjack/serverjack-ttyd units, their tailscale serve route, $SHARE"
+    echo "kept: ~/.config/serverjack, ~/.local/bin/serverjack-ctl, ~/.local/bin/ttyd and fzf, your tmux sessions"
+  else
+    echo "the units could not be fully removed -- $SHARE was left in place (nothing lost, and \`serverjack-ctl status\`/a retry still has something to look at)." >&2
+    echo "kept (removal incomplete): serverjack/serverjack-ttyd units, $SHARE" >&2
+    echo "kept (untouched): ~/.config/serverjack, ~/.local/bin/serverjack-ctl, ~/.local/bin/ttyd and fzf, your tmux sessions" >&2
+    exit 1
+  fi
 }
 
 # -------------------------------------------------------------------- prune
