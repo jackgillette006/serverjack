@@ -401,10 +401,18 @@ contains "offers the manual git-checkout path" "$out" "bash serverjack/install.s
 
 echo "================================================================"
 echo "(a) missing prerequisites, offer refused"
-run_dialogue prereq_a prereq_a 30 \
+# C1: the bootstrap's OWN prerequisite-floor check (ca-certificates is on
+# both lists -- the bootstrap needs it for its own HTTPS downloads, setup's
+# step 3 needs it too) now runs FIRST and asks its own, differently-worded
+# prompt ("...with sudo?") -- accepted here (a real `sudo apt-get install`,
+# this container has real internet) so the bootstrap can proceed far enough
+# to reach the scenario this test actually targets: setup's OWN step 3
+# prompt for tmux/ss, declined.
+run_dialogue prereq_a prereq_a 60 \
   "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash" \
   "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL" <<'JSON'
-[["Install them now?", "n"],
+[["Install them now with sudo?", "y"],
+ ["Install them now?", "n"],
  ["Not installing. Run this yourself", null]]
 JSON
 result "prereq refusal exits 1" "1" "$DLG_RC"
@@ -416,7 +424,8 @@ echo "(b) missing prerequisites accepted, then Tailscale missing + skip serve"
 run_dialogue prereq_b prereq_b 150 \
   "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --port 7680" \
   "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL -e PATH=/usr/sbin:/usr/bin:/sbin:/bin" <<'JSON'
-[["Install them now?", "y"],
+[["Install them now with sudo?", "y"],
+ ["Install them now?", "y"],
  ["Installed: ", null],
  ["Tailscale is not installed.", null],
  ["Publish with tailscale serve", "n"],

@@ -1191,8 +1191,14 @@ out2=$(run_as tester7 "curl -fsSL $BASE_URL/v$V3/serverjack-bootstrap.sh | bash 
 contains_resume=0
 [[ $out2 == *"Resuming an install that did not finish last time"* ]] && contains_resume=1
 result "tester7: second curl|bash resumes the half-finished install" "1" "$contains_resume"
-[[ $out2 != *"already installed"* ]] && echo "  PASS tester7: does not refuse with \"already installed\"" \
-  || { echo "  FAIL tester7: incorrectly refused as already installed -- got: $out2"; failures=$((failures + 1)); }
+# The SPECIFIC bootstrap refusal text (refuse_if_existing_install()'s
+# non-resumable path), not a bare "already installed" substring -- that
+# generic phrase also appears, legitimately, in rerun_managed()'s own
+# "serverjack is already installed here as a managed release -- this is a
+# rerun." once the resumed install.sh has started real units, which is
+# expected here, not the bug this checks for.
+[[ $out2 != *"refuses to silently take over an existing one"* ]] && echo "  PASS tester7: does not refuse with the non-resumable \"already installed\" message" \
+  || { echo "  FAIL tester7: incorrectly refused as already installed (non-resumable) -- got: $out2"; failures=$((failures + 1)); }
 
 echo "================================================================"
 echo "== (z) A5: --no-serve persists across a plain re-run for a git checkout"
