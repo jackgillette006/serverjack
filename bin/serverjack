@@ -3439,11 +3439,11 @@ def dir_picker(value="", input_id=None):
     wires it up: it fetches GET /api/dirs?q= as you type and on Tab/Enter/
     pointer picks. An empty value means the default directory (resolve_dir()
     falls back to default_dir()) -- the placeholder names it, e.g.
-    "~/projects — type a folder name or path", so an empty box always shows
+    "~/projects · folder name or path", so an empty box always shows
     where it will actually land. A typed path that doesn't exist yet is
     created when the form is submitted, a picked suggestion always exists."""
     idattr = f' id="{esc(input_id)}"' if input_id else ""
-    placeholder = f"{_dir_show(default_dir())} — type a folder name or path"
+    placeholder = f"{_dir_show(default_dir())} · folder name or path"
     return (
         f'<div class="dirpick"><input{idattr} name="dir" role="combobox" '
         'aria-autocomplete="list" aria-expanded="false" autocomplete="off" '
