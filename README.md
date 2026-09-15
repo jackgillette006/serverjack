@@ -442,9 +442,22 @@ it runs, and it is the same one the vendor's own docs tell you to paste.
 
 ## Install (no sudo)
 
-Requirements: Linux, systemd, tmux, python3, curl. Tailscale optional. Two
-paths, same result underneath — the same `install.sh`, env file and units —
-pick whichever fits:
+Requirements: Linux, systemd, tmux, python3, curl. Tailscale optional.
+
+**The real floor for the one-command install** (the launcher and the
+bootstrap both check this, before downloading or staging anything): `bash`,
+`curl`, `python3`, `tar`, `sha256sum` (coreutils), a working `systemd --user`
+session, `flock` (util-linux) and CA certificates. `tmux` is deliberately
+*not* on that list — finding and offering to install actually-missing
+prerequisites, tmux included, is what the guided flow (`bin/serverjack-setup`)
+does next, and a hard requirement in the launcher/bootstrap would make that
+step unreachable on a fresh machine that doesn't have tmux yet. Anything
+missing from the floor prints the exact `apt`/`dnf` command and, with a
+terminal, offers to run it with `sudo` (default no); without one, it prints
+the command and exits 2 rather than hanging or guessing.
+
+Two paths, same result underneath — the same `install.sh`, env file and
+units — pick whichever fits:
 
 ### Managed install (recommended)
 
