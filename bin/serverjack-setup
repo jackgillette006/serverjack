@@ -956,6 +956,45 @@ record_install_args() {
   update_install_json "$SHARE/install.json" --set-args "${INSTALL_ARGS[@]}"
 }
 
+# C4. `tailscale serve` proxying to a Unix socket needs root even for the
+# tailscale operator (verified against a real tailscale, see install.sh's
+# own comment on this) -- install.sh discovers that ITSELF, inside its own
+# serve attempt, and can only PRINT the remedy command, since it never
+# touches sudo. That used to be the end of it: the guided flow finished
+# without ever offering to run it, so a fresh --unix install was silently
+# LOCAL-ONLY until someone read install.sh's own output and pasted the
+# command by hand. Completes it interactively here, the same consent
+# pattern as every other root step in this project (default no), and
+# verifies the mapping actually appeared afterward rather than assuming the
+# command worked. Uses tty_available() (never ensure_tty()/ask_yn() on its
+# own) so a missing controlling terminal at this late stage -- everything
+# else already succeeded -- reports a remaining step instead of aborting
+# the whole run with an exit code.
+complete_unix_serve_if_needed() {
+  (( NO_SERVE )) && return 0
+  [[ $LISTEN == unix ]] || return 0
+  command -v tailscale >/dev/null 2>&1 || return 0
+  local runtime="${XDG_RUNTIME_DIR}/serverjack"
+  local backend="unix:$runtime/web.sock"
+  local cur; cur=$(serve_backend_for "$HTTPS_PORT" /)
+  [[ $cur == "$backend" ]] && return 0
+  say "tailscale serve needs root to proxy to a Unix socket (the operator grant is not enough, even for the account \`tailscale set --operator\` names)."
+  echo "  sudo tailscale serve --bg --https=$HTTPS_PORT $backend"
+  local run_it=0
+  if tty_available && ask_yn "Run it now?" n; then
+    run_it=1
+  fi
+  if (( run_it )) && sudo tailscale serve --bg --https="$HTTPS_PORT" "$backend"; then
+    cur=$(serve_backend_for "$HTTPS_PORT" /)
+    if [[ $cur == "$backend" ]]; then
+      say "Published: https://<host>:$HTTPS_PORT/ now proxies to $backend"
+      return 0
+    fi
+    echo "Ran the command, but \`tailscale serve status\` still doesn't show $backend -- check it by hand." >&2
+  fi
+  echo "The install is LOCAL-ONLY until that command is run (the units are already up -- only the tailnet publish step is pending)." >&2
+}
+
 step9_install_and_verify() {
   build_install_args
   # A4: take the mutation lock now, right before the first actual write --
@@ -982,6 +1021,9 @@ step9_install_and_verify() {
   bash "$INSTALL_SH" "${INSTALL_ARGS[@]}"
   record_install_args
   lock_release
+  # After the lock, not before: this can prompt interactively (A4 -- the
+  # lock is never held across a prompt).
+  complete_unix_serve_if_needed
   verify_and_report
 }
 
@@ -1129,6 +1171,8 @@ rerun_publish_menu() {  # $1 old_listen  $2 old_https_port  $3 old_was_published
     fi
   fi
   lock_release
+  # After the lock, not before (C4/A4): this can prompt interactively.
+  complete_unix_serve_if_needed
   verify_and_report
 }
 

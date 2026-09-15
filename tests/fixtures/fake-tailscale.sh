@@ -157,6 +157,17 @@ case "$cmd" in
         *)            [[ -z $backend ]] && backend=$a ;;
       esac
     done
+    # C4: proxying to a Unix socket genuinely needs root on a real
+    # tailscale (verified on 1.102.3, see install.sh's own comment on this
+    # -- the operator grant is not enough) -- simulate that here too, or
+    # the whole guided "offer to run this with sudo" step (and its
+    # declined-path test) has nothing real to exercise: every --unix
+    # scenario would just silently succeed via the ordinary (non-root)
+    # call, the same bug this fixture exists to catch.
+    if (( ! off )) && [[ $backend == unix:* && $(id -u) -ne 0 ]]; then
+      echo "401 Unauthorized: must be root, or be an operator and able to run 'sudo tailscale' to serve a path or Unix socket" >&2
+      exit 1
+    fi
     grep -v "^$https $path " "$SERVECONFIG" > "$SERVECONFIG.tmp" 2>/dev/null || true
     if (( ! off )) && [[ -n $backend ]]; then
       echo "$https $path $backend" >> "$SERVECONFIG.tmp"

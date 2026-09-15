@@ -233,7 +233,7 @@ for _ in $(seq 1 30); do
   sleep 0.5
 done
 
-USERS=(prereq_a prereq_b notty ts1 ts2 ts3 ts4 ts5 ts6 ts7 ts8 ts9 ts10)
+USERS=(prereq_a prereq_b notty ts1 ts2 ts3 ts4 ts5 ts6 ts7 ts8 ts9 ts10 ts11)
 for u in "${USERS[@]}"; do
   docker exec "$TESTER" useradd -m -s /bin/bash "$u"
   docker exec "$TESTER" loginctl enable-linger "$u"
@@ -542,6 +542,9 @@ run_dialogue ts4 ts4 60 \
  ["Allow only this login?", "y"],
  ["Do other people have Linux accounts on this machine?", "y"],
  ["Run it now?", "y"],
+ ["tailscale serve needs root", null],
+ ["Run it now?", "y"],
+ ["Published:", null],
  ["not yet reachable from your phone", null]]
 JSON
 result "ts4 exits 0" "0" "$DLG_RC"
@@ -549,6 +552,32 @@ result "ts4 exits 0" "0" "$DLG_RC"
   || { echo "  FAIL ts4 listen -- got $(env_val ts4 SERVERJACK_LISTEN)"; failures=$((failures + 1)); }
 ts4_uid=$(docker exec "$TESTER" id -u ts4)
 check_serve_mapping ts4 ts4 443 "unix:/run/user/$ts4_uid/serverjack/web.sock"
+
+echo "================================================================"
+echo "(s) C4: declining the --unix serve root step leaves the install"
+echo "    local-only, without ever invoking sudo tailscale serve"
+reset_operator
+set_ts_state ts11 running "hank@github" 0 0
+run_dialogue ts11 ts11 90 \
+  "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --port 7732" \
+  "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL -e PATH=/opt/fake-sudo-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" <<'JSON'
+[["Tailscale is running.", null],
+ ["Publish with tailscale serve", "y"],
+ ["Detected tailnet login: hank@github", null],
+ ["Allow only this login?", "y"],
+ ["Do other people have Linux accounts on this machine?", "y"],
+ ["Run it now?", "y"],
+ ["tailscale serve needs root", null],
+ ["Run it now?", "n"],
+ ["LOCAL-ONLY", null]]
+JSON
+result "ts11 exits 0 (declining the unix-serve step doesn't abort the install)" "0" "$DLG_RC"
+sudo_log=$(docker exec --user ts11 "$TESTER" bash -c 'cat ~/.fake-sudo.log 2>/dev/null || true')
+[[ $sudo_log != *"tailscale serve"* ]] && echo "  PASS ts11: sudo tailscale serve was never invoked (declined)" \
+  || { echo "  FAIL ts11: sudo tailscale serve was invoked despite declining -- got: $sudo_log"; failures=$((failures + 1)); }
+out=$(docker exec --user ts11 "$TESTER" bash -c 'tailscale serve status' 2>&1)
+[[ $out != *"unix:"* ]] && echo "  PASS ts11: no unix: mapping was published" \
+  || { echo "  FAIL ts11: a unix: mapping exists despite declining -- got: $out"; failures=$((failures + 1)); }
 
 echo "================================================================"
 echo "(j) rerun on (f)'s account via serverjack-ctl setup, choosing 'nothing'"
