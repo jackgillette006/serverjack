@@ -65,6 +65,13 @@ a broad-access default. Answer everything up front instead with the same
 flags `install.sh` takes (`--no-serve`, `--tcp`/`--unix`, `--port N`,
 `--https-port N`, `--title NAME`) appended to the command above, and it skips
 straight past the matching questions. No checkout, no directory to remember.
+**Who can reach it.** Single-user tailnet: nothing to set. Shared tailnet, or
+devices shared with people outside your tailnet: set `SERVERJACK_ALLOW` to
+the login(s) you want in (the guided setup proposes exactly this) — identity
+headers come from `tailscale serve` and aren't set for tagged devices, and a
+shared device can put someone else on the route. Machine shared with other
+local accounts: `--unix`. See the [security model](#security-model-read-this-first).
+
 Prefer to look before you run it?
 
 ```sh
