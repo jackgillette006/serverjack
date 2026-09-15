@@ -2,6 +2,10 @@
 Description=serverjack terminal (ttyd on a private Unix socket; attaches to the tmux session named in the URL)
 Documentation=https://github.com/jackgillette006/serverjack
 After=network.target
+# See the matching comment in serverjack.service: no start-limit window, so
+# a crash-looping broken release never leaves this unit rate-limited once a
+# good release is restored.
+StartLimitIntervalSec=0
 
 [Service]
 EnvironmentFile=%h/.config/serverjack/env

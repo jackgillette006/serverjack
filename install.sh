@@ -59,7 +59,28 @@ SHARE_RELEASES=$HOME/.local/share/serverjack/releases
 SHARE_RELEASES=$(readlink -f "$SHARE_RELEASES" 2>/dev/null || printf '%s' "$SHARE_RELEASES")
 UNIT_REPO=$REPO
 case "$REPO" in
-  "$SHARE_RELEASES"/*) UNIT_REPO=$HOME/.local/share/serverjack/current ;;
+  "$SHARE_RELEASES"/*)
+    # This copy of install.sh is physically inside a staged release, but
+    # that alone doesn't mean it's the ACTIVE one -- running an old, no
+    # longer current release's install.sh by hand would otherwise happily
+    # bake "current" into the units and start them, silently running
+    # whatever release current actually points at (which might not even be
+    # this one) instead of refusing. serverjack-ctl always swaps "current"
+    # to the release it's activating BEFORE calling install.sh, so for its
+    # own update/rollback/bootstrap flows this check already passes; the
+    # env var is only there as an explicit, documented trust boundary
+    # between "serverjack-ctl invoked me" and "someone ran this by hand".
+    CURRENT_REAL=$(readlink -f "$HOME/.local/share/serverjack/current" 2>/dev/null || true)
+    if [[ -z ${SERVERJACK_CTL_MANAGED:-} && $CURRENT_REAL != "$REPO" ]]; then
+      echo "this install.sh is inside a managed release ($REPO), but" >&2
+      echo "$HOME/.local/share/serverjack/current does not point at it (current -> ${CURRENT_REAL:-<none>})." >&2
+      echo "Run: ~/.local/bin/serverjack-ctl update  (or rollback), or point" >&2
+      echo "current at this release first, rather than running this copy of" >&2
+      echo "install.sh directly." >&2
+      exit 1
+    fi
+    UNIT_REPO=$HOME/.local/share/serverjack/current
+    ;;
 esac
 NO_SERVE=0
 OPT_LISTEN=
@@ -174,6 +195,19 @@ fi
 # download). It works for a git checkout too (its `update` just delegates to
 # git pull), so this isn't gated on being a managed install.
 install -m 755 "$REPO/bin/serverjack-ctl" "$BIN/serverjack-ctl"
+if [[ $UNIT_REPO == "$REPO" ]]; then
+  # A git-checkout install: record this checkout's absolute path in plain
+  # text so serverjack-ctl's detect_channel() can find it without parsing
+  # ExecStart= (which is written through systemd's own %/\/" quoting --
+  # unescaping that just to recover a path is exactly the kind of thing
+  # that goes quietly wrong for a checkout path containing either character).
+  printf '%s\n' "$REPO" > "$CFG_DIR/install-path"
+else
+  # A managed install never needs this (detect_channel() recognizes it by
+  # ExecStart= pointing at the stable "current" path instead) -- remove a
+  # stale one left behind if this account previously had a git checkout here.
+  rm -f "$CFG_DIR/install-path"
+fi
 
 # ---------------------------------------------------------------- config
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -510,16 +544,58 @@ cat <<TXT
   journalctl --user -u serverjack -f                    # page + API logs
   journalctl --user -u serverjack-ttyd -f               # terminal logs
   systemctl --user status serverjack serverjack-ttyd
+TXT
+if [[ $UNIT_REPO == "$REPO" ]]; then
+  # A git checkout: $REPO IS the checkout, so these commands are meaningful
+  # as printed. For a managed install $REPO is a specific, disposable
+  # release directory an update replaces -- printing "bash $REPO/install.sh"
+  # or ".../uninstall.sh" there points at a path that stops being current
+  # the moment the next release activates, so only the serverjack-ctl
+  # commands below are shown instead.
+  cat <<TXT
   bash $REPO/install.sh                                 # re-run after a git pull (idempotent)
   bash $REPO/uninstall.sh
 TXT
-if [[ $UNIT_REPO != "$REPO" ]]; then
+else
   cat <<TXT
-This is a managed release install ($REPO). Prefer serverjack-ctl for update/
+This is a managed release install ($REPO). Use serverjack-ctl for update/
 rollback/uninstall -- it stages, health-checks and can revert automatically:
   ~/.local/bin/serverjack-ctl status
   ~/.local/bin/serverjack-ctl update
   ~/.local/bin/serverjack-ctl rollback
   ~/.local/bin/serverjack-ctl uninstall
 TXT
+  # Finalize a bootstrap-driven install: the bootstrap writes install.json
+  # with "state": "installing" BEFORE handing off to this script (it execs
+  # us, so it has no way to run code again afterward to confirm we
+  # succeeded) -- clear that marker now that install.sh has actually
+  # finished. refuse_if_existing_install() in the bootstrap treats that
+  # marker as a half-finished install a second `curl | bash` may resume,
+  # rather than an existing install to refuse; leaving it set after a REAL
+  # success would make a later bootstrap run redo the whole install for no
+  # reason. serverjack-ctl's own update/rollback never set this marker (they
+  # only write install.json after install.sh already succeeded), so this is
+  # a no-op for them.
+  MANAGED_INSTALL_JSON=$HOME/.local/share/serverjack/install.json
+  if [[ -f $MANAGED_INSTALL_JSON ]]; then
+    python3 - "$MANAGED_INSTALL_JSON" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except (OSError, ValueError):
+    doc = None
+if isinstance(doc, dict) and doc.get("state") == "installing":
+    doc.pop("state", None)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)
+PY
+  fi
 fi

@@ -489,7 +489,14 @@ class InstallChannelTests(unittest.TestCase):
     reads. Each test points mod.HOME/mod.REPO at fresh throwaway
     directories (never the real ones setUpModule already redirected
     XDG_RUNTIME_DIR/SERVERJACK_CONFIG to) so it never reads this machine's
-    actual install, whatever channel it happens to be on."""
+    actual install, whatever channel it happens to be on.
+
+    The channel is decided by WHERE mod.REPO physically is first (under
+    HOME/.local/share/serverjack/releases/ -> release), never by
+    install.json alone -- see the precedence note on _install_channel()
+    itself. install.json (or, failing that, a RELEASE file next to REPO) is
+    consulted only for the version to report once "release" is already
+    established that way."""
 
     def setUp(self):
         self._orig_home = mod.HOME
@@ -505,14 +512,23 @@ class InstallChannelTests(unittest.TestCase):
         _tmpdirs.extend([home, repo])
         return home, repo
 
+    def _release_dir(self, home, version):
+        """A repo path that is physically under home's releases/ tree, the
+        way a real managed install's bin/serverjack is."""
+        releases = os.path.join(home, ".local", "share", "serverjack", "releases")
+        repo = os.path.join(releases, version)
+        os.makedirs(repo)
+        return repo
+
     def _channel_for(self, home, repo):
         mod.HOME, mod.REPO = home, repo
         return mod._install_channel()
 
-    def test_release_channel_from_install_json(self):
-        home, repo = self._fresh_dirs()
+    def test_release_channel_when_repo_is_under_releases(self):
+        home = tempfile.mkdtemp(prefix="sj-unit-home-")
+        _tmpdirs.append(home)
+        repo = self._release_dir(home, "1.4.0")
         share = os.path.join(home, ".local", "share", "serverjack")
-        os.makedirs(share)
         with open(os.path.join(share, "install.json"), "w", encoding="utf-8") as fh:
             json.dump({"channel": "release", "version": "1.4.0", "installed_at": "x",
                        "previous": None}, fh)
@@ -527,38 +543,57 @@ class InstallChannelTests(unittest.TestCase):
         home, repo = self._fresh_dirs()
         self.assertEqual(self._channel_for(home, repo), ("unknown", None))
 
-    def test_install_json_wins_over_a_git_directory(self):
-        # A managed install's release directory is never a git checkout in
-        # practice, but if install.json says "release", trust it over
-        # incidentally finding a .git next to bin/serverjack.
-        home, repo = self._fresh_dirs()
+    def test_repo_location_wins_over_a_stale_install_json(self):
+        # The bug this precedence fixes: an account that ALSO has an
+        # unrelated managed install sitting in ~/.local/share/serverjack
+        # must not have its plain git checkout misclassified as "release"
+        # just because install.json happens to exist there. REPO is a git
+        # checkout, nowhere near HOME's releases/ tree.
+        home = tempfile.mkdtemp(prefix="sj-unit-home-")
+        repo = tempfile.mkdtemp(prefix="sj-unit-repo-")
+        _tmpdirs.extend([home, repo])
         share = os.path.join(home, ".local", "share", "serverjack")
         os.makedirs(share)
         with open(os.path.join(share, "install.json"), "w", encoding="utf-8") as fh:
             json.dump({"channel": "release", "version": "2.0.0"}, fh)
         os.makedirs(os.path.join(repo, ".git"))
-        self.assertEqual(self._channel_for(home, repo), ("release", "2.0.0"))
-
-    def test_malformed_install_json_falls_back_to_git(self):
-        home, repo = self._fresh_dirs()
-        share = os.path.join(home, ".local", "share", "serverjack")
-        os.makedirs(share)
-        with open(os.path.join(share, "install.json"), "w", encoding="utf-8") as fh:
-            fh.write("{not valid json")
-        os.makedirs(os.path.join(repo, ".git"))
         self.assertEqual(self._channel_for(home, repo), ("git", None))
 
-    def test_install_json_with_other_channel_falls_back(self):
-        # Only "release" is a channel this file recognizes; anything else
-        # (a future channel value, a hand-edited file) must not be trusted
-        # as one -- fall through to the git/unknown checks like a missing
-        # file would.
-        home, repo = self._fresh_dirs()
+    def test_release_channel_falls_back_to_release_file(self):
+        # No install.json at all (e.g. a tarball extracted into releases/ by
+        # hand) -- REPO's own RELEASE file is the fallback for the version.
+        home = tempfile.mkdtemp(prefix="sj-unit-home-")
+        _tmpdirs.append(home)
+        repo = self._release_dir(home, "3.1.0")
+        with open(os.path.join(repo, "RELEASE"), "w", encoding="utf-8") as fh:
+            fh.write("version=3.1.0\ngit_sha=deadbeef\nbuild_date=x\n")
+        self.assertEqual(self._channel_for(home, repo), ("release", "3.1.0"))
+
+    def test_malformed_install_json_falls_back_to_release_file(self):
+        home = tempfile.mkdtemp(prefix="sj-unit-home-")
+        _tmpdirs.append(home)
+        repo = self._release_dir(home, "1.5.0")
         share = os.path.join(home, ".local", "share", "serverjack")
-        os.makedirs(share)
+        with open(os.path.join(share, "install.json"), "w", encoding="utf-8") as fh:
+            fh.write("{not valid json")
+        with open(os.path.join(repo, "RELEASE"), "w", encoding="utf-8") as fh:
+            fh.write("version=1.5.0\n")
+        self.assertEqual(self._channel_for(home, repo), ("release", "1.5.0"))
+
+    def test_install_json_with_other_channel_falls_back_to_release_file(self):
+        # Only "release" is a channel value this file recognizes; anything
+        # else (a future channel value, a hand-edited file) must not be
+        # trusted for the version -- but REPO's physical location still
+        # makes this "release", falling back to the RELEASE file.
+        home = tempfile.mkdtemp(prefix="sj-unit-home-")
+        _tmpdirs.append(home)
+        repo = self._release_dir(home, "1.6.0")
+        share = os.path.join(home, ".local", "share", "serverjack")
         with open(os.path.join(share, "install.json"), "w", encoding="utf-8") as fh:
             json.dump({"channel": "something-else"}, fh)
-        self.assertEqual(self._channel_for(home, repo), ("unknown", None))
+        with open(os.path.join(repo, "RELEASE"), "w", encoding="utf-8") as fh:
+            fh.write("version=1.6.0\n")
+        self.assertEqual(self._channel_for(home, repo), ("release", "1.6.0"))
 
 
 if __name__ == "__main__":
