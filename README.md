@@ -541,6 +541,16 @@ Managing it afterwards — updates, rollback, uninstall — is `serverjack-ctl`
 (installed to `~/.local/bin/serverjack-ctl`): see
 [Updating and rolling back](#updating-and-rolling-back) below.
 
+**Already running serverjack from a git checkout?** The bootstrap refuses
+outright rather than silently take over an existing install of either kind
+(managed or a git checkout it recognizes) — it is not how you update one.
+To move from a git checkout to a managed install: `cd` into the checkout and
+run `bash uninstall.sh` (this keeps `~/.config/serverjack` — your env file,
+shortcuts, tool overrides — and every tmux session; it only removes the
+units and this checkout's own serve route), then run the one-liner above.
+Afterwards, update with `serverjack-ctl update` or the page's own Update
+row — never the one-liner again, which only ever performs a fresh install.
+
 ### Development install (git checkout)
 
 ```
