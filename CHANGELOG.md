@@ -16,8 +16,52 @@ and this project uses [Semantic Versioning](https://semver.org/).
   a specific released version with no git checkout: downloads and verifies
   the archive, extracts it to `~/.local/share/serverjack/releases/<version>/`,
   points `~/.local/share/serverjack/current` at it, writes `install.json`,
-  then hands off to that release's own `install.sh`. Refuses to run as root
-  or to silently take over an existing (git or managed) install.
+  then hands off to that release's own `bin/serverjack-setup`. Refuses to run
+  as root or to silently take over an existing (git or managed) install.
+- **`bin/serverjack-setup`: the guided part of the one-command install.**
+  Runs before `install.sh` (the bootstrap execs it; it's also runnable by
+  hand from a checkout, and aliased as `serverjack-ctl setup`), asking on
+  `/dev/tty` whatever `install.sh` itself never does — each question backed
+  by the same flag `install.sh` takes, so a fully-flagged run never touches a
+  terminal at all: confirms a supported OS/architecture with a working
+  `systemd --user`; finds actually-missing prerequisites (tmux, curl,
+  python3, `ss`, tar, `sha256sum`, `flock`, ca-certificates — derived from
+  what the scripts use, not the README's short list) and offers one
+  `sudo apt-get install`; refuses to silently take over an unrecognized
+  existing install or another account's serverjack on the same port; offers
+  to install/sign in to Tailscale or skip `tailscale serve` entirely for a
+  self-managed reverse proxy; if publishing, asks who may reach it
+  (`SERVERJACK_ALLOW`) — a detected single tailnet login by default, a typed
+  list, or an explicit "yes" before ever leaving it open to the whole
+  tailnet; asks whether other Linux accounts share the machine (`--unix`);
+  runs the one-time root steps (`loginctl enable-linger`,
+  `tailscale set --operator`) inline instead of only printing them, keeping
+  another account's existing operator grant unless you say to replace it,
+  and offering an alternate `--https-port` rather than overwriting an
+  existing foreign `tailscale serve` mapping; then runs `install.sh` and
+  verifies units, the loopback health check, and — when publishing — the
+  tailnet URL itself before printing the private address. No controlling
+  terminal for a still-unanswered question, or a refused/failed sudo step,
+  stops cleanly with exactly what's left to do — never a silent fallback to
+  a broad-access default. Re-running it on an already-installed account
+  shows the current state and offers update / change-allow-list /
+  change-publish-settings / leave-it-alone, rather than refusing outright.
+  The resolved install flags are recorded in `install.json`'s
+  `"install_args"` so a later `serverjack-ctl update` replays the same
+  choices instead of reverting to `install.sh`'s own defaults.
+- `tests/guided-install.sh`, a container test (the same privileged Debian 13
+  systemd fixture as `tests/managed-install.sh`, a fake `tailscale` binary
+  standing in for the real one) driving `serverjack-setup` through a REAL pty
+  (`tests/guided-install-driver.py`, spawning `script -qfc '...' /dev/null`)
+  for: missing prerequisites offered and refused, then offered and accepted
+  with Tailscale entirely missing and serve skipped; no controlling terminal
+  (clean stop, exit 2); root refused; an unsupported OS refused; Tailscale
+  logged out then brought to Running by "up" with the login URL surfaced and
+  polled, untagged with the allow-list defaulting to the detected login; a
+  tagged node requiring an allow-list; an existing foreign `tailscale serve`
+  mapping offered an alternate `--https-port`; "other accounts share this
+  machine?" selecting `--unix`; and a rerun that changes nothing when told
+  to. Optional, host-side, wired into `bash tests/run.sh`.
 - `bin/serverjack-ctl`, a lifecycle helper installed to `~/.local/bin/` for
   every install: `status`, `versions`, `update [--version X]` (stages and
   health-checks a new release without touching the running one, auto-rolling

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Headless-browser tests, entirely in containers (needs docker; nothing else
 # has to be running -- the harness starts its own serverjack and ttyd).
-#   bash tests/run.sh                 # all suites; plus managed-install.sh when
+#   bash tests/run.sh                 # all suites; plus managed-install.sh and
+#                                      # guided-install.sh when
 #                                      # SERVERJACK_TEST_MANAGED=1, or when this
-#                                      # is not a CI run (CI skips it by default
-#                                      # -- see below)
+#                                      # is not a CI run (CI skips both by
+#                                      # default -- see below)
 #   bash tests/run.sh pwclip          # one Playwright suite only (fast)
 #   bash tests/run.sh managed-install # ONLY the release/bootstrap/serverjack-ctl
 #                                      # container test (see managed-install.sh) --
@@ -13,6 +14,10 @@
 #                                      # docker able to run --privileged
 #                                      # containers with real systemd, and skips
 #                                      # itself with a message otherwise
+#   bash tests/run.sh guided-install  # just the serverjack-setup (prerequisites/
+#                                      # Tailscale/allow-list/shared-machine)
+#                                      # container test (see guided-install.sh);
+#                                      # same docker requirement, same skip behavior
 #
 # There is one listener per instance now: serverjack serves the terminal itself
 # by proxying /term/ to ttyd's Unix socket, so the browsers talk straight to
@@ -32,16 +37,20 @@ IMG=mcr.microsoft.com/playwright/python:v1.62.0-noble@sha256:aa81288e738725378be
 export PATH="$HOME/.local/bin:$PATH"
 mkdir -p shots
 
-# `bash tests/run.sh managed-install` on its own means ONLY that container
-# test -- skip the whole host-side harness below (unit tests, three
-# serverjack/ttyd instances, security/host/peer-uid checks, autostart) and
-# the Playwright container entirely, rather than paying for all of that to
-# run one unrelated test. (Naming it alongside other suites, e.g.
-# `pwclip managed-install`, is a different, deliberate multi-target
+# `bash tests/run.sh managed-install` (or `guided-install`) on its own means
+# ONLY that container test -- skip the whole host-side harness below (unit
+# tests, three serverjack/ttyd instances, security/host/peer-uid checks,
+# autostart) and the Playwright container entirely, rather than paying for
+# all of that to run one unrelated test. (Naming one alongside other suites,
+# e.g. `pwclip managed-install`, is a different, deliberate multi-target
 # invocation and keeps running everything asked for -- see the dispatch
 # logic further down.)
 if [[ $# -eq 1 && $1 == managed-install ]]; then
   bash ./managed-install.sh 2>&1 | tee shots/managed-install.log
+  exit "${PIPESTATUS[0]}"
+fi
+if [[ $# -eq 1 && $1 == guided-install ]]; then
+  bash ./guided-install.sh 2>&1 | tee shots/guided-install.log
   exit "${PIPESTATUS[0]}"
 fi
 
@@ -286,38 +295,44 @@ else
 fi
 tmux kill-session -t =pwauto 2>/dev/null
 
-# "managed-install" is not a Playwright suite (no managed-install.py) -- it
-# selects the separate, heavier container test below instead. No args means
-# the full default suite list, PLUS managed-install -- but only when it's
-# likely to actually work and not just eat minutes: SERVERJACK_TEST_MANAGED=1
-# forces it, and otherwise it runs unless this looks like a CI run (that
-# needs --privileged docker-in-docker with real systemd, which CI runners
-# can't reliably provide, so it used to run -- and often fail for reasons
-# unrelated to the code under test -- on every CI run by default). Explicit
-# suite names (e.g. `pwclip`) mean just those, for fast iteration, unless
-# "managed-install" is named among them too (which always runs it,
-# regardless of SERVERJACK_TEST_MANAGED/CI -- naming it is opting in).
+# "managed-install" and "guided-install" are not Playwright suites (no
+# matching .py file) -- each selects one of the separate, heavier container
+# tests below instead. No args means the full default suite list, PLUS both
+# container tests -- but only when they're likely to actually work and not
+# just eat minutes: SERVERJACK_TEST_MANAGED=1 forces both, and otherwise
+# each runs unless this looks like a CI run (both need --privileged
+# docker-in-docker with real systemd, which CI runners can't reliably
+# provide, so they used to run -- and often fail for reasons unrelated to
+# the code under test -- on every CI run by default). Explicit suite names
+# (e.g. `pwclip`) mean just those, for fast iteration, unless one of the two
+# is named among them too (which always runs it, regardless of
+# SERVERJACK_TEST_MANAGED/CI -- naming it is opting in).
 run_managed=0
+run_guided=0
 explicit_args=("$@")
 if (( ${#explicit_args[@]} == 0 )); then
   if [[ ${SERVERJACK_TEST_MANAGED:-0} == 1 ]]; then
     run_managed=1
+    run_guided=1
   elif [[ -z ${CI:-} ]]; then
     run_managed=1
+    run_guided=1
   else
-    echo "skipping managed-install.sh on CI by default (needs --privileged docker" >&2
-    echo "with real systemd, which CI runners can't reliably provide); set" >&2
-    echo "SERVERJACK_TEST_MANAGED=1 to force it, or run it on its own:" >&2
+    echo "skipping managed-install.sh and guided-install.sh on CI by default" >&2
+    echo "(both need --privileged docker with real systemd, which CI runners" >&2
+    echo "can't reliably provide); set SERVERJACK_TEST_MANAGED=1 to force them," >&2
+    echo "or run either on its own:" >&2
     echo "  bash tests/run.sh managed-install" >&2
+    echo "  bash tests/run.sh guided-install" >&2
   fi
 fi
 suites=()
 for a in "${explicit_args[@]}"; do
-  if [[ $a == managed-install ]]; then
-    run_managed=1
-  else
-    suites+=("$a")
-  fi
+  case "$a" in
+    managed-install) run_managed=1 ;;
+    guided-install)  run_guided=1 ;;
+    *) suites+=("$a") ;;
+  esac
 done
 [[ ${#suites[@]} -eq 0 && ${#explicit_args[@]} -eq 0 ]] \
   && suites=(pwtest pwclip pwmobile pwpop pwland pwauth pwwin)
@@ -349,16 +364,22 @@ if (( ${#suites[@]} )); then
 fi
 
 # Optional, host-side, needs docker able to run --privileged containers with
-# real systemd -- managed-install.sh itself detects that and skips (exit 0)
-# with a clear message when it can't, rather than failing the whole suite.
+# real systemd -- each script itself detects that and skips (exit 0) with a
+# clear message when it can't, rather than failing the whole suite.
 managed_status=0
 if (( run_managed )); then
   echo "== managed-install (host-side)"
   bash ./managed-install.sh 2>&1 | tee shots/managed-install.log
   managed_status=${PIPESTATUS[0]}
 fi
+guided_status=0
+if (( run_guided )); then
+  echo "== guided-install (host-side)"
+  bash ./guided-install.sh 2>&1 | tee shots/guided-install.log
+  guided_status=${PIPESTATUS[0]}
+fi
 set -e
 if (( failures > 0 )); then
   echo "$failures host-side check(s) failed" >&2
 fi
-(( browser_status == 0 && managed_status == 0 && failures == 0 ))
+(( browser_status == 0 && managed_status == 0 && guided_status == 0 && failures == 0 ))

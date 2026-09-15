@@ -72,3 +72,40 @@ plain port to the internet. `examples/nginx.conf` is a working starting
 point: one backend, the WebSocket upgrade passed through, and the identity
 header stripped from the client and set only by a proxy that has actually
 verified the user.
+
+## What does the installer ask, and what needs root?
+
+The one-command install (`curl | bash` the bootstrap) hands off to
+`bin/serverjack-setup`, which asks, on your terminal, everything
+`install.sh` itself never does: missing prerequisites (tmux, curl, python3,
+`ss`, tar, `sha256sum`, `flock`, ca-certificates); whether to install/sign in
+to Tailscale, or skip `tailscale serve` for your own reverse proxy; if
+publishing, who may reach it (`SERVERJACK_ALLOW`); whether other Linux
+accounts share the machine (`--unix` instead of a shared port); and the
+two one-time root steps below, which it runs for you instead of only
+printing.
+
+Root is needed for exactly three things, every one of them offered with the
+exact command shown first and run only on your explicit yes:
+
+- **Missing packages**, via `sudo apt-get install -y <names>` — never
+  `apt-get upgrade`, and only the packages actually missing.
+- **`sudo tailscale up`**, if Tailscale needs installing or isn't signed in —
+  prints the login URL and waits (up to 10 minutes) for it to become active.
+- **`sudo loginctl enable-linger $USER`** (so the systemd user units start at
+  boot, not just at login) and **`sudo tailscale set --operator=$USER`** (so
+  `tailscale serve` doesn't need sudo afterward) — both one-time per machine.
+  `--unix` mode needs one more, `sudo tailscale serve ...`, because
+  Tailscale won't proxy to a Unix socket for anyone but root.
+
+serverjack itself never runs as root and refuses outright if you try — every
+file it installs, the tmux server, the units, all belong to your ordinary
+account. If there's no terminal to ask a still-unanswered question on (a
+`curl | bash` with no answers appended looks like this from the inside — its
+own stdin is the download, which is exactly why prompts read `/dev/tty`
+instead), or a sudo step is refused, setup prints precisely what's left to do
+and stops — it never falls back to a broader-access configuration to avoid
+asking. Answer everything up front instead by appending the same flags
+`install.sh` takes (`--no-serve`, `--tcp`/`--unix`, `--port N`,
+`--https-port N`, `--title NAME`) to the bootstrap command; each one skips
+its matching question.
