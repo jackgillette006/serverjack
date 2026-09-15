@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Headless-browser tests, entirely in containers (needs docker; nothing else
 # has to be running -- the harness starts its own serverjack and ttyd).
-#   bash tests/run.sh                 # all suites, plus managed-install.sh
+#   bash tests/run.sh                 # all suites; plus managed-install.sh when
+#                                      # SERVERJACK_TEST_MANAGED=1, or when this
+#                                      # is not a CI run (CI skips it by default
+#                                      # -- see below)
 #   bash tests/run.sh pwclip          # one Playwright suite only (fast)
-#   bash tests/run.sh managed-install # just the release/bootstrap/serverjack-ctl
-#                                      # container test (see managed-install.sh);
-#                                      # needs docker able to run --privileged
+#   bash tests/run.sh managed-install # ONLY the release/bootstrap/serverjack-ctl
+#                                      # container test (see managed-install.sh) --
+#                                      # skips the rest of this harness (and the
+#                                      # Playwright container) entirely; needs
+#                                      # docker able to run --privileged
 #                                      # containers with real systemd, and skips
 #                                      # itself with a message otherwise
 #
@@ -26,6 +31,19 @@ cd "$(dirname "$(readlink -f "$0")")"
 IMG=mcr.microsoft.com/playwright/python:v1.62.0-noble@sha256:aa81288e738725378becba5b3e06cb0f3a7f012a610e87e8d767a090ea3f740d
 export PATH="$HOME/.local/bin:$PATH"
 mkdir -p shots
+
+# `bash tests/run.sh managed-install` on its own means ONLY that container
+# test -- skip the whole host-side harness below (unit tests, three
+# serverjack/ttyd instances, security/host/peer-uid checks, autostart) and
+# the Playwright container entirely, rather than paying for all of that to
+# run one unrelated test. (Naming it alongside other suites, e.g.
+# `pwclip managed-install`, is a different, deliberate multi-target
+# invocation and keeps running everything asked for -- see the dispatch
+# logic further down.)
+if [[ $# -eq 1 && $1 == managed-install ]]; then
+  bash ./managed-install.sh 2>&1 | tee shots/managed-install.log
+  exit "${PIPESTATUS[0]}"
+fi
 
 # tmux prefers $TMUX from an enclosing session over TMUX_TMPDIR. Drop it and
 # give the harness a private socket tree. The explicit path is also mounted
@@ -262,13 +280,28 @@ tmux kill-session -t =pwauto 2>/dev/null
 
 # "managed-install" is not a Playwright suite (no managed-install.py) -- it
 # selects the separate, heavier container test below instead. No args means
-# the full default suite list AND managed-install; explicit suite names
-# (e.g. `pwclip`) mean just those, for fast iteration, unless
-# "managed-install" is named among them too.
+# the full default suite list, PLUS managed-install -- but only when it's
+# likely to actually work and not just eat minutes: SERVERJACK_TEST_MANAGED=1
+# forces it, and otherwise it runs unless this looks like a CI run (that
+# needs --privileged docker-in-docker with real systemd, which CI runners
+# can't reliably provide, so it used to run -- and often fail for reasons
+# unrelated to the code under test -- on every CI run by default). Explicit
+# suite names (e.g. `pwclip`) mean just those, for fast iteration, unless
+# "managed-install" is named among them too (which always runs it,
+# regardless of SERVERJACK_TEST_MANAGED/CI -- naming it is opting in).
 run_managed=0
 explicit_args=("$@")
 if (( ${#explicit_args[@]} == 0 )); then
-  run_managed=1
+  if [[ ${SERVERJACK_TEST_MANAGED:-0} == 1 ]]; then
+    run_managed=1
+  elif [[ -z ${CI:-} ]]; then
+    run_managed=1
+  else
+    echo "skipping managed-install.sh on CI by default (needs --privileged docker" >&2
+    echo "with real systemd, which CI runners can't reliably provide); set" >&2
+    echo "SERVERJACK_TEST_MANAGED=1 to force it, or run it on its own:" >&2
+    echo "  bash tests/run.sh managed-install" >&2
+  fi
 fi
 suites=()
 for a in "${explicit_args[@]}"; do

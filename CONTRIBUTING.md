@@ -54,6 +54,12 @@ Out of scope, on purpose:
   those tests use, or update the tests with the change.
   `docs/MANUAL-TESTS.md` covers what only a real phone can prove.
 - Run `bash install.sh` after pulling; it is idempotent.
+- `SERVERJACK_RELEASE_BASE_URL` overrides the GitHub base URL that
+  `bootstrap/serverjack-bootstrap.sh.in` and `bin/serverjack-ctl` resolve
+  release archives against, and disables the HTTPS-only pin on those
+  fetches. It's a test/enterprise-mirror hook -- `tests/managed-install.sh`
+  uses it to point at a `python3 -m http.server` on a private docker network
+  instead of the real GitHub. Never set it for a production install.
 
 ## Before opening a pull request
 
@@ -63,9 +69,14 @@ Out of scope, on purpose:
    [CHANGELOG.md](CHANGELOG.md) for anything user-facing.
 3. Run `bash tests/run.sh` (needs Docker; it starts its own serverjack and
    ttyd, nothing else has to be running — this also runs
-   `tests/managed-install.sh` if Docker can run `--privileged` containers
-   with real systemd; it skips itself with a message otherwise). If Docker is
-   unavailable, say which checks you could run and which remain unverified.
+   `tests/managed-install.sh` unless `CI` is set in the environment, in
+   which case it's skipped by default (that test needs `--privileged`
+   docker-in-docker with real systemd, which CI runners can't reliably
+   provide). Run it explicitly with `bash tests/run.sh managed-install`, or
+   force it into the full run with `SERVERJACK_TEST_MANAGED=1`; either way
+   it skips itself with a message if Docker here can't run `--privileged`
+   containers. If Docker is unavailable, say which checks you could run and
+   which remain unverified.
 4. Check screenshots and logs before attaching them. Remove usernames, home
    directories, hostnames, tailnet names, login identities, tokens, session
    links, and unrelated terminal history.

@@ -7,6 +7,13 @@ Documentation=https://github.com/jackgillette006/serverjack
 # this by SERVERJACK_AUTOSTART_DELAY (15s).
 After=network-online.target
 Wants=network-online.target
+# No start-limit window: a broken release that crash-loops on activation
+# (Restart=on-failure, RestartSec=3) must not leave this unit refusing to
+# start ("start of the service was attempted too often") once a GOOD
+# release is swapped back in by serverjack-ctl's auto-rollback. serverjack-ctl
+# used to work around systemd's default StartLimitBurst with `systemctl
+# --user reset-failed` after every restore; this removes the need for that.
+StartLimitIntervalSec=0
 
 [Service]
 EnvironmentFile=%h/.config/serverjack/env
