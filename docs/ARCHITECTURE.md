@@ -265,11 +265,16 @@ read once and reported in `/api/status`'s `"channel"` field and behind the
     a downloaded `SHA256SUMS` for an explicit `--version`), extracts it to
     `~/.local/share/serverjack/releases/<version>/`, atomically symlinks
     `~/.local/share/serverjack/current` at it, writes `install.json`, then
-    `exec`s that release's `install.sh` with the caller's own args and
-    terminal. Every function is defined before `main "$@"` runs as the very
-    last line, so a truncated `curl | bash` transfer hits an unterminated
-    function body and a syntax error before anything executes — never a
-    partial install.
+    `exec`s that release's `bin/serverjack-setup` (see **Guided setup**
+    below) with the caller's own args and terminal, which itself ends by
+    running `install.sh`. Every function is defined before `main "$@"` runs
+    as the very last line, so a truncated `curl | bash` transfer hits an
+    unterminated function body and a syntax error before anything executes —
+    never a partial install. The `for c in curl sha256sum tar python3
+    systemctl flock` precheck near the top is deliberately narrow: only what
+    THIS stage itself uses (staging the release, its own lock) — NOT tmux or
+    anything else install.sh needs, because finding and offering to install
+    actual missing prerequisites is `serverjack-setup`'s job, next.
   - `install.sh` detects it is running from inside
     `.../releases/<v>/` (by realpath prefix on its own resolved location) and
     bakes the STABLE `.../current/...` path into the systemd units'
@@ -298,6 +303,35 @@ read once and reported in `/api/status`'s `"channel"` field and behind the
     against — a test/enterprise-mirror hook, exercised by
     `tests/managed-install.sh` against a `python3 -m http.server` so the
     container test needs no GitHub reachability for the release itself.
+
+## Guided setup
+
+`bin/serverjack-setup` is what the bootstrap execs before `install.sh` (also
+runnable by hand from a checkout, and aliased as `serverjack-ctl setup`),
+and it's the only place in this project that prompts interactively: refuse
+root/`SUDO_USER` misuse; confirm a supported OS/arch with a working
+`systemd --user`; find actually-missing prerequisites and offer one
+`apt-get install`; refuse an unrecognized existing install or another
+account's serverjack on the port (or, on this account's own managed install,
+show state and offer update/allow-list/publish/nothing instead — a rerun,
+not a refusal); offer Tailscale install/sign-in or `--no-serve`; if
+publishing, ask who may reach it (`SERVERJACK_ALLOW`); ask about `--unix`;
+run the one-time root steps inline; then run `install.sh` and verify
+units, `/healthz`, and the tailnet URL. Every question has a matching
+`install.sh`-style flag that skips it, so a fully-flagged invocation never
+touches `/dev/tty` at all — this is what lets `tests/managed-install.sh`'s
+`curl | bash -s -- --no-serve` scenario keep working unattended even though
+the bootstrap now always hands off here first. `/dev/tty` itself is opened
+lazily (`ensure_tty()`, on the first prompt actually reached, not up front)
+for the same reason: a run with nothing left to ask never needs a
+controlling terminal, and one that does gets exactly one open attempt and
+the same clean "here's what's left" stop on failure. The resolved flags are
+recorded as `install.json`'s `"install_args"` so `serverjack-ctl update`
+replays the same choices on every later update rather than reverting to
+`install.sh`'s own defaults. `tests/guided-install.sh` drives all of this
+through a REAL pty (`tests/guided-install-driver.py`, `script -qfc '...'
+/dev/null`) against a fake `tailscale` binary
+(`tests/fixtures/fake-tailscale.sh`) standing in for the real thing.
 
 ## Single-file, stdlib-only: rationale and tradeoffs
 

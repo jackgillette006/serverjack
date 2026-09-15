@@ -1,0 +1,975 @@
+#!/usr/bin/env bash
+# serverjack-setup: the guided part of the one-command install. Runs BEFORE
+# install.sh -- the bootstrap (bootstrap/serverjack-bootstrap.sh.in) execs
+# this after staging a release, this script asks what it needs to on
+# /dev/tty, then runs install.sh itself with the resolved flags. install.sh
+# stays non-interactive on its own (it still just PRINTS any root step it
+# can't take, same as before) -- this is the layer that actually offers to
+# run those steps, with your explicit yes each time.
+#
+# Also runnable by hand for the same guided experience:
+#   bash bin/serverjack-setup           # from a checkout
+#   serverjack-ctl setup                # after any install, managed or git
+#
+# What it does, roughly in order (each step prints what it found before
+# changing anything -- see docs/ARCHITECTURE.md "Guided setup" for the full
+# story):
+#   1. Refuses root. Every prompt below opens /dev/tty on first use (once,
+#      cached after); if that fails (no controlling terminal -- typical of
+#      `curl | bash` itself, which is exactly why the bootstrap hands off to
+#      THIS script instead of running non-interactively straight through),
+#      it prints what it would still have asked and stops. A flag that
+#      already answers a given question means its prompt is never reached,
+#      so a fully-flagged run (see Flags below) needs no tty at all -- same
+#      as install.sh itself.
+#   2. Checks the OS is a supported one (Debian 12/13, Ubuntu 22.04/24.04,
+#      x86_64/aarch64) with a working systemd --user manager.
+#   3. Finds actual missing prerequisites and offers ONE `apt-get install`
+#      command, run with your explicit yes.
+#   4. Refuses to silently take over an existing install (git checkout,
+#      unrecognized unit, or another account's serverjack on this port) --
+#      unless this account's OWN managed install already exists, in which
+#      case this is a rerun: see the bottom of this file.
+#   5. Offers to install/sign in to Tailscale, or skip serve entirely for
+#      your own reverse proxy.
+#   6. If publishing, asks who may reach it (SERVERJACK_ALLOW).
+#   7. Asks whether other Linux accounts share this machine (--unix).
+#   8. Runs the one-time root steps (linger, tailscale operator) inline,
+#      with your yes each time, instead of just printing them.
+#   9. Runs install.sh with everything resolved, then verifies: units
+#      active, loopback /healthz 200, and -- if publishing -- the tailnet
+#      URL itself, before declaring success.
+#
+# Flags -- the same ones install.sh takes, each one skipping the matching
+# question above instead of asking it (anything left unspecified is still
+# asked interactively):
+#   --no-serve          skip tailscale serve (step 5); also skips step 6
+#   --tcp | --unix       answers step 7 directly
+#   --port N             passed through to install.sh
+#   --https-port N       passed through to install.sh; also the port
+#                         step 8's serve-mapping check looks at
+#   --title NAME          passed through to install.sh
+# -h/--help prints this.
+set -Eeuo pipefail
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+
+SHARE=$HOME/.local/share/serverjack
+CFG_DIR=$HOME/.config/serverjack
+ENV_FILE=$CFG_DIR/env
+UNIT_DIR=$HOME/.config/systemd/user
+
+say() { printf '\033[1m%s\033[0m\n' "$*"; }
+
+usage() {
+  sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+# ------------------------------------------------------------------- self
+# Two levels up from bin/serverjack-setup is the repo root, whether that's a
+# git checkout or a managed release directory (~/.local/share/serverjack/
+# releases/<v>/, or its "current" symlink) -- install.sh lives right there
+# either way, same as bin/serverjack-ctl finds it. That traversal breaks for
+# exactly one caller, though: `serverjack-ctl setup` execs the FLAT installed
+# copy at ~/.local/bin/serverjack-setup (install.sh puts it there with no
+# release-directory structure around it), where two-levels-up is just
+# ~/.local -- found by that exact rerun path failing. Fall back the same way
+# bin/serverjack-ctl's own detect_channel() resolves a real install: prefer
+# the managed "current" symlink, then an existing unit's own recorded path.
+resolve_self() {
+  local src=${BASH_SOURCE[0]}
+  SELF_PATH=$(readlink -f "$src" 2>/dev/null || printf '%s' "$src")
+  local candidate; candidate=$(dirname "$(dirname "$SELF_PATH")")
+  if [[ -f "$candidate/install.sh" ]]; then
+    REPO_ROOT=$candidate
+    INSTALL_SH="$REPO_ROOT/install.sh"
+    return 0
+  fi
+  if [[ -f "$SHARE/current/install.sh" ]]; then
+    REPO_ROOT="$SHARE/current"
+    INSTALL_SH="$REPO_ROOT/install.sh"
+    return 0
+  fi
+  local unit="$UNIT_DIR/serverjack.service" exec_line repo
+  if [[ -f $unit ]]; then
+    exec_line=$(grep -m1 '^ExecStart=' "$unit" 2>/dev/null || true)
+    repo=$(sed -n 's#.*python3 "\(.*\)/bin/serverjack".*#\1#p' <<<"$exec_line")
+    if [[ -n $repo && -f "$repo/install.sh" ]]; then
+      REPO_ROOT=$repo
+      INSTALL_SH="$REPO_ROOT/install.sh"
+      return 0
+    fi
+  fi
+  echo "internal error: could not find install.sh (checked next to this script, $SHARE/current, and the existing unit's recorded path)" >&2
+  exit 1
+}
+
+# --------------------------------------------------------------------- tty
+# Every prompt below reads from fd 8, opened on /dev/tty exactly once --
+# lazily, on the FIRST prompt actually reached, and cached from then on
+# (TTY_CHECKED). Same trick as bin/serverjack-ctl's ask_confirm(): /dev/tty
+# as a path always "exists" (-e) even with no controlling terminal --
+# opening it (read+write) is what actually fails (ENXIO) when there is
+# none, which is what we need to detect (piped `curl | bash`, a cron job, a
+# non-interactive CI runner).
+#
+# Lazy rather than opened unconditionally up front: every question below has
+# a matching install.sh-style flag (--no-serve, --tcp/--unix, ...), and when
+# every question that would otherwise be asked is already answered by a
+# flag, this script -- like install.sh itself -- never touches /dev/tty and
+# so never requires one. That is what lets the bootstrap hand off here
+# unconditionally (bootstrap/serverjack-bootstrap.sh.in) without breaking a
+# fully-flagged non-interactive install (`curl | bash -s -- --no-serve`,
+# exercised by tests/managed-install.sh). A run with NO flags that truly
+# needs to ask something still gets exactly one /dev/tty open attempt, at
+# the first question, and the same clean stop + checklist on failure.
+TTY_CHECKED=0
+TTY_OK=0
+ensure_tty() {
+  if (( TTY_CHECKED )); then
+    (( TTY_OK )) && return 0
+    no_tty_and_exit
+  fi
+  TTY_CHECKED=1
+  if { exec 8<>/dev/tty; } 2>/dev/null; then
+    TTY_OK=1
+    return 0
+  fi
+  no_tty_and_exit
+}
+
+no_tty_and_exit() {
+  cat >&2 <<'EOF'
+No controlling terminal is available to ask a question on -- this can't be a
+`curl | bash` prompt session. Nothing has been changed by this question or
+anything after it.
+
+Remaining steps this would have walked you through, whatever wasn't already
+settled by a flag:
+  - set up Tailscale (install it, sign in) or skip serve for your own proxy
+  - choose who may reach this instance (SERVERJACK_ALLOW)
+  - choose whether other Linux accounts share this machine (--unix)
+  - one-time root steps (loginctl enable-linger, tailscale set --operator)
+  - install and verify, then print your private URL
+
+Re-run this in an interactive terminal, e.g.:
+  bash bin/serverjack-setup
+  (or, once anything is installed:) serverjack-ctl setup
+
+Or resolve everything with flags up front, the same ones install.sh takes
+(--no-serve, --tcp, --unix, --port N, --https-port N, --title NAME) -- see
+bash bin/serverjack-setup --help. This script never prompts for anything a
+flag already answered.
+EOF
+  exit 2
+}
+
+ask_yn() {  # $1 prompt text (no [y/N]), $2 default y|n -- returns 0 for yes
+  ensure_tty
+  local prompt=$1 default=${2:-n} hint reply
+  hint="[y/N]"; [[ $default == y ]] && hint="[Y/n]"
+  printf '%s %s ' "$prompt" "$hint" >&8
+  IFS= read -r reply <&8 || reply=""
+  [[ -z $reply ]] && reply=$default
+  case "${reply,,}" in
+    y|yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ask_line() {  # $1 prompt text -- echoes the raw reply (may be empty)
+  ensure_tty
+  local prompt=$1 reply
+  printf '%s ' "$prompt" >&8
+  IFS= read -r reply <&8 || reply=""
+  printf '%s' "$reply"
+}
+
+# Distinct from ask_yn: some confirmations must not be satisfiable by a
+# reflexive "y" (see step 6's empty-allow-list case in the spec).
+confirm_literal_yes() {  # $1 prompt text
+  ensure_tty
+  local prompt=$1 reply
+  printf '%s (type yes to confirm) ' "$prompt" >&8
+  IFS= read -r reply <&8 || reply=""
+  [[ ${reply,,} == yes ]]
+}
+
+# ----------------------------------------------------------- 1. root/sudo
+refuse_root_or_sudo_user() {
+  if [[ $(id -u) -eq 0 ]]; then
+    cat >&2 <<'EOF'
+Do not run this as root.
+
+serverjack installs entirely inside an ordinary user account (systemd --user
+units, ~/.local, ~/.config) and never needs root itself, beyond the one-time
+steps this script offers to run with sudo for you, on your explicit yes.
+Running it as root would create a root-owned terminal service -- the
+opposite of what this is for.
+
+Run it as the account that should own serverjack instead: log in as that
+user (or `su - youruser`) and re-run either the bootstrap one-liner, or,
+from a checkout:
+  bash bin/serverjack-setup
+EOF
+    exit 1
+  fi
+  if [[ -n ${SUDO_USER:-} ]]; then
+    cat >&2 <<EOF
+This looks like it was started through sudo (\$SUDO_USER=$SUDO_USER is set),
+even though it isn't running as root right now (sudo -u drops privileges but
+still sets that). serverjack needs a REAL login session for this account --
+systemd --user, \$XDG_RUNTIME_DIR, the PAM environment -- which sudo does not
+set up, and this guided flow and the units it installs both depend on.
+
+Log out of sudo and run this directly as the intended account instead:
+  su - $(id -un) -c 'bash bin/serverjack-setup'
+EOF
+    exit 1
+  fi
+}
+
+# --------------------------------------------------------------- 2. platform
+unsupported_os_and_exit() {  # $1 = why
+  cat >&2 <<EOF
+$1
+
+The guided setup supports Debian 12/13 and Ubuntu 22.04/24.04 on x86_64 or
+aarch64. This machine isn't one of those, so use the manual path instead:
+
+  git clone https://github.com/jackgillette006/serverjack
+  bash serverjack/install.sh
+
+See the README's "Install (no sudo)" section for what install.sh's flags do.
+EOF
+  exit 2
+}
+
+check_platform() {
+  # Test-only override (tests/guided-install.sh's unsupported-OS scenario):
+  # points at a throwaway file instead of the real /etc/os-release, since a
+  # container has no other way to present a different distribution without
+  # actually being one. Unset in every normal invocation.
+  local os_release=${SERVERJACK_SETUP_TEST_OS_RELEASE:-/etc/os-release}
+  [[ -r $os_release ]] \
+    || unsupported_os_and_exit "Could not read $os_release to identify this distribution."
+  local ID="" VERSION_ID=""
+  # shellcheck disable=SC1090,SC1091
+  . "$os_release"
+  local arch; arch=$(uname -m)
+  case "$arch" in
+    x86_64|aarch64) ;;
+    *) unsupported_os_and_exit "Unsupported architecture: $arch." ;;
+  esac
+  case "$ID-$VERSION_ID" in
+    debian-12|debian-13|ubuntu-22.04|ubuntu-24.04) ;;
+    *) unsupported_os_and_exit "Unsupported distribution: ${ID:-unknown} ${VERSION_ID:-unknown}." ;;
+  esac
+  say "Platform: $ID $VERSION_ID ($arch) -- supported"
+}
+
+check_systemd_user_manager() {
+  [[ -d /run/systemd/system ]] \
+    || unsupported_os_and_exit "systemd is not running as PID 1 on this machine (checked /run/systemd/system)."
+  local state
+  state=$(systemctl --user is-system-running 2>/dev/null || true)
+  case "$state" in
+    running|degraded) say "systemd --user: $state"; return 0 ;;
+  esac
+  if loginctl show-user "$(id -un)" >/dev/null 2>&1; then
+    say "systemd --user: is-system-running said \"${state:-nothing}\", but loginctl shows a session -- continuing"
+    return 0
+  fi
+  cat >&2 <<EOF
+No working systemd user manager was found for $(id -un) (systemctl --user
+is-system-running said "${state:-nothing}", and loginctl shows no session for
+this account). This is typical inside a plain \`docker exec\`, some
+containers, or an account that has never logged in interactively.
+
+Fix, as root:
+  sudo loginctl enable-linger $(id -un)
+then log out and back in (or reboot this account's session), and re-run setup.
+EOF
+  exit 2
+}
+
+# ----------------------------------------------------------- 3. prerequisites
+check_prerequisites() {
+  local -a missing_bins=() missing_pkgs=()
+  local bin pkg
+  for bin in tmux curl python3 ss tar sha256sum flock; do
+    command -v "$bin" >/dev/null 2>&1 || missing_bins+=("$bin")
+  done
+  if command -v python3 >/dev/null 2>&1 \
+      && ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; then
+    echo "python3 is present but older than 3.9 ($(python3 --version 2>&1)) -- the guided flow cannot fix this with a package install; upgrade python3 yourself and re-run." >&2
+    exit 1
+  fi
+  for bin in "${missing_bins[@]}"; do
+    case "$bin" in
+      tmux)      pkg=tmux ;;
+      curl)      pkg=curl ;;
+      python3)   pkg=python3 ;;
+      ss)        pkg=iproute2 ;;
+      tar)       pkg=tar ;;
+      sha256sum) pkg=coreutils ;;
+      flock)     pkg=util-linux ;;
+      *)         pkg=$bin ;;
+    esac
+    [[ " ${missing_pkgs[*]:-} " == *" $pkg "* ]] || missing_pkgs+=("$pkg")
+  done
+  if ! dpkg -s ca-certificates >/dev/null 2>&1; then
+    missing_pkgs+=(ca-certificates)
+  fi
+  if (( ${#missing_pkgs[@]} == 0 )); then
+    say "Prerequisites: all present (tmux, curl, python3, ss, tar, sha256sum, flock, ca-certificates)."
+    return 0
+  fi
+  say "Missing prerequisites: ${missing_pkgs[*]}"
+  # A fresh minimal image (exactly the machines this flow targets) can have
+  # a stale or entirely absent apt cache -- `apt-get install` alone then
+  # fails with "no installation candidate" for packages that genuinely
+  # exist. update first, same sudo call, still "one command" to approve.
+  echo "  sudo apt-get update && sudo apt-get install -y ${missing_pkgs[*]}"
+  if ! ask_yn "Install them now?" y; then
+    echo "Not installing. Run this yourself, then re-run setup:" >&2
+    echo "  sudo apt-get update && sudo apt-get install -y ${missing_pkgs[*]}" >&2
+    exit 1
+  fi
+  # sudo reads its password prompt straight from /dev/tty regardless of this
+  # process's own stdin, so this is safe even when serverjack-setup itself
+  # was reached via `curl | bash`. -y also answers apt's own "Do you want to
+  # continue?" here, not just skips a confirmation prompt of ours.
+  if sudo bash -c 'apt-get update && apt-get install -y "$@"' -- "${missing_pkgs[@]}"; then
+    say "Installed: ${missing_pkgs[*]}"
+  else
+    echo "sudo apt-get failed. Run this yourself, then re-run setup:" >&2
+    echo "  sudo apt-get update && sudo apt-get install -y ${missing_pkgs[*]}" >&2
+    exit 1
+  fi
+}
+
+# --------------------------------------------------------- 4/10. existing
+# ss -ltnp shows a listener's process name for our own uid always, and for
+# others' too when this happens to run with enough privilege to see it;
+# either way the port number itself is visible with no privilege at all, so
+# "busy" is always detectable even when we can't name the owner -- same
+# reasoning install.sh's own port_free()/port_holder() rely on.
+# `|| true`: an unprivileged `ss` can't show another account's process info
+# for a socket it doesn't own, so the final `grep -o` legitimately finds no
+# "users:..." to print -- under pipefail that's a real nonzero pipeline exit,
+# and `holder=$(port_holder ...)` (a plain assignment, not inside if/&&)
+# aborts the whole script right there under set -e otherwise. Found by
+# exactly that happening (a foreign-owned socket check killing the script
+# silently, no "port busy" message ever printed).
+port_holder() { ss -ltnp 2>/dev/null | grep ":$1 " | grep -o 'users:.*' | head -1 || true; }
+port_free() { ! ss -ltnp 2>/dev/null | grep -q ":$1 "; }
+
+check_foreign_port() {
+  local port=${OPT_PORT:-7680}
+  command -v ss >/dev/null 2>&1 || return 0
+  port_free "$port" && return 0
+  local holder; holder=$(port_holder "$port")
+  local whose="another process"
+  [[ $holder == *'"python3"'* || $holder == *'"ttyd"'* || $holder == *'"serverjack"'* ]] \
+    && whose="another process (probably another account's serverjack)"
+  cat >&2 <<EOF
+Port $port is already in use by $whose:
+  ${holder:-(no details visible without root)}
+
+This guided setup will not fight another process for a port. Pick a free one
+by hand later: bash install.sh --port N --https-port N --title NAME
+(add --title so the two pages are told apart on a phone). Stopping.
+EOF
+  exit 3
+}
+
+# Same awk this parses install.sh's own `tailscale serve status` with --
+# duplicated rather than sourced, since these are two separate processes
+# with no shared module system; keep the two in sync if the output format
+# ever changes.
+serve_backend_for() {  # $1 https port  $2 path
+  command -v tailscale >/dev/null 2>&1 || return 0
+  # `|| true`: `tailscale serve status` can exit nonzero when nothing is
+  # configured yet (the common case for a fresh account), and under pipefail
+  # that would make this whole pipeline "fail" even though awk itself found
+  # nothing to print -- same reasoning as port_holder() above, and callers
+  # (check_serve_clash's `backend=$(serve_backend_for ...)`) assign this
+  # plainly, so an unprotected failure here would abort the whole script.
+  tailscale serve status 2>/dev/null | awk -v wp="$1" -v wpath="$2" '
+    /^https:\/\// { h=$1; sub(/^https:\/\//,"",h); n=split(h,a,":");
+                    cur=(n>1 ? a[n] : "443"); next }
+    /^\|--/ && cur==wp && $2==wpath { print $NF; exit }' || true
+}
+
+env_get() {  # $1 key  $2 fallback -- reads $ENV_FILE the way install.sh's cfg() does
+  local key=$1 fallback=${2-} line v=
+  [[ -f $ENV_FILE ]] || { printf '%s' "$fallback"; return; }
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line == "$key="* ]] && v=${line#*=}
+  done < "$ENV_FILE"
+  v=${v#\"}; v=${v%\"}
+  printf '%s' "${v:-$fallback}"
+}
+
+# Same semantics as install.sh's own setcfg(): rewrite the one matching
+# KEY= line in place if present, append it if not, leave everything else
+# untouched. Reimplemented rather than sourced -- install.sh's setcfg is a
+# local function in a script meant to run standalone, not a library.
+env_setcfg() {  # $1 key  $2 value
+  local key=$1 val=$2 tmp found=0 line encoded
+  encoded=${val//\\/\\\\}; encoded=${encoded//\"/\\\"}; encoded=\"$encoded\"
+  mkdir -p "$CFG_DIR"; chmod 700 "$CFG_DIR"
+  tmp=$(mktemp "$CFG_DIR/.env.XXXXXX")
+  if [[ -f $ENV_FILE ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      if [[ $line == "$key="* ]]; then
+        (( found )) || { printf '%s=%s\n' "$key" "$encoded" >> "$tmp"; found=1; }
+      else
+        printf '%s\n' "$line" >> "$tmp"
+      fi
+    done < "$ENV_FILE"
+  fi
+  (( found )) || printf '%s=%s\n' "$key" "$encoded" >> "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$ENV_FILE"
+}
+
+handle_existing_install() {
+  local unit="$UNIT_DIR/serverjack.service"
+  if [[ ! -f $unit ]]; then
+    # No unit for this account yet: this IS a fresh install, so (and only
+    # now) check whether the port it would claim already belongs to another
+    # account. Checking this unconditionally, before this guard, refused a
+    # plain RERUN outright: an account already running on its own port
+    # (e.g. 7690) has nothing to do with whatever a different account
+    # happens to occupy the *default* port (7680) with -- found by exactly
+    # that happening (rerun_managed() never even reached).
+    check_foreign_port
+    return 0
+  fi
+  local install_json="$SHARE/install.json"
+  local exec_line repo
+  exec_line=$(grep -m1 '^ExecStart=' "$unit" 2>/dev/null || true)
+  repo=$(sed -n 's#.*python3 "\(.*\)/bin/serverjack".*#\1#p' <<<"$exec_line")
+  if [[ -f $install_json ]] && [[ $repo == "$SHARE/current" ]]; then
+    rerun_managed
+    exit 0
+  fi
+  if [[ -n $repo && -d "$repo/.git" ]]; then
+    cat >&2 <<EOF
+serverjack is already installed here as a git checkout ($repo).
+
+This guided setup does not migrate an existing install in this phase (no
+silent takeover). Update it directly instead:
+  cd $repo && git pull --ff-only && bash install.sh
+EOF
+    exit 3
+  fi
+  cat >&2 <<EOF
+serverjack already has a user systemd unit installed here ($unit), but this
+setup doesn't recognize it as a managed release install or a git checkout it
+can find$( [[ -n $repo ]] && echo " (recorded path: $repo, no .git there)" ).
+
+This guided setup refuses to silently take over or duplicate an existing
+install. Inspect it by hand (systemctl --user status serverjack; cat $unit),
+remove it (that install's own uninstall.sh, or delete the unit files and
+rm -rf ~/.config/serverjack ~/.local/share/serverjack), then re-run setup.
+EOF
+  exit 3
+}
+
+# ------------------------------------------------------------- 5. Tailscale
+ts_backend_state() {
+  tailscale status --json 2>/dev/null | python3 -c 'import json, sys
+try:
+    print(json.load(sys.stdin).get("BackendState", ""))
+except Exception:
+    print("")' 2>/dev/null || true
+}
+
+read_tailscale_self() {  # sets TS_TAGGED TS_LOGIN TS_DNS TS_IP
+  local line
+  line=$(tailscale status --json 2>/dev/null | python3 -c 'import json, sys
+try:
+    d = json.load(sys.stdin)
+    self = d.get("Self") or {}
+    tags = self.get("Tags") or []
+    uid = str(self.get("UserID", ""))
+    users = d.get("User") or {}
+    login = (users.get(uid) or {}).get("LoginName", "")
+    dns = (self.get("DNSName") or "").rstrip(".")
+    ips = self.get("TailscaleIPs") or []
+    ip = ips[0] if ips else ""
+    print(f"{1 if tags else 0}\t{login}\t{dns}\t{ip}")
+except Exception:
+    print("0\t\t\t")' 2>/dev/null) || line=$'0\t\t\t'
+  IFS=$'\t' read -r TS_TAGGED TS_LOGIN TS_DNS TS_IP <<<"$line"
+}
+
+install_tailscale() {
+  say "Tailscale is not installed."
+  echo "This would run the official installer (which uses sudo itself, as needed):"
+  echo "  curl -fsSL https://tailscale.com/install.sh | sh"
+  if ! ask_yn "Install Tailscale now?" y; then
+    echo "Not installing. Install it yourself later: curl -fsSL https://tailscale.com/install.sh | sh" >&2
+    return 1
+  fi
+  curl -fsSL https://tailscale.com/install.sh | sh
+}
+
+# Runs `sudo tailscale up` in the background so its login URL (printed to
+# its own stdout/stderr, not ours) can be surfaced as soon as it appears,
+# while independently polling `tailscale status --json` for BackendState to
+# become Running -- up to a 10 minute timeout, per the spec.
+tailscale_login_flow() {
+  local up_log; up_log=$(mktemp)
+  say "Running: sudo tailscale up (needs your sudo password; prints a login URL)"
+  # shellcheck disable=SC2024 # the redirect runs as us, not as root -- $up_log
+  # is our own mktemp file; only "tailscale up" itself needs the sudo.
+  sudo tailscale up >"$up_log" 2>&1 &
+  local up_pid=$! printed=0 waited=0 timeout=600 state url
+  while (( waited < timeout )); do
+    if (( ! printed )) && url=$(grep -om1 'https://login\.tailscale\.com/[^[:space:]]*' "$up_log"); then
+      say "Open this URL to finish signing in:"
+      echo "  $url"
+      printed=1
+    fi
+    state=$(ts_backend_state)
+    if [[ $state == Running ]]; then
+      wait "$up_pid" 2>/dev/null || true
+      rm -f "$up_log"
+      say "Tailscale is running."
+      return 0
+    fi
+    if ! kill -0 "$up_pid" 2>/dev/null; then
+      wait "$up_pid" 2>/dev/null || true
+      state=$(ts_backend_state)
+      if [[ $state == Running ]]; then
+        rm -f "$up_log"
+        return 0
+      fi
+      echo "sudo tailscale up exited without reaching Running:" >&2
+      sed 's/^/  /' "$up_log" >&2
+      rm -f "$up_log"
+      return 1
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  echo "Timed out after 10 minutes waiting for Tailscale to come up." >&2
+  echo "Run \`sudo tailscale up\` later and re-run setup." >&2
+  rm -f "$up_log"
+  return 1
+}
+
+step5_tailscale() {
+  if (( OPT_NO_SERVE )); then
+    NO_SERVE=1
+    TS_TAGGED=0; TS_LOGIN=""; TS_DNS=""; TS_IP=""
+    say "Skipping tailscale serve (--no-serve given) -- serverjack will be installed locally only."
+    return 0
+  fi
+  NO_SERVE=0
+  if ! command -v tailscale >/dev/null 2>&1; then
+    say "Tailscale is not installed."
+    if ! ask_yn "Publish with tailscale serve, or skip and use your own reverse proxy? (y = serve)" y; then
+      NO_SERVE=1; say "Skipping tailscale serve -- serverjack will be installed locally only."; return 0
+    fi
+    if ! install_tailscale; then
+      NO_SERVE=1; say "Continuing without tailscale serve."; return 0
+    fi
+    if ! tailscale_login_flow; then
+      NO_SERVE=1; say "Continuing without tailscale serve; re-run setup once tailscale is signed in."; return 0
+    fi
+  else
+    local state; state=$(ts_backend_state)
+    if [[ $state != Running ]]; then
+      say "Tailscale is installed but not signed in (state: ${state:-unknown})."
+      if ! ask_yn "Publish with tailscale serve, or skip and use your own reverse proxy? (y = serve)" y; then
+        NO_SERVE=1; return 0
+      fi
+      if ! tailscale_login_flow; then
+        NO_SERVE=1; return 0
+      fi
+    else
+      say "Tailscale is running."
+      if ! ask_yn "Publish with tailscale serve, or skip and use your own reverse proxy? (y = serve)" y; then
+        NO_SERVE=1; return 0
+      fi
+    fi
+  fi
+  read_tailscale_self
+}
+
+# ------------------------------------------------------------ 6. allow-list
+valid_allow_entry() {
+  local e=$1
+  [[ $e =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9._-]+$ ]] && return 0
+  [[ $e =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] && return 0
+  return 1
+}
+
+validate_allow_list() {  # $1 comma-separated input
+  local -a entries=()
+  IFS=',' read -ra entries <<<"$1"
+  (( ${#entries[@]} > 0 )) || return 1
+  local entry
+  for entry in "${entries[@]}"; do
+    entry=${entry// /}
+    [[ -n $entry ]] || return 1
+    valid_allow_entry "$entry" || return 1
+  done
+  return 0
+}
+
+prompt_allow_list_optional() {  # sets ALLOW_VALUE (possibly "", after confirmation)
+  local input
+  while :; do
+    input=$(ask_line "Allowed tailnet logins, comma-separated (e.g. alice@github), or leave blank:")
+    if [[ -z $input ]]; then
+      echo "Empty means anyone on your tailnet who can reach this machine gets a shell as $(id -un)." >&2
+      if confirm_literal_yes "Leave it empty?"; then
+        ALLOW_VALUE=""
+        return 0
+      fi
+      continue
+    fi
+    if validate_allow_list "$input"; then
+      ALLOW_VALUE=$input
+      return 0
+    fi
+    echo "Not a valid comma-separated list (user@domain or a bare handle each). Try again." >&2
+  done
+}
+
+prompt_allow_list_required() {  # sets ALLOW_VALUE (never empty)
+  local input
+  while :; do
+    input=$(ask_line "This node is tagged, so an allow-list is required. Allowed tailnet logins, comma-separated:")
+    if [[ -n $input ]] && validate_allow_list "$input"; then
+      ALLOW_VALUE=$input
+      return 0
+    fi
+    echo "Enter at least one valid tailnet login (user@domain or a bare handle each)." >&2
+  done
+}
+
+step6_allow_list() {
+  (( NO_SERVE )) && { ALLOW_VALUE=""; return 0; }
+  if [[ $TS_TAGGED == 1 ]]; then
+    say "This node is tagged: Tailscale does not set identity headers for tagged devices."
+    prompt_allow_list_required
+  elif [[ -n $TS_LOGIN ]]; then
+    say "Detected tailnet login: $TS_LOGIN"
+    if ask_yn "Allow only this login?" y; then
+      ALLOW_VALUE=$TS_LOGIN
+    else
+      prompt_allow_list_optional
+    fi
+  else
+    prompt_allow_list_optional
+  fi
+}
+
+# --------------------------------------------------------- 7. shared machine
+step7_shared_machine() {
+  if [[ -n $OPT_LISTEN ]]; then
+    LISTEN=$OPT_LISTEN
+    say "Listen mode: $LISTEN (--$LISTEN given)"
+    return 0
+  fi
+  if ask_yn "Do other people have Linux accounts on this machine?" n; then
+    LISTEN=unix
+    say "Using a private Unix socket (--unix). This adds one root step below: tailscale serve won't proxy to a Unix socket for anyone but root, even the operator."
+  else
+    LISTEN=tcp
+  fi
+}
+
+# ------------------------------------------------------------- 8. root steps
+run_privileged() {  # $1 = reason, remaining = argv to run with sudo
+  local reason=$1; shift
+  say "Needs root once: $reason"
+  printf '  sudo'; printf ' %q' "$@"; printf '\n'
+  if ask_yn "Run it now?" y && sudo "$@"; then
+    return 0
+  fi
+  { printf 'Remaining step:\n  sudo'; printf ' %q' "$@"; printf '\n'; } >&2
+  return 1
+}
+
+step8_root_steps() {
+  if [[ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != "yes" ]]; then
+    run_privileged "so the user units start at boot" loginctl enable-linger "$(id -un)" || true
+  fi
+  (( NO_SERVE )) && return 0
+  command -v tailscale >/dev/null 2>&1 || return 0
+  local current_operator
+  current_operator=$(tailscale debug prefs 2>/dev/null \
+    | python3 -c 'import json, sys
+try:
+    print(json.load(sys.stdin).get("OperatorUser") or "")
+except Exception:
+    print("")' 2>/dev/null || true)
+  if [[ -z $current_operator ]]; then
+    run_privileged "so tailscale serve doesn't need sudo" tailscale set --operator="$(id -un)" || true
+  elif [[ $current_operator != "$(id -un)" ]]; then
+    say "tailscale's operator is currently $current_operator, not you."
+    if ask_yn "Replace it with $(id -un)? ($current_operator loses passwordless serve/funnel control)" n; then
+      run_privileged "change the tailscale operator" tailscale set --operator="$(id -un)" || true
+    else
+      echo "Keeping $current_operator as operator. serve below will need $current_operator's help, or your own sudo tailscale serve." >&2
+    fi
+  fi
+  check_serve_clash
+}
+
+check_serve_clash() {
+  (( NO_SERVE )) && return 0
+  command -v tailscale >/dev/null 2>&1 || return 0
+  local backend; backend=$(serve_backend_for "$HTTPS_PORT" /)
+  [[ -z $backend ]] && return 0
+  say "https://<host>:$HTTPS_PORT/ already proxies to $backend (not serverjack) -- leaving it alone."
+  local choice
+  while :; do
+    choice=$(ask_line "Use a different HTTPS port (8443 or 10000), or 'skip' to install locally without publishing:")
+    case "$choice" in
+      8443|10000)
+        if [[ -z $(serve_backend_for "$choice" /) ]]; then
+          HTTPS_PORT=$choice
+          say "Using HTTPS port $HTTPS_PORT instead."
+          return 0
+        fi
+        echo "$choice is also taken. Try the other one, or 'skip'." >&2
+        ;;
+      skip) NO_SERVE=1; say "Skipping tailscale serve; the local units will still run."; return 0 ;;
+      *) echo "Enter 8443, 10000, or skip." >&2 ;;
+    esac
+  done
+}
+
+# ------------------------------------------------------- 9. install/verify
+# Builds the install.sh invocation from everything resolved so far (flags
+# take priority over what a prompt would have set, but by the time this
+# runs both have already converged on the same variables). Sets INSTALL_ARGS.
+build_install_args() {
+  INSTALL_ARGS=(--"$LISTEN")
+  if (( NO_SERVE )); then
+    INSTALL_ARGS+=(--no-serve)
+  else
+    INSTALL_ARGS+=(--https-port "$HTTPS_PORT")
+  fi
+  # Explicit if, not a bare `[[ cond ]] && ...`: as the LAST statement of a
+  # function called as a plain top-level statement (`build_install_args`,
+  # unconditional, in step9/rerun below), that idiom's own exit status
+  # (1, whenever the flag is unset -- the common case) becomes the whole
+  # function's return status and aborts the script under set -e right here,
+  # before install.sh ever runs -- found by exactly that happening.
+  # install.sh itself refuses "--unix and --port" together (--port implies
+  # tcp) -- only pass it through in tcp mode; --port has nothing to say for
+  # a socket in unix mode anyway, found by this combination failing outright.
+  if [[ -n $OPT_PORT && $LISTEN == tcp ]]; then
+    INSTALL_ARGS+=(--port "$OPT_PORT")
+  fi
+  if [[ -n $OPT_TITLE ]]; then
+    INSTALL_ARGS+=(--title "$OPT_TITLE")
+  fi
+}
+
+# Merges "install_args": [...] into $SHARE/install.json (a managed install
+# only -- absent for a git checkout, in which case this is a no-op) so a
+# later `serverjack-ctl update` can replay the same flags (--no-serve,
+# --unix, --https-port, ...) instead of reverting to install.sh's own
+# defaults on every update. Preserves every other key already in the file
+# (channel/version/installed_at/previous, written by
+# bootstrap/serverjack-bootstrap.sh.in's stage_and_activate()) -- merge, not
+# overwrite, same reason env_setcfg() only ever rewrites its one line.
+record_install_args() {
+  [[ -f "$SHARE/install.json" ]] || return 0
+  local tmp; tmp=$(mktemp "$SHARE/.install.json.XXXXXX")
+  python3 - "$SHARE/install.json" "${INSTALL_ARGS[@]}" > "$tmp" <<'PY'
+import json
+import sys
+
+path, args = sys.argv[1], sys.argv[2:]
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    if not isinstance(doc, dict):
+        doc = {}
+except (OSError, ValueError):
+    doc = {}
+doc["install_args"] = args
+json.dump(doc, sys.stdout, indent=2)
+print()
+PY
+  mv -f "$tmp" "$SHARE/install.json"
+}
+
+step9_install_and_verify() {
+  build_install_args
+  say "Running: bash install.sh ${INSTALL_ARGS[*]}"
+  bash "$INSTALL_SH" "${INSTALL_ARGS[@]}"
+  record_install_args
+  if (( ! NO_SERVE )) && [[ -n ${ALLOW_VALUE:-} ]]; then
+    env_setcfg SERVERJACK_ALLOW "$ALLOW_VALUE"
+    say "Applying the allow-list (restarting the units)"
+    systemctl --user restart serverjack serverjack-ttyd
+    sleep 1
+  fi
+  verify_and_report
+}
+
+verify_and_report() {
+  local active; active=$(systemctl --user is-active serverjack serverjack-ttyd 2>/dev/null | paste -sd' ' -)
+  say "Units: $active"
+  local port; port=$(env_get SERVERJACK_PORT 7680)
+  local listen; listen=$(env_get SERVERJACK_LISTEN tcp)
+  local code
+  if [[ $listen == unix ]]; then
+    code=$(curl -s -o /dev/null --unix-socket "${XDG_RUNTIME_DIR}/serverjack/web.sock" -w '%{http_code}' http://serverjack/healthz 2>/dev/null || echo 000)
+  else
+    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/healthz" 2>/dev/null || echo 000)
+  fi
+  if [[ $code != 200 ]]; then
+    echo "Local health check failed (HTTP $code). Check: journalctl --user -u serverjack -n 50" >&2
+    exit 1
+  fi
+  if (( NO_SERVE )); then
+    say "Installed locally at http://127.0.0.1:$port/; not yet reachable from your phone."
+    echo "Remaining step: publish it yourself behind an authenticating reverse proxy, or re-run setup and choose to publish with tailscale serve."
+    return 0
+  fi
+  # read_tailscale_self() (step5/rerun) already resolved this; only re-query
+  # as a defensive fallback if that never ran for some reason.
+  local host=${TS_DNS:-}
+  if [[ -z $host ]]; then
+    host=$(tailscale status --json 2>/dev/null | python3 -c 'import json, sys
+try:
+    print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))
+except Exception:
+    print("")' 2>/dev/null || true)
+  fi
+  if [[ -z $host ]]; then
+    say "Installed locally at http://127.0.0.1:$port/; could not determine the tailnet address."
+    return 0
+  fi
+  local url="https://$host"; [[ $HTTPS_PORT != 443 ]] && url="$url:$HTTPS_PORT"; url="$url/"
+  code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$url" 2>/dev/null || echo 000)
+  if [[ $code != 200 && -n ${TS_IP:-} ]]; then
+    code=$(curl -s -o /dev/null -m 10 --resolve "$host:$HTTPS_PORT:$TS_IP" -w '%{http_code}' "$url" 2>/dev/null || echo 000)
+  fi
+  if [[ $code == 200 ]]; then
+    say "Ready: $url"
+    echo "Open it on your phone; Add to Home Screen for an app icon."
+  else
+    say "Installed locally at http://127.0.0.1:$port/; not yet reachable from your phone (tailnet check got HTTP $code)."
+    echo "Remaining step: check \`tailscale serve status\` and DNS for $host, then re-run setup."
+  fi
+}
+
+# ----------------------------------------------------------------- 10. rerun
+rerun_managed() {
+  say "serverjack is already installed here as a managed release -- this is a rerun."
+  local version listen port https_port allow serve_state
+  version=$(python3 -c 'import json, sys
+try:
+    print(json.load(sys.stdin).get("version") or "")
+except Exception:
+    print("")' < "$SHARE/install.json" 2>/dev/null || true)
+  listen=$(env_get SERVERJACK_LISTEN tcp)
+  port=$(env_get SERVERJACK_PORT 7680)
+  https_port=$(env_get SERVERJACK_HTTPS_PORT 443)
+  allow=$(env_get SERVERJACK_ALLOW '')
+  serve_state="not published"
+  if command -v tailscale >/dev/null 2>&1 && [[ -n $(serve_backend_for "$https_port" /) ]]; then
+    serve_state="published on https port $https_port"
+  fi
+  echo "Current state:"
+  echo "  version:    ${version:-unknown}"
+  echo "  listen:     $listen (port $port)"
+  echo "  serve:      $serve_state"
+  echo "  allow-list: ${allow:-(none -- anyone on your tailnet)}"
+  echo
+  echo "What would you like to do?"
+  echo "  1) update       serverjack-ctl update"
+  echo "  2) allow-list   change who may reach it"
+  echo "  3) publish      change publish settings (serve on/off, https port)"
+  echo "  4) nothing      leave everything as it is"
+  local choice; choice=$(ask_line "Choice [1-4, default 4]:")
+  case "${choice:-4}" in
+    1) "$HOME/.local/bin/serverjack-ctl" update ;;
+    2)
+      if ! command -v tailscale >/dev/null 2>&1; then
+        echo "Tailscale isn't installed -- nothing to base an allow-list on. Run setup fresh to install it first." >&2
+        return 0
+      fi
+      read_tailscale_self
+      if [[ $TS_TAGGED == 1 ]]; then
+        prompt_allow_list_required
+      else
+        prompt_allow_list_optional
+      fi
+      env_setcfg SERVERJACK_ALLOW "$ALLOW_VALUE"
+      systemctl --user restart serverjack serverjack-ttyd
+      say "Updated the allow-list."
+      ;;
+    3)
+      LISTEN=$listen; HTTPS_PORT=$https_port
+      step5_tailscale
+      check_serve_clash
+      build_install_args
+      bash "$INSTALL_SH" "${INSTALL_ARGS[@]}"
+      record_install_args
+      verify_and_report
+      ;;
+    *) say "Leaving everything as it is." ;;
+  esac
+}
+
+# Same flag set install.sh accepts (a subset: no --ttyd-port, that's gone
+# there too). Each one answers the matching guided-flow question instead of
+# asking it. OPT_LISTEN empty means step 7 still asks.
+parse_flags() {
+  OPT_NO_SERVE=0
+  OPT_LISTEN=
+  OPT_PORT=
+  OPT_HTTPS_PORT=
+  OPT_TITLE=
+  while (( $# )); do
+    case "$1" in
+      --no-serve)     OPT_NO_SERVE=1 ;;
+      --unix)         OPT_LISTEN=unix ;;
+      --tcp)          OPT_LISTEN=tcp ;;
+      --port)         OPT_PORT=${2:?--port needs a number}; shift ;;
+      --port=*)       OPT_PORT=${1#*=} ;;
+      --https-port)   OPT_HTTPS_PORT=${2:?--https-port needs a number}; shift ;;
+      --https-port=*) OPT_HTTPS_PORT=${1#*=} ;;
+      --title)        OPT_TITLE=${2:?--title needs a name}; shift ;;
+      --title=*)      OPT_TITLE=${1#*=} ;;
+      -h|--help)      usage 0 ;;
+      *) echo "unknown option: $1" >&2; usage 1 >&2 ;;
+    esac
+    shift
+  done
+}
+
+# --------------------------------------------------------------------- main
+main() {
+  parse_flags "$@"
+  refuse_root_or_sudo_user
+  resolve_self
+  check_platform
+  check_systemd_user_manager
+  check_prerequisites
+  handle_existing_install   # exits (0) itself for a rerun; falls through for a fresh install
+  HTTPS_PORT=${OPT_HTTPS_PORT:-443}
+  step5_tailscale
+  step6_allow_list
+  step7_shared_machine
+  step8_root_steps
+  step9_install_and_verify
+}
+
+main "$@"
