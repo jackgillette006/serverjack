@@ -36,8 +36,69 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_ENV"
 
+      - name: C6 -- verify the tagged commit already has passing CI check runs
+        # A pushed tag is not itself proof the commit it points at was ever
+        # tested -- someone could tag an arbitrary commit, or CI could still
+        # be running/have failed on it. Requires all three required jobs
+        # (ci.yml's "Browser and security tests" and "Lint", both required
+        # status checks; "Install suites (managed + guided)" is deliberately
+        # NOT yet a required check on the branch -- see its own comment in
+        # ci.yml -- but a release must not skip it either) to show a
+        # completed, successful check run for this exact SHA.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="${{ github.sha }}"
+          json=$(gh api "repos/${{ github.repository }}/commits/$sha/check-runs?per_page=100")
+          missing=()
+          for name in "Browser and security tests" "Lint" "Install suites (managed + guided)"; do
+            ok=$(jq -r --arg name "$name" \
+              '[.check_runs[] | select(.name == $name and .status == "completed" and .conclusion == "success")] | length > 0' \
+              <<<"$json")
+            [[ $ok == true ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} )); then
+            echo "::error::commit $sha is missing a passing check run for: ${missing[*]} -- refusing to release an untested commit" >&2
+            exit 1
+          fi
+          echo "all required check runs passed for $sha"
+
       - name: Build the release archive and bootstrap
         run: bash scripts/build-release.sh "$version"
+
+      - name: C6 -- verify the built assets are internally consistent
+        # The archive's real sha256 must match BOTH SHA256SUMS and the
+        # bootstrap's own embedded pin -- exactly what serverjack-ctl's
+        # stage_release() (A7) and the bootstrap's own download_and_verify()
+        # require of a real install, checked here BEFORE anything is ever
+        # published as a release asset. The bootstrap's own end-of-file
+        # marker (B3/bootstrap/serverjack-bootstrap.sh.in) confirms
+        # scripts/build-release.sh rendered a complete file, not something
+        # truncated by a templating bug.
+        run: |
+          set -euo pipefail
+          archive="dist/serverjack-$version.tar.gz"
+          real_sha=$(sha256sum "$archive" | awk '{print $1}')
+          sums_sha=$(awk -v f="$(basename "$archive")" '$2==f{print $1}' dist/SHA256SUMS)
+          if [[ -z $sums_sha ]]; then
+            echo "::error::$(basename "$archive") is not listed in dist/SHA256SUMS" >&2
+            exit 1
+          fi
+          if [[ $sums_sha != "$real_sha" ]]; then
+            echo "::error::archive sha256 ($real_sha) does not match SHA256SUMS ($sums_sha)" >&2
+            exit 1
+          fi
+          embedded_sha=$(sed -n 's/^EMBEDDED_ARCHIVE_SHA256="\(.*\)"$/\1/p' dist/serverjack-bootstrap.sh)
+          if [[ $embedded_sha != "$real_sha" ]]; then
+            echo "::error::bootstrap's embedded sha256 ($embedded_sha) does not match the archive ($real_sha)" >&2
+            exit 1
+          fi
+          if ! grep -qF '# SERVERJACK-BOOTSTRAP-EOF -- do not remove: bootstrap/launcher.sh (and the' dist/serverjack-bootstrap.sh; then
+            echo "::error::dist/serverjack-bootstrap.sh is missing its end-of-file marker -- looks truncated or the template changed" >&2
+            exit 1
+          fi
+          echo "assets verified: archive digest matches SHA256SUMS and the bootstrap's embedded pin; bootstrap end marker present"
 
       - name: Create a draft GitHub release
         env:
