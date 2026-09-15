@@ -43,6 +43,77 @@ serve_backend_for() {
     /^\|--/ && cur==wp && $2==wpath { print $NF; exit }' || true
 }
 
+# Same parsing as serve_backend_for(), but against an ALREADY-CAPTURED
+# `tailscale serve status` text (so a caller removing more than one mapping
+# -- see remove_owned_mapping() below -- reads one consistent snapshot
+# instead of one status call per mapping, which could observe a config
+# change made between the two) and returns EVERY matching backend, one per
+# line, not just the first: remove_owned_mapping() needs the count to tell
+# an unambiguous mapping from an ambiguous one, which serve_backend_for()'s
+# early `exit` can't report.
+serve_backends_for() {  # $1 https-port  $2 path  $3 `tailscale serve status` text
+  awk -v wp="$1" -v wpath="$2" '
+    /^https:\/\// { h=$1; sub(/^https:\/\//,"",h); n=split(h,a,":");
+                    cur=(n>1 ? a[n] : "443"); next }
+    /^\|--/ && cur==wp && $2==wpath { print $NF }' <<<"$3"
+}
+
+# True if $1 (a backend string exactly as `tailscale serve status` prints
+# it, e.g. "http://127.0.0.1:7680" or "unix:/run/user/1000/serverjack/web.sock")
+# is one of THIS installation's own backends, given as $2... by the caller
+# (each caller knows its own port/socket paths; this only compares). Used
+# before treating an existing serve mapping as a clash, and before removing
+# one -- a mapping that is already ours (this account's own port or Unix
+# socket, from an earlier run) is never a foreign clash, and remove_owned_
+# mapping() below must never remove anything else. Existed as install.sh's
+# own private copy before this (A1: bin/serverjack-setup's check_serve_clash()
+# had no equivalent at all, so it flagged this account's own already-
+# published mapping as foreign on every rerun).
+backend_is_ours() {
+  local backend=$1; shift
+  local b
+  for b in "$@"; do [[ $backend == "$b" ]] && return 0; done
+  return 1
+}
+
+# Removes one tailscale serve mapping (<https port> <path>) if, and only if,
+# it exists, is unambiguous, and is one of this installation's own backends
+# ($5... -- see backend_is_ours()). Otherwise leaves it exactly alone and
+# says why, with the command to inspect it by hand. Returns 0 when the
+# mapping is gone afterward (removed just now, or never existed) and 1 when
+# something is still there (foreign, ambiguous, or the `tailscale serve ...
+# off` call itself failed) -- a caller that must know whether the route is
+# REALLY gone (not just that this printed something) checks the exit status,
+# not only the message (A11: uninstall's final summary must not always
+# claim success). One `tailscale serve status` capture ($2) is expected to
+# be shared across every mapping a caller removes in one run (backup_
+# current_state()-style callers do two: "/" and the legacy /term mount) --
+# passed in rather than captured here, so removing several mappings reads
+# one consistent snapshot instead of racing itself across separate calls.
+remove_owned_mapping() {  # $1 label  $2 status-text  $3 https-port  $4 path  $5.. own backends
+  local label=$1 status=$2 https=$3 path=$4; shift 4
+  local -a own=("$@")
+  local -a backends=()
+  mapfile -t backends < <(serve_backends_for "$https" "$path" "$status")
+  if (( ${#backends[@]} == 0 )); then
+    return 0
+  elif (( ${#backends[@]} != 1 )); then
+    echo "tailscale serve $label left in place: status was ambiguous -- run \`tailscale serve status\` to inspect it" >&2
+    return 1
+  fi
+  local backend=${backends[0]}
+  if ! backend_is_ours "$backend" "${own[@]}"; then
+    echo "tailscale serve $label left in place: it points to a foreign backend ($backend) -- run \`tailscale serve status\` to inspect it" >&2
+    return 1
+  fi
+  if tailscale serve --https="$https" --set-path="$path" off >/dev/null 2>&1; then
+    echo "removed tailscale serve $label ($backend)"
+    return 0
+  fi
+  echo "tailscale serve $label left in place: \`tailscale serve --https=$https --set-path=$path off\` failed -- run \`tailscale serve status\` to inspect it" >&2
+  return 1
+}
+
 # HTTP status code for one request, as a single clean string ("000" if curl
 # couldn't even connect, matching curl's own convention for that case).
 # Extra args are passed straight to curl (a URL, --unix-socket SOCK, ...).

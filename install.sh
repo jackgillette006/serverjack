@@ -423,13 +423,13 @@ free_https() {
   done
   printf '8443'
 }
-backend_is_ours() {
-  local backend=$1
-  [[ $backend == "http://127.0.0.1:$SERVERJACK_PORT" \
-     || $backend == "unix:$RUNTIME/web.sock" \
-     || $backend == "unix:$RUNTIME/ttyd.sock" \
-     || ( -n $LEGACY_TTYD_PORT && $backend == "http://127.0.0.1:$LEGACY_TTYD_PORT" ) ]]
-}
+# backend_is_ours() itself now lives in bin/serverjack-lib.sh (A1 -- so
+# bin/serverjack-setup's check_serve_clash() can share it instead of having
+# no equivalent at all); this account's own candidate backend strings still
+# have to be built here, since only this script knows its own SERVERJACK_PORT/
+# RUNTIME/LEGACY_TTYD_PORT.
+OWN_BACKENDS=("http://127.0.0.1:$SERVERJACK_PORT" "unix:$RUNTIME/web.sock" "unix:$RUNTIME/ttyd.sock")
+[[ -n $LEGACY_TTYD_PORT ]] && OWN_BACKENDS+=("http://127.0.0.1:$LEGACY_TTYD_PORT")
 remedy() {  # $1 = why, printed first
   local p; p=$(free_pair $(( SERVERJACK_PORT + 10 )))
   echo "$1" >&2
@@ -529,7 +529,7 @@ if (( ! NO_SERVE )) && command -v tailscale >/dev/null 2>&1 && tailscale status 
   # mount is now a way straight past serverjack's checks, so take it down.
   stale=$(serve_backend_for "$HTTPS_PORT" "$mount")
   if [[ -n $stale ]]; then
-    if backend_is_ours "$stale"; then
+    if backend_is_ours "$stale" "${OWN_BACKENDS[@]}"; then
       if tailscale serve --https="$HTTPS_PORT" --set-path="$mount" off >/dev/null 2>&1; then
         say "Removed the old $mount serve mount ($stale) -- the terminal now goes through serverjack"
       else
@@ -547,7 +547,7 @@ if (( ! NO_SERVE )) && command -v tailscale >/dev/null 2>&1 && tailscale status 
   # Ours either way: the same backend, or the tcp/unix backend of this same
   # account that we are about to replace (serve config is keyed by port+path,
   # so re-running with the new backend just replaces that mount).
-  if [[ -z $clash && -n $cur ]] && ! backend_is_ours "$cur"; then
+  if [[ -z $clash && -n $cur ]] && ! backend_is_ours "$cur" "${OWN_BACKENDS[@]}"; then
     clash="https://<host>:$HTTPS_PORT/ already proxies to $cur, not our $WEB_BACKEND"
   fi
   if [[ -n $clash ]]; then
