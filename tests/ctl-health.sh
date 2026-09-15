@@ -228,6 +228,32 @@ rm -f "$IJSON"
 update_install_json "$IJSON" version 2.0.0 --keep-args
 result "(d) starts fresh from a missing file" "2.0.0" "$(py_get version)"
 
+echo "================================================================"
+echo "(e) detect_channel() handles a HOME containing a literal % (A16)"
+
+# SHARE/CURRENT/UNIT_DIR/ENV_FILE are plain variables computed from \$HOME
+# at SOURCE time, not re-derived per call -- re-point HOME and re-source to
+# get them recomputed for this scenario.
+export HOME="$WORK/home-100%pct"
+mkdir -p "$HOME"
+# shellcheck disable=SC1090 # deliberately re-sourcing with a new $HOME
+source "$REPO/bin/serverjack-ctl"
+
+mkdir -p "$UNIT_DIR" "$SHARE/current/bin"
+touch "$SHARE/current/bin/serverjack"
+echo '{"channel":"release","version":"1.0.0"}' > "$INSTALL_JSON"
+# The exact text install.sh's own python3 templating would have written --
+# $CURRENT escaped the same way (systemd_escape_path(), which detect_channel()
+# itself now also uses to build its comparison).
+escaped_current=$(systemd_escape_path "$CURRENT")
+cat > "$UNIT_DIR/serverjack.service" <<EOF
+[Service]
+ExecStart=/usr/bin/python3 "$escaped_current/bin/serverjack"
+EOF
+
+detect_channel
+result "(e) detect_channel() recognizes a managed install under a % HOME" "release" "$CHANNEL"
+
 echo
 if (( failures > 0 )); then
   echo "$failures ctl-health check(s) failed" >&2

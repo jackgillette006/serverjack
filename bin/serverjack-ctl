@@ -179,7 +179,11 @@ env_get() {
 # For "release": install.sh always bakes the STABLE ".../current/bin/..."
 # path into ExecStart= for a managed install (never the physical release
 # dir -- that's the whole point of the symlink), so a plain substring match
-# against $CURRENT is exact and needs no parsing.
+# against $CURRENT needs no PARSING -- but $exec_line is still systemd-
+# escaped (A16: $CURRENT is under $HOME, and install.sh's templating
+# escapes whatever %/\/" ends up in the path regardless of whether it's the
+# stable symlink or not), so $CURRENT itself is escaped the same way
+# (systemd_escape_path(), bin/serverjack-lib.sh) before comparing.
 #
 # For "git": install.sh additionally writes the checkout's absolute path,
 # in plain text, to $HOME/.config/serverjack/install-path (only for a
@@ -194,7 +198,12 @@ detect_channel() {
   local unit="$UNIT_DIR/serverjack.service" exec_line
   if [[ -f $unit ]]; then
     exec_line=$(grep -m1 '^ExecStart=' "$unit" || true)
-    if [[ $exec_line == *"\"$CURRENT/bin/serverjack\""* ]]; then
+    # A16: $exec_line is ALREADY systemd-escaped (install.sh's own %/\/"
+    # quoting) -- escape $CURRENT the same way before comparing, or a
+    # $HOME containing a literal %, \ or " never matches even for a real
+    # managed install.
+    local escaped_current; escaped_current=$(systemd_escape_path "$CURRENT")
+    if [[ $exec_line == *"\"$escaped_current/bin/serverjack\""* ]]; then
       CHANNEL=release
     fi
   fi
