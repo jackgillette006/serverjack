@@ -38,10 +38,12 @@ and this project uses [Semantic Versioning](https://semver.org/).
   dir, a tool's own `"paths"` glob in `tools.json`) showed as installed and
   its Start card pill appeared, but starting it failed with "command not
   found": Debian's `/etc/profile` resets `PATH` inside the login shell that
-  runs the command. `command_args()` now resolves the launched command to an
-  absolute path before starting it, and also re-exports the resolved
-  `TOOL_PATH` inside that login shell, so a subprocess the tool itself
-  starts sees it too.
+  runs the command. `command_args()` now re-exports `TOOL_PATH` as the first
+  thing that login shell does, after its own startup files (and their PATH
+  reset) have already run — the configured command text itself is left
+  exactly as configured, never rewritten to an absolute path, so the echoed
+  `$ claude` line and the pane's reported process name still just name the
+  tool instead of baking in TOOL_PATH's real location.
 - The demo GIF had a flat grey letterbox band across the bottom fifth of
   every frame: the recorded video's pixel size didn't match the emulated
   iPhone's real viewport. `gif_record.py` now derives the recording size

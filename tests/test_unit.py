@@ -434,18 +434,18 @@ class CommandArgsTests(unittest.TestCase):
     """command_args(): a tool only reachable via TOOL_PATH (nvm's bin dir, a
     tool's private "paths" entry) must still start, because Debian's
     /etc/profile resets PATH inside the `bash -lc` login shell that runs the
-    command. Fixed by resolving the first word to an absolute path up front
-    and by exporting TOOL_PATH again inside the login shell itself."""
+    command. Fixed by re-exporting TOOL_PATH as the first thing inside that
+    login shell, after its own startup files (and their PATH reset) have
+    already run. The configured command text itself is never rewritten --
+    not even to an absolute path -- since the echoed "$ <cmd>" line and the
+    pane's reported process name are user-facing (and, for the demo GIF,
+    public): a resolved path would bake in TOOL_PATH's real location (a
+    throwaway fixture directory, someone's home directory) instead of just
+    naming the tool."""
 
     def setUp(self):
         self._orig_tool_path = mod.TOOL_PATH
-        self._tmp = tempfile.mkdtemp(prefix="sj-unit-toolpath-")
-        _tmpdirs.append(self._tmp)
-        bin_path = os.path.join(self._tmp, "onlyintoolpath")
-        with open(bin_path, "w") as f:
-            f.write("#!/bin/sh\necho TOOL_RAN\n")
-        os.chmod(bin_path, 0o755)
-        mod.TOOL_PATH = self._tmp
+        mod.TOOL_PATH = "/tmp/sj-unit-example-toolpath"
 
     def tearDown(self):
         mod.TOOL_PATH = self._orig_tool_path
@@ -454,30 +454,33 @@ class CommandArgsTests(unittest.TestCase):
         """The "-e SERVERJACK_CMD=..." value out of a command_args() list."""
         return args[args.index("-e") + 1].split("=", 1)[1]
 
-    def test_resolves_a_bin_only_reachable_via_tool_path(self):
-        args = mod.command_args("onlyintoolpath --flag")
-        cmd = self._env(args)
-        self.assertEqual(cmd, os.path.join(self._tmp, "onlyintoolpath") + " --flag")
+    def test_command_text_is_never_rewritten(self):
+        args = mod.command_args("claude --remote-control")
+        self.assertEqual(self._env(args), "claude --remote-control")
 
-    def test_window_name_stays_the_short_command_word(self):
-        args = mod.command_args("onlyintoolpath --flag")
-        self.assertEqual(args[args.index("-n") + 1], "onlyintoolpath")
+    def test_command_text_is_preserved_even_when_the_tool_exists(self):
+        # Same assertion, spelled out: there is no shutil.which() check left
+        # in command_args() itself that could special-case a resolvable bin.
+        args = mod.command_args("bash")
+        self.assertEqual(self._env(args), "bash")
 
-    def test_unresolvable_command_is_left_alone(self):
-        args = mod.command_args("not-a-real-tool --flag")
-        self.assertEqual(self._env(args), "not-a-real-tool --flag")
+    def test_window_name_is_the_commands_first_word(self):
+        args = mod.command_args("claude --remote-control")
+        self.assertEqual(args[args.index("-n") + 1], "claude")
 
-    def test_only_the_first_word_is_replaced(self):
-        args = mod.command_args("onlyintoolpath onlyintoolpath --two words")
-        cmd = self._env(args)
-        self.assertEqual(
-            cmd, os.path.join(self._tmp, "onlyintoolpath") + " onlyintoolpath --two words")
+    def test_multi_word_commands_pass_through_verbatim(self):
+        args = mod.command_args("codex remote-control pair")
+        self.assertEqual(self._env(args), "codex remote-control pair")
 
-    def test_login_shell_also_gets_tool_path_exported(self):
-        script = mod.command_args("onlyintoolpath")[-1]
+    def test_login_shell_exports_tool_path_before_running_the_command(self):
+        script = mod.command_args("claude")[-1]
         self.assertIn("export PATH=", script)
-        self.assertIn(self._tmp, script)
+        self.assertIn(mod.TOOL_PATH, script)
         self.assertIn('eval "$SERVERJACK_CMD"', script)
+        # The export has to land first inside the login shell -- it must run
+        # after bash -lc's own startup files (and their PATH reset), and
+        # before the command is looked up -- or it fixes nothing.
+        self.assertLess(script.index("export PATH="), script.index('eval "$SERVERJACK_CMD"'))
 
 
 class DefaultSessionNameTests(unittest.TestCase):
