@@ -51,6 +51,7 @@ Routes
     GET  /api/tools            one state object per agent
     GET  /api/screen?name=     the session's pane as plain text
     GET  /api/status           counts + agent + machine summary, for a dashboard
+    GET  /api/dirs?q=          directory-picker suggestions for the combobox
     POST /start                the Start a session card: a shell (with an
                                optional command) or an agent, in one form
     POST /new, /api/new        create a session -- kept for the terminal
@@ -123,6 +124,9 @@ Configuration is by environment variables (see install.sh / README):
                       shell.
     SERVERJACK_TITLE  page title                             default hostname
     SERVERJACK_DIRS   colon-separated dirs offered for new sessions
+    SERVERJACK_DIR_DEPTH
+                      how many levels deep the directory picker's search
+                      index walks under each SERVERJACK_DIRS root  default 5
     SERVERJACK_TOOLS  comma-separated agent ids to show, in that order
                       (default: every tool in the registry below)
     SERVERJACK_TERM   URL path this app serves the terminal on  default /term/
@@ -645,6 +649,17 @@ def _dirs():
 
 
 DIR_ROOTS = _dirs()
+try:
+    DIR_DEPTH = int(os.environ.get("SERVERJACK_DIR_DEPTH") or 5)
+except ValueError:
+    DIR_DEPTH = 5
+# Names the directory-picker index never descends into: dependency/build
+# output that is never where you want to start a session, and would
+# otherwise dwarf the useful part of a big ~/projects tree.
+DIR_PRUNE = {"node_modules", "__pycache__", ".venv", "venv", "site-packages"}
+DIR_INDEX_CAP = 20000      # entries; stop and mark truncated past this
+DIR_INDEX_BUDGET = 1.5     # wall-clock seconds per (re)build
+DIR_INDEX_TTL = 20         # seconds a built index is reused before rescanning
 CONFIG_DIR = os.environ.get("SERVERJACK_CONFIG") or os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or f"{HOME}/.config", "serverjack")
 SHORTCUTS_FILE = os.path.join(CONFIG_DIR, "shortcuts.json")
@@ -1164,19 +1179,20 @@ def rename_session(old, new):
     return new, None
 
 
-def resolve_dir(dir_choice, dir_custom):
-    """The directory a session starts in. A typed path that doesn't exist yet
-    is created (the user typed it on purpose: "start a shell/agent in a new
-    project dir"); picker choices always exist already."""
-    typed = (dir_custom or "").strip()
-    d = typed or (dir_choice or "").strip() or HOME
+def resolve_dir(dir_value, dir_custom=None):
+    """The directory a session starts in. The .dirpick combobox posts one
+    "dir" field, typed or picked from its suggestions -- a suggestion always
+    exists already, and typed text that doesn't exist yet is created (the
+    user typed it on purpose: "start a shell/agent in a new project dir").
+    dir_custom is accepted only for backward compatibility (old API callers,
+    a hand-built form): when present it takes priority over dir_value, same
+    as the picker's old select+typed-override pair did."""
+    d = (dir_custom or "").strip() or (dir_value or "").strip() or HOME
     d = os.path.expanduser(d)
     if not os.path.isabs(d):
         d = os.path.join(HOME, d)
     d = os.path.realpath(d)
     if not os.path.isdir(d):
-        if not typed:
-            return None, f"No such directory: {d}"
         if os.path.exists(d):
             return None, f"Not a directory: {d}"
         try:
@@ -1443,6 +1459,184 @@ def dir_choices():
         except OSError:
             pass
     return seen
+
+
+# ------------------------------------------------------- directory search --
+# Backs GET /api/dirs?q= (the .dirpick combobox's only data source, see
+# DIRPICK_JS). Three modes, chosen by the shape of q:
+#   ""            the old dropdown's own list: HOME, then DIR_ROOTS and their
+#                  first-level children, in DIR_ROOTS order (dir_choices()).
+#   has a "/", or starts with "~"
+#                  path completion: split into parent + partial last
+#                  component and list the parent's matching child dirs. This
+#                  is how any path gets reached, DIR_ROOTS or not.
+#   otherwise      name search over a cached recursive index of DIR_ROOTS
+#                  (dir_index()), so "3d-lab" finds a directory by that name
+#                  no matter how deep it is nested.
+_DIR_INDEX_CACHE = None   # (built_at, entries, truncated); see dir_index()
+
+
+def _dir_walk(dirpath, root, depth, deadline, entries, truncated):
+    """Depth-first into dirpath (already known to exist), appending
+    (abs_path, depth, root) for every non-hidden, non-pruned subdirectory,
+    stopping at DIR_DEPTH, DIR_INDEX_CAP or the wall-clock deadline.
+    truncated is a one-element list used as an outparam."""
+    if truncated[0]:
+        return
+    if time.time() > deadline:
+        truncated[0] = True
+        return
+    try:
+        children = sorted(os.scandir(dirpath), key=lambda e: e.name.lower())
+    except OSError:
+        return
+    for e in children:
+        if len(entries) >= DIR_INDEX_CAP:
+            truncated[0] = True
+            return
+        if time.time() > deadline:
+            truncated[0] = True
+            return
+        if e.name.startswith(".") or e.name in DIR_PRUNE:
+            continue
+        try:
+            if not e.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            continue
+        entries.append((e.path, depth, root))
+        if depth < DIR_DEPTH:
+            _dir_walk(e.path, root, depth + 1, deadline, entries, truncated)
+
+
+def dir_index():
+    """(entries, truncated). entries is every directory under DIR_ROOTS, as
+    (abs_path, depth, root) -- depth 0 is a DIR_ROOTS entry itself -- hidden
+    names, DIR_PRUNE names and anything past DIR_DEPTH left out. Rebuilt at
+    most once every DIR_INDEX_TTL seconds (module-level cache)."""
+    global _DIR_INDEX_CACHE
+    now = time.time()
+    if _DIR_INDEX_CACHE is not None and now - _DIR_INDEX_CACHE[0] < DIR_INDEX_TTL:
+        return _DIR_INDEX_CACHE[1], _DIR_INDEX_CACHE[2]
+    entries = []
+    truncated = [False]
+    deadline = now + DIR_INDEX_BUDGET
+    for root in DIR_ROOTS:
+        if not os.path.isdir(root):
+            continue
+        if len(entries) >= DIR_INDEX_CAP:
+            truncated[0] = True
+            break
+        entries.append((root, 0, root))
+        if DIR_DEPTH > 0:
+            _dir_walk(root, root, 1, deadline, entries, truncated)
+        if truncated[0]:
+            break
+    _DIR_INDEX_CACHE = (now, entries, truncated[0])
+    return entries, truncated[0]
+
+
+def _dir_rank(path, root, q):
+    """None (no match) or a rank: 0 exact basename, 1 basename prefix,
+    2 basename substring, 3 substring of the path relative to its root --
+    the fallback that lets an ancestor's name surface a deep result too."""
+    base = os.path.basename(path).lower()
+    q = q.lower()
+    if base == q:
+        return 0
+    if base.startswith(q):
+        return 1
+    if q in base:
+        return 2
+    if q in os.path.relpath(path, root).lower():
+        return 3
+    return None
+
+
+def _dir_search_name(q):
+    """A path can be indexed more than once -- two SERVERJACK_DIRS roots
+    where one is nested under the other both walk it -- so keep each path's
+    best (rank, depth) rather than letting it appear twice in the results."""
+    entries, truncated = dir_index()
+    best = {}
+    for path, depth, root in entries:
+        rank = _dir_rank(path, root, q)
+        if rank is None:
+            continue
+        cur = best.get(path)
+        if cur is None or (rank, depth) < cur:
+            best[path] = (rank, depth)
+    scored = [(rank, depth, path.lower(), path) for path, (rank, depth) in best.items()]
+    scored.sort(key=lambda t: t[:3])
+    return [p for *_, p in scored[:15]], truncated
+
+
+def _expand_home(q):
+    """A ~-prefix expansion keyed to this module's own HOME, not
+    os.path.expanduser()'s (the real process environment / passwd database) --
+    the two coincide outside tests, where HOME is computed from
+    os.path.expanduser("~") once at import time, but a test overriding HOME
+    directly (the pattern the rest of this file's tests already use) needs
+    dir search to actually follow it."""
+    if q.startswith("~/"):
+        return HOME + q[1:]
+    if q == "~":
+        return HOME
+    return q
+
+
+def _dir_search_path(q):
+    if q.rstrip("/") == "~":
+        parent, partial = HOME, ""
+    else:
+        expanded = _expand_home(q)
+        if not os.path.isabs(expanded):
+            expanded = os.path.join(HOME, expanded)
+        parent, partial = os.path.split(expanded)
+        parent = parent or "/"
+    partial = partial.lower()
+    out = []
+    try:
+        for e in sorted(os.scandir(parent), key=lambda e: e.name.lower()):
+            if e.name.startswith(".") or not e.name.lower().startswith(partial):
+                continue
+            try:
+                if not e.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            out.append(e.path)
+            if len(out) >= 15:
+                break
+    except OSError:
+        return [], False
+    return out, False
+
+
+def _dir_search_empty():
+    """HOME first, then dir_choices()'s own order -- exactly the old
+    dropdown's list, just with ~ moved to the front (dir_choices() itself is
+    untouched: dir_options() used to do this same reordering)."""
+    dirs = dir_choices()
+    return [HOME] + [d for d in dirs if d != HOME], False
+
+
+def _dir_show(path):
+    return path.replace(HOME, "~", 1) if path == HOME or path.startswith(HOME + os.sep) else path
+
+
+def dir_search(q):
+    """Body of GET /api/dirs?q=. Returns (http_status, json_obj)."""
+    if len(q) > 512:
+        return 400, {"error": "query too long"}
+    if not q:
+        dirs, truncated = _dir_search_empty()
+    elif "/" in q or q.startswith("~"):
+        dirs, truncated = _dir_search_path(q)
+    else:
+        dirs, truncated = _dir_search_name(q)
+    return 200, {"q": q, "dirs": [{"path": p, "show": _dir_show(p)} for p in dirs],
+                 "truncated": truncated}
 
 
 def system_stats():
@@ -1828,6 +2022,138 @@ body.fx.conn #conn{display:block}
   88%{opacity:1}100%{transform:translateY(100vh);opacity:0}}
 """
 
+# The one directory-picker combobox's CSS, shared by the landing page (folded
+# into CSS below) and the terminal page's #pop form (its own <style> inserts
+# this by name -- see render_term()). Plain single-brace CSS either way: CSS
+# is a plain string, and TERM_PAGE only doubles the braces that are literally
+# part of *its own* template, not the values substituted into it.
+DIRPICK_CSS = """
+.dirpick{position:relative}
+.tool .dirpick{margin:var(--space-2) 0 0}
+.dirlist{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:6;margin:0;padding:4px;
+  list-style:none;max-height:40vh;overflow:auto;background:var(--bg-primary);
+  border:1px solid var(--border);border-radius:var(--radius-sm);
+  box-shadow:0 16px 40px rgb(0 0 0 / .45);font:13px/1.3 var(--font-mono)}
+.dirlist[hidden]{display:none}
+.dirlist li{padding:8px 10px;border-radius:var(--radius-xs);cursor:pointer;color:var(--text-secondary);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dirlist li b{color:var(--text-primary);font-weight:600}
+.dirlist li .rest{color:var(--text-muted);margin-left:2px}
+.dirlist li[aria-selected="true"]{background:var(--accent-dim);color:var(--on-accent)}
+.dirlist li[aria-selected="true"] b,.dirlist li[aria-selected="true"] .rest{color:var(--on-accent)}
+@media (pointer:coarse){.dirlist li{padding:11px 12px;min-height:44px;display:flex;align-items:center}}
+"""
+
+# The one directory-picker combobox's behaviour, shared the same way as
+# DIRPICK_CSS above: a self-contained script that finds every ".dirpick" on
+# whichever page includes it and wires it up. Every .dirpick is present in
+# the server-rendered HTML from the start (none are added by JS later), so
+# one pass over the DOM at load time is enough -- no MutationObserver, no
+# re-init hook.
+DIRPICK_JS = r"""
+(function () {
+  'use strict';
+  function debounce(fn, ms) {
+    var t = null;
+    return function () {
+      var args = arguments, self = this;
+      clearTimeout(t);
+      t = setTimeout(function () { fn.apply(self, args); }, ms);
+    };
+  }
+  function row(d) {
+    var li = document.createElement('li');
+    li.setAttribute('role', 'option');
+    li.dataset.path = d.path;
+    var show = d.show || d.path, slash = show.lastIndexOf('/');
+    if (slash >= 0) {
+      var rest = document.createElement('span');
+      rest.className = 'rest';
+      rest.textContent = show.slice(0, slash + 1);
+      li.appendChild(rest);
+    }
+    var b = document.createElement('b');
+    b.textContent = slash >= 0 ? show.slice(slash + 1) : show;
+    li.appendChild(b);
+    return li;
+  }
+  function wire(box) {
+    var input = box.querySelector('input[name=dir]'), list = box.querySelector('.dirlist');
+    if (!input || !list) return;
+    var uid = 'dp' + Math.random().toString(36).slice(2), items = [], active = -1, seq = 0, blurT = null;
+
+    function close() {
+      list.hidden = true; list.innerHTML = ''; items = []; active = -1;
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+    }
+    function highlight(i) {
+      items.forEach(function (li) { li.removeAttribute('aria-selected'); });
+      active = i;
+      if (i >= 0 && items[i]) {
+        items[i].setAttribute('aria-selected', 'true');
+        items[i].scrollIntoView({block: 'nearest'});
+        input.setAttribute('aria-activedescendant', items[i].id);
+      } else {
+        input.removeAttribute('aria-activedescendant');
+      }
+    }
+    function open(dirs) {
+      list.innerHTML = '';
+      items = dirs.map(function (d, i) {
+        var li = row(d); li.id = uid + '-' + i; list.appendChild(li); return li;
+      });
+      if (!items.length) { close(); return; }
+      list.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+      highlight(-1);
+    }
+    var query = debounce(function () {
+      var q = input.value.trim(), mine = ++seq;
+      fetch('/api/dirs?q=' + encodeURIComponent(q), {cache: 'no-store'})
+        .then(function (r) { if (!r.ok) throw 0; return r.json(); })
+        .then(function (data) { if (mine === seq) open(data.dirs || []); })
+        .catch(function () { if (mine === seq) close(); });
+    }, 80);
+
+    input.addEventListener('focus', query);
+    input.addEventListener('input', query);
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        if (list.hidden || !items.length) return;
+        e.preventDefault();
+        var n = items.length;
+        highlight(e.key === 'ArrowDown' ? (active + 1) % n : (active - 1 + n) % n);
+      } else if (e.key === 'Enter') {
+        if (!list.hidden && active >= 0 && items[active]) {
+          e.preventDefault();
+          input.value = items[active].dataset.path;
+          close();
+        }   // else: let the form submit normally
+      } else if (e.key === 'Tab') {
+        if (list.hidden || !items.length) return;
+        e.preventDefault();
+        var pick = items[active >= 0 ? active : 0];
+        input.value = pick.dataset.path.replace(/\/+$/, '') + '/';
+        query();
+      } else if (e.key === 'Escape') {
+        if (!list.hidden) { e.stopPropagation(); close(); }
+      }
+    });
+    list.addEventListener('pointerdown', function (e) {
+      var li = e.target.closest('li');
+      if (!li) return;
+      e.preventDefault();   // keep focus on input -- no blur before this runs
+      clearTimeout(blurT);
+      input.value = li.dataset.path;
+      close();
+    });
+    input.addEventListener('blur', function () { blurT = setTimeout(close, 150); });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.dirpick'), wire);
+})();
+"""
+
 
 # Outline icons, 1.5px stroke, currentColor. Inline SVG only -- no icon font.
 def _svg(body, size=16, cls="i"):
@@ -1896,7 +2222,7 @@ I_DOTS = ('<svg class="i" viewBox="0 0 24 24" width="18" height="18" fill="curre
           'aria-hidden="true"><circle cx="5.5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/>'
           '<circle cx="18.5" cy="12" r="1.6"/></svg>')
 
-CSS = TOKENS + FX_CSS + FX_CSS_LAND + """
+CSS = TOKENS + FX_CSS + FX_CSS_LAND + DIRPICK_CSS + """
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg-primary);color:var(--text-primary);
@@ -2004,8 +2330,6 @@ details.card[open] summary::before,details.inline[open] summary::before{content:
 .save input[type=checkbox]{width:18px;height:18px;flex:none;appearance:auto;-webkit-appearance:auto;
   accent-color:var(--accent)}
 .save label{font-family:var(--font-ui);color:var(--text-secondary)}
-.dirline{display:flex;flex-wrap:wrap;gap:var(--space-2)}
-.dirline select,.dirline input{flex:1 1 180px;width:auto;min-width:0}
 
 /* overflow menu (glass) */
 [hidden]{display:none!important}
@@ -2101,7 +2425,6 @@ details.tool[open] .chev{transform:rotate(180deg)}
   accent-color:var(--accent)}
 .ab:has(input:checked){color:var(--accent)}
 @media (pointer:coarse){.ab input{width:20px;height:20px}}
-.tool .dirline{margin:var(--space-2) 0 0}
 .tool .tbody .note:first-child{margin-top:var(--space-2)}
 .tool .docs{display:inline-block;margin-top:var(--space-2)}
 
@@ -2201,9 +2524,8 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     if (!cb || !cb.form) return;
     if (cb.dataset.picker && cb.form.elements.dir) {{
       var card = cb.closest('details.tool');
-      var sel = card && card.querySelector('.dirline select');
-      var typed = card && card.querySelector('.dirline input[name=dir_custom]');
-      cb.form.elements.dir.value = (typed && typed.value.trim()) || (sel && sel.value) || '';
+      var input = card && card.querySelector('.dirpick input[name=dir]');
+      cb.form.elements.dir.value = (input && input.value.trim()) || '';
     }}
     cb.form.submit();
   }});
@@ -2235,15 +2557,14 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
   syncStart();
 }})();
 </script>
+<script>{dirpick_js}</script>
 </main></body></html>
 """
 
 START_CARD = """<h2>Start a session</h2>
 <div class="card"><form class="row" id="startform" method="post" action="/start">
   <div class="seg">{what_options}</div>
-  <div class="dirline">
-    <select id="dir" name="dir">{dirs}</select>
-    <input name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="…or type a path (created if new)" value="{dir_custom}"></div>
+  {dirpicker}
   <input id="name" name="name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Name (optional), e.g. 3d-lab" value="{name}">
   <div id="cmdwrap">
     <textarea id="cmd" name="cmd" rows="2" autocapitalize="off" spellcheck="false"
@@ -2265,9 +2586,7 @@ ADD_SHORTCUT_CARD = """<details class="card" id="addsc"{addsc_open}><summary>Add
   <div><label for="sc_cmd">Command to run</label>
   <textarea id="sc_cmd" name="cmd" rows="2" required autocapitalize="off" spellcheck="false" placeholder="e.g. ./deploy.sh &amp;&amp; docker compose logs -f">{sc_cmd}</textarea></div>
   <div><label for="sc_dir">Directory</label>
-  <select id="sc_dir" name="dir">{dirs}</select></div>
-  <div><label for="sc_dir_custom">…or type a path (created if new)</label>
-  <input id="sc_dir_custom" name="dir_custom" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="~/new-or-existing/dir"></div>
+  {dirpicker}</div>
   <button class="btn wide" type="submit">Save shortcut</button>
 </form></details>"""
 
@@ -2332,7 +2651,7 @@ TERM_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 {pwa_links}
-<style>{tokens}{fx_css}{fx_css_term}
+<style>{tokens}{fx_css}{fx_css_term}{dirpick_css}
 *{{box-sizing:border-box}}
 html,body{{margin:0;height:100%;background:#000;color:var(--text-primary);
   font:14px/1.4 var(--font-ui);overflow:hidden;overscroll-behavior:none;-webkit-text-size-adjust:100%}}
@@ -2474,8 +2793,7 @@ body.popout #popout,body.touch #popout{{display:none}}
 <form id="pop" autocomplete="off">
   <div class="kinds">{kinds}</div>
   <div><label>Name</label><input name="name" autocapitalize="off" spellcheck="false" placeholder="Name (optional), e.g. fit-app"></div>
-  <div><label>Directory</label><select name="dir">{dirs}</select></div>
-  <div><label>…or type a path (created if new)</label><input name="dir_custom" autocapitalize="off" spellcheck="false" placeholder="~/new-or-existing/dir"></div>
+  <div><label>Directory</label>{dirpicker}</div>
   <div class="err" id="err"></div>
   <button class="btn" type="submit">Start &amp; open</button>
   <button class="fxt" id="fxt" type="button">CRT fx: on</button>
@@ -2506,6 +2824,7 @@ body.popout #popout,body.touch #popout{{display:none}}
   <pre id="screen-text"></pre>
 </div>
 <script>window.SJ = {{term: {term_path_json}, name: {name_json}, title: {title_json}}};</script>
+<script>{dirpick_js}</script>
 <script src="/app.js"></script>
 </body></html>
 """
@@ -2943,17 +3262,21 @@ def kind_options():
         for i, (k, (_, label)) in enumerate(tool_kinds().items()))
 
 
-def dir_options():
-    """<option> list for every directory picker on the page. ~ always comes
-    first and pre-selected -- dir_choices()'s own order (a real project dir
-    first, ~ last) is untouched, only reordered here, so every picker on the
-    page defaults to the same place."""
-    dirs = dir_choices()
-    ordered = [HOME] + [d for d in dirs if d != HOME]
-    return "\n".join(
-        f'<option value="{esc(d)}"{" selected" if d == HOME else ""}>'
-        f'{esc(d.replace(HOME, "~", 1))}</option>'
-        for d in ordered)
+def dir_picker(value="", input_id=None):
+    """The one directory-picker combobox, used on the Start card, every tool
+    card, the Add-shortcut card and the terminal's #pop form. DIRPICK_JS finds
+    every ".dirpick" on the page and wires it up: it fetches GET /api/dirs?q=
+    as you type and on Tab/Enter/pointer picks. An empty value means ~
+    (resolve_dir() falls back to HOME); a typed path that doesn't exist yet is
+    created when the form is submitted, a picked suggestion always exists."""
+    idattr = f' id="{esc(input_id)}"' if input_id else ""
+    return (
+        f'<div class="dirpick"><input{idattr} name="dir" role="combobox" '
+        'aria-autocomplete="list" aria-expanded="false" autocomplete="off" '
+        'autocapitalize="off" spellcheck="false" '
+        'placeholder="~ — type a folder name or path" '
+        f'value="{esc(value)}">'
+        '<ul class="dirlist" role="listbox" hidden></ul></div>')
 
 
 def note(text):
@@ -2976,7 +3299,7 @@ def orow(label, note_text, buttons, hint="", cls=""):
             + (f'<span class="hint">{hint}</span>' if hint else "") + "</div>")
 
 
-def tool_card(t, st, dirs, open_=False):
+def tool_card(t, st, open_=False):
     """One row of the agents accordion: a summary that is readable while
     collapsed, and a body with one option row per way of starting the tool."""
     tid = t["id"]
@@ -3025,9 +3348,7 @@ def tool_card(t, st, dirs, open_=False):
     # says in its value which route it wants (see the module docstring). The
     # daemon and the server's Stop keep their own forms (no directory, and a
     # confirm of their own); their buttons sit in the option rows via form=.
-    dirline = (f'<div class="dirline"><select name="dir">{dirs}</select>'
-               '<input name="dir_custom" autocomplete="off" autocapitalize="off"'
-               ' spellcheck="false" placeholder="\u2026or type a path (created if new)"></div>')
+    dirline = dir_picker()
 
     def main_form(inner, with_dir=True):
         return ('<form method="post" action="/tools">' + hid
@@ -3178,7 +3499,6 @@ def wants_agent_card(t, st):
 
 def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc_cmd="",
            addsc_open=False, save_open=False, open_tool="", what="shell"):
-    dirs = dir_options()
     sess = sessions()
     if sess:
         cards = "\n".join(SESSION_CARD.format(
@@ -3227,19 +3547,19 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
         # All rows collapsed, except the one whose button produced this error.
         card_pairs = [(t, st) for t, st in pairs if wants_agent_card(t, st)]
         if card_pairs:
-            agents = "\n".join(tool_card(t, st, dirs, open_=(t["id"] == open_tool))
+            agents = "\n".join(tool_card(t, st, open_=(t["id"] == open_tool))
                                for t, st in card_pairs)
         else:
             agents = ('<div class="empty">Nothing to set up: every agent is installed and '
                       'starts from the top of the page.</div>')
 
     body = "\n".join([
-        START_CARD.format(dirs=dirs, dir_custom=esc(dir_custom), cmd=esc(cmd), label=esc(label),
+        START_CARD.format(dirpicker=dir_picker(dir_custom, "dir"), cmd=esc(cmd), label=esc(label),
                           name=esc(name), save_open=" open" if save_open else "",
                           what_options="\n".join(what_opts)),
         "<h2>Shortcuts</h2>", shortcuts,
-        ADD_SHORTCUT_CARD.format(dirs=dirs, sc_label=esc(sc_label), sc_cmd=esc(sc_cmd),
-                                 addsc_open=" open" if addsc_open else ""),
+        ADD_SHORTCUT_CARD.format(dirpicker=dir_picker(input_id="sc_dir"), sc_label=esc(sc_label),
+                                 sc_cmd=esc(sc_cmd), addsc_open=" open" if addsc_open else ""),
         "<h2>Sessions</h2>", cards,
         "<h2>Agent servers</h2>",
         '<p class="hint">Install, log in, and the background servers the phone apps connect '
@@ -3248,17 +3568,17 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
     ])
     err = "".join(f'<div class="err">{esc(e)}</div>' for e in (error, tools_error) if e)
     return PAGE.format(css=CSS, error=err, body=body, title=esc(TITLE), glyph=I_LOGO,
-                       pwa_links=PWA_LINKS,
+                       pwa_links=PWA_LINKS, dirpick_js=DIRPICK_JS,
                        sysline=system_line(), fx_class=FX_CLASS, version=esc(VERSION))
 
 
 def render_term(name, popout=False):
     return TERM_PAGE.format(
-        name=esc(name), src=esc(ttyd_src(name)), dirs=dir_options(), kinds=kind_options(),
+        name=esc(name), src=esc(ttyd_src(name)), dirpicker=dir_picker(), kinds=kind_options(),
         title=esc(TITLE), tokens=TOKENS, pwa_links=PWA_LINKS, logo=logo_svg(28),
         i_dots=I_DOTS, i_plus=I_PLUS, i_keys=I_KEYBOARD, i_popout=I_POPOUT,
         i_close=I_CLOSE, i_send=I_SEND, i_refresh=I_REFRESH,
-        fx_css=FX_CSS, fx_css_term=FX_CSS_TERM,
+        fx_css=FX_CSS, fx_css_term=FX_CSS_TERM, dirpick_css=DIRPICK_CSS, dirpick_js=DIRPICK_JS,
         term_path_json=js(TERM_PATH), name_json=js(name), title_json=js(TITLE),
         body_class=' class="%s"' % " ".join(
             filter(None, ["popout" if popout else "", FX_CLASS])))
@@ -3532,6 +3852,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(ICON_PNG, "image/png", etag=ICON_REV)
         if path == "/api/sessions":
             return self.send_json(sessions())
+        if path == "/api/dirs":
+            q = parse_qs(urlparse(self.path).query)
+            status_code, obj = dir_search((q.get("q") or [""])[0])
+            return self.send_json(obj, status_code)
         if path == "/api/windows":
             q = parse_qs(urlparse(self.path).query)
             name = (q.get("name") or [""])[0]
