@@ -445,7 +445,12 @@ JSON
 result "rerun exits 0" "0" "$DLG_RC"
 env_after=$(docker exec --user ts1 "$TESTER" bash -c 'sha256sum ~/.config/serverjack/env' | awk '{print $1}')
 result "env file unchanged by 'nothing'" "$env_before" "$env_after"
-active=$(docker exec --user ts1 "$TESTER" bash -c 'systemctl --user is-active serverjack 2>/dev/null')
+# Needs its own XDG_RUNTIME_DIR (systemctl --user can't find the right bus
+# without it) -- every other systemctl --user check in this file goes
+# through serverjack-setup, which sets a sane default internally; this is
+# the one place that calls systemctl directly. Found by this exact check
+# printing nothing instead of "active" for a unit that really was running.
+active=$(docker exec --user ts1 "$TESTER" bash -c 'export XDG_RUNTIME_DIR="/run/user/$(id -u)"; systemctl --user is-active serverjack 2>/dev/null')
 result "serverjack still active after 'nothing'" "active" "$active"
 
 echo
