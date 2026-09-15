@@ -20,16 +20,21 @@
 #       names the browser used.
 # reconnect stays ON: phones drop the socket on screen lock; ttyd re-attaches.
 #
-# The terminal's color theme is NOT set here. bin/serverjack builds it from
-# its own TOKENS (_term_theme()) and passes it as ?theme=<json> on the iframe
-# URL it points at this ttyd (ttyd_src()) -- the client applies a URL
-# query's theme last, after anything -t sent it, so it would otherwise
-# always win over a -t theme=... in TTYD_EXTRA_ARGS below. bin/serverjack
-# detects one there (_ttyd_extra_args_has_theme()) and skips its own theme
-# in that case, so this file's -t theme=... is what actually applies.
-# Keeping the default theme out of this file means there is exactly one
-# place the colors are written down. SERVERJACK_TERM_THEME (README's config
-# table) opts out, read in bin/serverjack, not here.
+# The terminal's color theme (background/foreground/ANSI colors, built from
+# bin/serverjack's own TOKENS) is asked for below, as JSON, via
+# `serverjack --print-theme`, and passed to ttyd as a real -t theme=...
+# server option -- not a ?theme=... URL query, which is how an earlier
+# version of this delivered it: ttyd's client applies a URL query's theme
+# last, so that always wins, but only on ttyd clients new enough to read a
+# URL query at all. Older ttyd (still what some distros' package archives
+# ship) silently ignores it, leaving the terminal in ttyd's stock look. A
+# plain -t theme=... works on every ttyd version this project has ever
+# supported. --print-theme prints nothing when there's nothing to add:
+# SERVERJACK_TERM_THEME=off (README's config table), or TTYD_EXTRA_ARGS
+# already setting its own -t theme=... (it reads the same TTYD_EXTRA_ARGS
+# this process does, so it sees exactly what's about to be parsed below).
+# Keeping the default theme's colors out of this file means there is
+# exactly one place they are written down.
 set -euo pipefail
 here=$(dirname "$(readlink -f "$0")")
 
@@ -147,6 +152,22 @@ for word in words:
   done
 fi
 
+# See the theme comment near the top of this file. Failure here (bin/
+# serverjack itself failing to even start, e.g. a broken install) degrades
+# to starting ttyd without a generated theme rather than refusing to start
+# the terminal at all -- explicit `if` on the assignment, not a bare
+# command substitution, so `set -e` doesn't abort this script on it.
+theme_args=()
+if theme_json=$(python3 "$here/serverjack" --print-theme); then
+  [[ -n $theme_json ]] && theme_args=(-t "theme=$theme_json")
+else
+  echo "serverjack-ttyd: --print-theme failed -- starting without a generated theme" >&2
+fi
+
+# theme_args before "${extra[@]}": ttyd keeps the *last* value it sees for a
+# repeated -t key (verified against the bundled build), so if a user's own
+# -t theme=... in TTYD_EXTRA_ARGS ever disagreed with --print-theme's own
+# detection of it, theirs -- appearing later -- is still what wins.
 exec ttyd -i "$sock" -W -a -O \
   -t "titleFixed=${SERVERJACK_TITLE:-serverjack}" -t disableLeaveAlert=true \
-  "${extra[@]}" "$here/tmux-attach.sh"
+  "${theme_args[@]}" "${extra[@]}" "$here/tmux-attach.sh"

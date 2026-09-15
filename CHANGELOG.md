@@ -11,14 +11,26 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 - Terminal uses the app's color theme by default (`SERVERJACK_TERM_THEME=off`
   to keep ttyd's default). The theme is generated once, in `bin/serverjack`,
-  from the same `TOKENS` the rest of the app uses (`_term_theme()`), and
-  passed to ttyd on the terminal iframe's own URL (`?theme=...`) instead of
-  being hand-typed into `bin/serverjack-ttyd`'s `-t theme=...`, which no
-  longer sets a theme at all. A `-t theme=...` (or `--client-option[=]theme=...`)
-  of your own in `TTYD_EXTRA_ARGS` is now detected automatically
-  (`_ttyd_extra_args_has_theme()`) and skips generating the default in
-  favor of it -- without that, the generated theme would silently win,
-  since it's the URL query that ttyd's client applies last.
+  from the same `TOKENS` the rest of the app uses (`_term_theme()`), instead
+  of being hand-typed into `bin/serverjack-ttyd`. `bin/serverjack-ttyd` asks
+  for it as JSON (`serverjack --print-theme`, a new flag) and passes it to
+  ttyd as a real `-t theme=...` server option. This was briefly a
+  `?theme=...` URL query instead -- ttyd's client applies that last, so it
+  seemed like the more robust mechanism, but only ttyd clients new enough to
+  read a URL query at all actually do; older ttyd (still what some distros'
+  package archives ship) silently ignores it and falls back to its stock
+  look. A `-t theme=...` server option works on every ttyd version this
+  project has ever supported. A `-t theme=...` (or
+  `--client-option[=]theme=...`) of your own in `TTYD_EXTRA_ARGS` is
+  detected automatically (`_ttyd_extra_args_has_theme()`) and
+  `--print-theme` prints nothing in that case, so `bin/serverjack-ttyd`
+  never prepends a second, conflicting `-t theme=...` ahead of yours.
+- CI now installs the exact ttyd version and binary `install.sh` pins for
+  real installs (`scripts/fetch-ttyd.sh`, called by both, fetch-and-verify
+  factored out of `install.sh` into one shared place) instead of
+  `apt-get install ttyd` -- ubuntu-24.04's archive carries 1.7.4, whose
+  client is the older one described above; that mismatch is exactly what
+  let the URL-query theme bug pass CI clean while working locally.
 - Tests no longer inherit `SERVERJACK_TERM_THEME` or `TTYD_EXTRA_ARGS` from
   the maintainer's own shell (both have been found already set there):
   `tests/run.sh` and `tests/security-wrapper.sh` now pin both explicitly so

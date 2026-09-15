@@ -428,7 +428,8 @@ FX_CLASS = "" if (os.environ.get("SERVERJACK_FX") or "").strip().lower() in (
     "0", "off", "no", "false") else "fx"
 # Terminal color theme: on unless SERVERJACK_TERM_THEME says otherwise (same
 # spellings as SERVERJACK_FX above). The theme itself is built from TOKENS
-# further down (_term_theme()) and handed to ttyd_src() -- see there and
+# further down (_term_theme()) and printed by `--print-theme` for
+# bin/serverjack-ttyd to pass to ttyd as -t theme=... -- see there and
 # docs/design/DESIGN.md's "Terminal theme" section for how and why.
 TERM_THEME_OFF = (os.environ.get("SERVERJACK_TERM_THEME") or "").strip().lower() in (
     "0", "off", "no", "false")
@@ -1642,17 +1643,18 @@ def _hex_rgb(h):
 def _term_theme():
     """The terminal's xterm.js color theme, generated from TOKENS instead of
     hand-typed -- this used to be duplicated in bin/serverjack-ttyd, this
-    function is now the only place it is written out. Handed to ttyd as
-    ?theme=<json> on the iframe src (see ttyd_src()): ttyd applies a URL
-    query's theme last, after any -t theme=... it was started with, so this
-    would always win over whatever bin/serverjack-ttyd does (nothing, now)
-    -- which is exactly why ttyd_src() skips calling this at all when
+    function is now the only place it is written out. Printed as JSON by
+    `python3 bin/serverjack --print-theme`, which bin/serverjack-ttyd calls
+    to get the value it hands ttyd as -t theme=... (a server option, not a
+    URL query -- ttyd clients too old to read a ?theme=... query, which is
+    how this used to be delivered, would otherwise silently ignore it).
+    TERM_THEME is None (so --print-theme prints nothing) when
     SERVERJACK_TERM_THEME=off, or when TTYD_EXTRA_ARGS already sets its own
     -t theme=... (TTYD_EXTRA_ARGS_HAS_THEME, from
     _ttyd_extra_args_has_theme()): the point of detecting that is to let the
-    user's own theme apply instead, not silently overwrite it. See
-    docs/design/DESIGN.md's "Terminal theme" section for the full key-by-key
-    mapping and reasoning.
+    user's own theme apply instead of bin/serverjack-ttyd adding a second,
+    conflicting -t theme=... after it. See docs/design/DESIGN.md's
+    "Terminal theme" section for the full key-by-key mapping and reasoning.
 
     Most keys reuse an app token outright. `cyan`/`brightCyan` and the plain
     `bright*` tints have no matching semantic role in the app UI -- xterm.js
@@ -2844,18 +2846,15 @@ def ttyd_src(name):                  # what the wrapper's frame loads
     # ttyd -a turns the single ?arg= into argv[1] for bin/tmux-attach.sh: the
     # session name. TERM_PATH is served by this same process (proxy_term).
     #
-    # &theme=... is how the terminal gets its color theme: ttyd's client
-    # applies a URL query's theme last (after any -t theme=... it started
-    # with), so this is the single source of truth -- see _term_theme() and
-    # docs/design/DESIGN.md's "Terminal theme" section. Skipped entirely
-    # (TERM_THEME_JSON is then None) when SERVERJACK_TERM_THEME=off, or when
-    # TTYD_EXTRA_ARGS already sets its own -t theme=...: appending ours on
-    # top would otherwise silently win over the user's, since the URL query
-    # is exactly what applies last.
-    src = f"{TERM_PATH}?arg={quote(name, safe='')}"
-    if TERM_THEME_JSON:
-        src += f"&theme={quote(TERM_THEME_JSON, safe='')}"
-    return src
+    # No theme is carried on this URL: an earlier version passed it as
+    # &theme=..., which ttyd's client applies last (after any -t theme=...
+    # it started with) -- but only on ttyd clients new enough to read a URL
+    # query at all. Older ttyd (still what ships in some distros' package
+    # archives) silently ignores it, so the terminal fell back to ttyd's
+    # stock look. The theme is a -t theme=... server option now instead
+    # (bin/serverjack-ttyd, via `--print-theme`, see _term_theme()), which
+    # every version this project has ever supported understands.
+    return f"{TERM_PATH}?arg={quote(name, safe='')}"
 
 
 def js(obj):
@@ -4052,9 +4051,26 @@ class UnixHTTPServer(ThreadingHTTPServer):
 
 
 if __name__ == "__main__":
-    # No argparse: two flags, neither taking a value, don't earn the import.
+    # No argparse: a handful of flags, none taking a value, don't earn the
+    # import.
     if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V"):
         print(f"serverjack {VERSION}")
+        raise SystemExit(0)
+    if len(sys.argv) > 1 and sys.argv[1] == "--print-theme":
+        # What bin/serverjack-ttyd calls to get the terminal's -t theme=...
+        # value -- see TERM_THEME_JSON above. Prints nothing (exit 0, no
+        # output) when there is nothing to add: SERVERJACK_TERM_THEME=off,
+        # or TTYD_EXTRA_ARGS (read the same way the wrapper itself will see
+        # it -- _ttyd_extra_args_env()) already sets its own -t theme=...
+        # This used to be delivered as a ?theme=... URL query instead (ttyd
+        # applies that last, so it would always have won anyway) but that
+        # only works on ttyd clients new enough to read it -- CI's pinned
+        # ttyd is the same one real installs get, and older ttyd silently
+        # ignores the query entirely. A plain -t theme=... server option
+        # works on every version this project has ever supported, so that's
+        # the only delivery mechanism now.
+        if TERM_THEME_JSON:
+            print(TERM_THEME_JSON)
         raise SystemExit(0)
     if len(sys.argv) > 1 and sys.argv[1] in ("--check", "--doctor"):
         check_lines, check_ok = self_check()

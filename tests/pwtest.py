@@ -49,7 +49,13 @@ def ok(label, cond, extra=""):
     global fails
     if not cond:
         fails += 1
-    print(("  PASS " if cond else "  FAIL ") + label + (("  -- " + extra) if extra and not cond else ""))
+    # str(extra): a non-string extra (a dict off page.evaluate(), say) must
+    # not crash the whole suite on a FAIL -- that's strictly worse than the
+    # failure it was reporting. Caught for real: this used to be a bare
+    # `extra`, and a dict there turned one theme-check FAIL into a
+    # TypeError that aborted pwtest.py before any later suite in the same
+    # run.sh invocation got a chance to run.
+    print(("  PASS " if cond else "  FAIL ") + label + (("  -- " + str(extra)) if extra and not cond else ""))
     return cond
 
 with sync_playwright() as p:
@@ -69,9 +75,10 @@ with sync_playwright() as p:
     ok("bar shows current tab", page.locator("#tabs .tab.on").inner_text() == SESS)
     ok("terminal textarea focused", page.evaluate("document.getElementById('frame').contentDocument.activeElement.className.includes('xterm-helper-textarea')"))
 
-    # bin/serverjack's generated theme (?theme=... on the iframe src --
-    # SERVERJACK_TERM_THEME unset in tests/run.sh's common env, so this
-    # instance gets it) should paint the terminal in the app's own
+    # bin/serverjack's generated theme (a real ttyd -t theme=... server
+    # option now, via `serverjack --print-theme` -- SERVERJACK_TERM_THEME
+    # unset and no theme in TTYD_EXTRA_ARGS in tests/run.sh's common env, so
+    # this instance gets it) should paint the terminal in the app's own
     # --bg-primary, not xterm.js's stock look. .xterm-screen and .xterm are
     # transparent in this ttyd/xterm.js build (checked directly:
     # getComputedStyle on both reports rgba(0,0,0,0) even with a theme
@@ -199,9 +206,12 @@ with sync_playwright() as p:
 
     # ---------- custom TTYD_EXTRA_ARGS theme wins over the generated one
     # run.sh's third instance starts with TTYD_EXTRA_ARGS='-t
-    # theme={"background":"#123456"}' -- bin/serverjack must detect that and
-    # skip appending its own &theme=... to the ttyd URL, or ttyd would apply
-    # the generated one last (URL queries win) and silently override this.
+    # theme={\"background\":\"#123456\"}'. bin/serverjack-ttyd's own
+    # --print-theme call must detect that (_ttyd_extra_args_has_theme(),
+    # reading the same TTYD_EXTRA_ARGS this process sees) and print nothing,
+    # so it never adds a second, conflicting -t theme=... of its own --
+    # ttyd keeps the *last* -t theme=... it sees, so an extra one after the
+    # user's would otherwise silently override it.
     THEME_BASE = os.environ.get("SERVERJACK_TEST_THEME_BASE", "")
     if THEME_BASE:
         b = p.chromium.launch()
@@ -212,9 +222,6 @@ with sync_playwright() as p:
         tfr = tpage.frame_locator("#frame")
         tfr.locator(".xterm-helper-textarea").wait_for(state="attached", timeout=15000)
         time.sleep(1.5)
-        src = tpage.get_attribute("#frame", "src")
-        ok("custom TTYD_EXTRA_ARGS theme: iframe src carries no &theme=",
-           "theme=" not in src, src)
         bg = tfr.locator(".xterm-viewport").evaluate("el => getComputedStyle(el).backgroundColor")
         ok("custom TTYD_EXTRA_ARGS theme: it, not the generated one, is what rendered",
            bg == "rgb(18, 52, 86)", bg)   # #123456

@@ -18,7 +18,7 @@
 #
 # What it does, all inside your own account:
 #   1. puts ttyd and fzf static binaries in ~/.local/bin (verified against
-#      checksums pinned in this script)
+#      pinned checksums -- ttyd's in scripts/fetch-ttyd.sh, fzf's own here)
 #   2. writes ~/.config/serverjack/env with defaults if it doesn't exist
 #   3. installs two *user* systemd units and starts them
 #   4. publishes serverjack with `tailscale serve` -- ONE mount, "/" (tailnet
@@ -89,17 +89,15 @@ done
 [[ $OPT_TITLE != *$'\n'* && $OPT_TITLE != *$'\r'* ]] \
   || { echo "--title cannot contain a newline" >&2; exit 1; }
 
-TTYD_VER=1.7.7
 FZF_VER=0.74.4
-# sha256 of every asset we might download, copied from the projects' own
-# published SHA256SUMS / checksums files. Pinned HERE on purpose: fetching the
-# checksum file from the same host as the binary proves only that the two
-# agree, so whoever can swap one can swap the other. A mismatch means the
-# release was re-cut or something is wrong -- check before bumping these.
+# sha256 of every fzf asset we might download, copied from the project's own
+# published checksums file. Pinned HERE on purpose: fetching the checksum
+# file from the same host as the binary proves only that the two agree, so
+# whoever can swap one can swap the other. A mismatch means the release was
+# re-cut or something is wrong -- check before bumping these. ttyd's own
+# version and checksums live in scripts/fetch-ttyd.sh instead, shared with
+# .github/workflows/ci.yml so both fetch the exact same binary.
 declare -A SHA256=(
-  [ttyd.x86_64]=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
-  [ttyd.aarch64]=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
-  [ttyd.armhf]=8240c8438b68d3b10b0e1a4e7c914d70fca6a7606b516f40bf40adfa1044d801
   [fzf-0.74.4-linux_amd64.tar.gz]=05e6813a337cc722c3ed07e54a764b75cc5d671e2e60459db0ba696ee5fa7504
   [fzf-0.74.4-linux_arm64.tar.gz]=5d673b849f494f0d64ec471d8640b153ca8849e3846a31da17abdcfce8df6b46
   [fzf-0.74.4-linux_armv7.tar.gz]=0c6e61c89e0932e65b89e6db414c67803b5c10c374ed6a3ab1e14e805eea8486
@@ -132,20 +130,17 @@ chmod 700 "$CFG_DIR"
 [[ ! -L $ENV_FILE ]] || { echo "$ENV_FILE is a symlink -- refusing" >&2; exit 1; }
 arch=$(uname -m)
 case "$arch" in
-  x86_64)  ttyd_asset=ttyd.x86_64;  fzf_asset=fzf-$FZF_VER-linux_amd64.tar.gz ;;
-  aarch64) ttyd_asset=ttyd.aarch64; fzf_asset=fzf-$FZF_VER-linux_arm64.tar.gz ;;
-  armv7l)  ttyd_asset=ttyd.armhf;   fzf_asset=fzf-$FZF_VER-linux_armv7.tar.gz ;;
+  x86_64)  fzf_asset=fzf-$FZF_VER-linux_amd64.tar.gz ;;
+  aarch64) fzf_asset=fzf-$FZF_VER-linux_arm64.tar.gz ;;
+  armv7l)  fzf_asset=fzf-$FZF_VER-linux_armv7.tar.gz ;;
   *) echo "unsupported arch $arch -- install ttyd and fzf yourself into $BIN" >&2; exit 1 ;;
 esac
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
-if ! "$BIN/ttyd" --version 2>/dev/null | grep -q "$TTYD_VER"; then
-  say "Installing ttyd $TTYD_VER -> $BIN/ttyd"
-  base=https://github.com/tsl0922/ttyd/releases/download/$TTYD_VER
-  fetch -o "$tmp/$ttyd_asset" "$base/$ttyd_asset"
-  verify "$ttyd_asset" "$ttyd_asset" "$base/SHA256SUMS"
-  install -m 755 "$tmp/$ttyd_asset" "$BIN/ttyd"
-fi
+# ttyd's own version, checksums and arch detection live in this script, not
+# here -- .github/workflows/ci.yml calls the same one, so CI tests against
+# the exact ttyd a real install gets, never a package archive's own version.
+bash "$REPO/scripts/fetch-ttyd.sh" "$BIN/ttyd"
 if ! "$BIN/fzf" --version 2>/dev/null | grep -q "^$FZF_VER"; then
   say "Installing fzf $FZF_VER -> $BIN/fzf"
   base=https://github.com/junegunn/fzf/releases/download/v$FZF_VER

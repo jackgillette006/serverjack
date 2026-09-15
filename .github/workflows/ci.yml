@@ -26,7 +26,17 @@ jobs:
       - name: Install host test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y tmux ttyd
+          sudo apt-get install --no-install-recommends -y tmux
+
+      - name: Install ttyd (pinned)
+        # Not `apt-get install ttyd`: ubuntu-24.04's archive carries 1.7.4,
+        # whose client does not apply a ?theme=... URL query at all -- real
+        # installs get whatever install.sh pins (see scripts/fetch-ttyd.sh,
+        # shared by both), and CI needs the same one or a real regression in
+        # that gap passes here silently. Installed where tests/run.sh's own
+        # `PATH="$HOME/.local/bin:$PATH"` already looks, matching a real
+        # install's layout.
+        run: bash scripts/fetch-ttyd.sh "$HOME/.local/bin/ttyd"
 
       - name: Run isolated browser and security tests
         run: bash tests/run.sh
@@ -56,7 +66,8 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/w -w /w koalaman/shellcheck-alpine:stable \
             shellcheck -S warning install.sh uninstall.sh bin/serverjack-ttyd \
-            bin/tmux-attach.sh bin/tmux-picker.sh tests/run.sh tests/security-wrapper.sh
+            bin/tmux-attach.sh bin/tmux-picker.sh tests/run.sh tests/security-wrapper.sh \
+            scripts/fetch-ttyd.sh
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
