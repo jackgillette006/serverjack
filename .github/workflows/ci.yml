@@ -113,7 +113,7 @@ jobs:
             bin/serverjack-ctl bin/serverjack-setup bin/serverjack-lib.sh \
             bin/tmux-attach.sh bin/tmux-picker.sh \
             tests/run.sh tests/security-wrapper.sh tests/managed-install.sh \
-            tests/guided-install.sh tests/launcher.sh \
+            tests/guided-install.sh tests/launcher.sh tests/ctl-health.sh \
             tests/fixtures/fake-tailscale.sh tests/fixtures/fake-sudo-wrapper.sh \
             tests/fixtures/prestart-hook.sh scripts/build-release.sh \
             scripts/export-launcher.sh bootstrap/serverjack-bootstrap.sh.in \
