@@ -208,6 +208,12 @@ else
   # stale one left behind if this account previously had a git checkout here.
   rm -f "$CFG_DIR/install-path"
 fi
+# The guided flow (prerequisites/Tailscale/allow-list): also always
+# installed, so `serverjack-ctl setup` and a later re-run both find it here
+# regardless of which channel this install came from. install.sh itself
+# stays non-interactive either way -- this only makes the interactive
+# entrypoint available, it never calls it.
+install -m 755 "$REPO/bin/serverjack-setup" "$BIN/serverjack-setup"
 
 # ---------------------------------------------------------------- config
 if [[ ! -f "$ENV_FILE" ]]; then

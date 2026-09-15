@@ -14,6 +14,9 @@
 #   serverjack-ctl uninstall [--yes]   remove the managed install (keeps
 #                                       ~/.config/serverjack and tmux)
 #   serverjack-ctl prune [--yes]       delete releases other than current/previous
+#   serverjack-ctl setup               re-run the guided prerequisites/Tailscale/
+#                                       allow-list flow (bin/serverjack-setup) --
+#                                       works for either channel
 #
 # `update` and `rollback` on a release-channel install: stage the new release
 # without touching the running one, back up the current unit files, env and
@@ -54,7 +57,7 @@ YES=0
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 
 usage() {
-  sed -n '2,26p' "${BASH_SOURCE[0]}" 2>/dev/null | sed 's/^# \{0,1\}//'
+  sed -n '2,34p' "${BASH_SOURCE[0]}" 2>/dev/null | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -893,6 +896,21 @@ cmd_uninstall() {
   fi
 }
 
+# -------------------------------------------------------------------- setup
+# Just an exec of the installed guided-setup script -- always
+# ~/.local/bin/serverjack-setup, since install.sh puts it there for both
+# channels (same as this file). It re-runs its own detect-an-existing-install
+# logic (which recognizes THIS install, git or release, and offers the rerun
+# menu instead of refusing) rather than duplicating any of that here.
+cmd_setup() {
+  local setup_bin="$HOME/.local/bin/serverjack-setup"
+  [[ -x $setup_bin ]] || {
+    echo "serverjack-setup is not installed (expected $setup_bin) -- run install.sh first, or from a checkout: bash bin/serverjack-setup" >&2
+    exit 1
+  }
+  exec "$setup_bin" "$@"
+}
+
 # -------------------------------------------------------------------- prune
 cmd_prune() {
   while (( $# )); do
@@ -936,6 +954,7 @@ main() {
     rollback)  with_lock cmd_rollback "$@" ;;
     uninstall) with_lock cmd_uninstall "$@" ;;
     prune)     with_lock cmd_prune "$@" ;;
+    setup)     with_lock cmd_setup "$@" ;;
     -h|--help|"") usage 0 ;;
     *) echo "unknown subcommand: $cmd" >&2; usage 1 >&2 ;;
   esac
