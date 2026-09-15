@@ -26,7 +26,6 @@ import struct
 import tempfile
 import unittest
 import zlib
-from urllib.parse import unquote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVERJACK_PATH = os.path.join(HERE, "..", "bin", "serverjack")
@@ -408,21 +407,18 @@ class TermThemeTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             mod._token("not-a-real-token")
 
-    def test_ttyd_src_carries_the_theme_as_json_on_the_url(self):
-        src = mod.ttyd_src("mysession")
-        self.assertTrue(src.startswith(mod.TERM_PATH + "?arg=mysession&theme="))
-        theme_qs = src.split("&theme=", 1)[1]
-        self.assertEqual(json.loads(unquote(theme_qs)), mod.TERM_THEME)
-
-    def test_ttyd_src_omits_theme_when_term_theme_json_is_none(self):
-        # What ttyd_src() actually branches on. The two ways it ends up None
-        # (SERVERJACK_TERM_THEME=off, or TTYD_EXTRA_ARGS already setting its
-        # own theme=...) are exercised directly against
-        # _ttyd_extra_args_has_theme() in TtydExtraArgsThemeTests below;
-        # this is the URL-building half of that same guarantee.
+    def test_ttyd_src_never_carries_a_theme(self):
+        # The theme is a -t theme=... server option now (bin/serverjack-ttyd
+        # asks for it via `serverjack --print-theme`), not a ?theme=... URL
+        # query: an earlier version delivered it that way, but ttyd clients
+        # too old to read a URL query at all (still what some distros' apt
+        # packages ship) silently ignore it -- exactly the gap that let this
+        # pass locally against a newer ttyd while failing CI's pinned one.
+        # ttyd_src() must never reintroduce it, regardless of TERM_THEME_JSON.
+        self.assertEqual(mod.ttyd_src("mysession"), mod.TERM_PATH + "?arg=mysession")
         old = mod.TERM_THEME_JSON
         try:
-            mod.TERM_THEME_JSON = None
+            mod.TERM_THEME_JSON = '{"background":"#123456"}'
             self.assertEqual(mod.ttyd_src("mysession"), mod.TERM_PATH + "?arg=mysession")
         finally:
             mod.TERM_THEME_JSON = old
