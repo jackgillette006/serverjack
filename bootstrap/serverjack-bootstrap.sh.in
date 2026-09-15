@@ -381,6 +381,38 @@ stage_and_activate() {  # $@ = install_args to persist (see write_install_json/f
     --set-args "$@"
 }
 
+# A10 (Codex): validates the flags this bootstrap is about to forward to
+# serverjack-setup (everything main()'s own loop below didn't consume
+# itself -- i.e. not --version/-h/--help) against exactly the set
+# serverjack-setup's own parse_flags() accepts, plus install.sh's legacy
+# --ttyd-port (accepted with a warning, same as install.sh itself does --
+# not rejected). Anything else -> usage and exit 2, called from main()
+# BEFORE refuse_root/download/stage -- a typo (or a flag install.sh has
+# since dropped) used to only be discovered by serverjack-setup AFTER a
+# release was already downloaded, verified, extracted and "current" already
+# swapped to it: a half-adopted install with nothing installed to actually
+# use it, since serverjack-setup's own usage() exits before ever running
+# install.sh.
+validate_install_args() {
+  while (( $# )); do
+    case "$1" in
+      --no-serve|--unix|--tcp) ;;
+      --port|--https-port|--title) shift ;;
+      --port=*|--https-port=*|--title=*) ;;
+      --ttyd-port)
+        echo "note: --ttyd-port is no longer needed (ttyd is behind serverjack now) -- ignored" >&2
+        shift ;;
+      --ttyd-port=*)
+        echo "note: --ttyd-port is no longer needed (ttyd is behind serverjack now) -- ignored" >&2 ;;
+      *)
+        echo "unknown option: $1" >&2
+        usage 2
+        ;;
+    esac
+    shift
+  done
+}
+
 main() {
   OPT_VERSION=
   local -a install_args=()
@@ -397,6 +429,10 @@ main() {
     echo "--version must look like X.Y.Z, got: $OPT_VERSION" >&2
     exit 1
   fi
+  # A10: BEFORE anything below (root check, the legacy/port-clash check,
+  # resolving a release, downloading, staging) -- see validate_install_args()'s
+  # own comment for why this ordering is the whole point.
+  validate_install_args ${install_args[@]+"${install_args[@]}"}
 
   # Only what THIS stage itself uses: fetching/verifying/staging the release
   # and its own lock. Deliberately NOT tmux (or anything else install.sh
