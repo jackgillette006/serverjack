@@ -1297,17 +1297,28 @@ def add_shortcut(label, cmd, cwd):
 # reconnects to the same session as soon as the new process is listening.
 
 UPDATE_ID = "builtin-update"
+# Absolute path: this runs inside a login shell in a fresh tmux session, not
+# necessarily with the unit's own PATH, and install.sh puts serverjack-ctl
+# at exactly this path for a managed install.
+SERVERJACK_CTL_PATH = os.path.join(HOME, ".local", "bin", "serverjack-ctl")
 if CHANNEL == "release":
-    # Absolute path: this runs inside a login shell in a fresh tmux session,
-    # not necessarily with the unit's own PATH, and install.sh puts
-    # serverjack-ctl at exactly this path for a managed install.
-    UPDATE_CMD = shlex.quote(os.path.join(HOME, ".local", "bin", "serverjack-ctl")) + " update"
+    UPDATE_CMD = shlex.quote(SERVERJACK_CTL_PATH) + " update"
 else:
     UPDATE_CMD = f"cd {shlex.quote(REPO)} && git pull --ff-only && bash install.sh"
 
 
 def update_available():
-    return CHANNEL in ("release", "git")
+    """A15: CHANNEL == "release" only means this process physically lives
+    under ~/.local/share/serverjack/releases/ (_install_channel() decides
+    that from realpath alone) -- NOT that ~/.local/bin/serverjack-ctl
+    actually exists there. A tarball someone extracted by hand into
+    releases/<v>/ (never run through the bootstrap or install.sh) is
+    exactly that case: the Update row used to show anyway and launch a
+    command that doesn't exist. Gate it on the binary UPDATE_CMD actually
+    runs being present and executable."""
+    if CHANNEL == "release":
+        return os.access(SERVERJACK_CTL_PATH, os.X_OK)
+    return CHANNEL == "git"
 
 
 # ---------- autostart: servers and daemons to bring up when serverjack starts

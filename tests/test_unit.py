@@ -824,6 +824,49 @@ class InstallChannelTests(unittest.TestCase):
                 self.assertEqual(self._channel_for(home, repo), ("release", "1.7.0"))
 
 
+class UpdateAvailableTests(unittest.TestCase):
+    """A15: CHANNEL == "release" only means this process physically lives
+    under ~/.local/share/serverjack/releases/ -- not that
+    ~/.local/bin/serverjack-ctl (what UPDATE_CMD actually runs) exists. A
+    tarball extracted by hand into releases/<v>/, never run through the
+    bootstrap or install.sh, is exactly that case: the "Update serverjack"
+    row used to show anyway and launch a command that doesn't exist."""
+
+    def setUp(self):
+        self._orig_channel = mod.CHANNEL
+        self._orig_ctl_path = mod.SERVERJACK_CTL_PATH
+
+    def tearDown(self):
+        mod.CHANNEL = self._orig_channel
+        mod.SERVERJACK_CTL_PATH = self._orig_ctl_path
+
+    def test_release_channel_with_serverjack_ctl_present(self):
+        d = tempfile.mkdtemp(prefix="sj-unit-ctl-")
+        _tmpdirs.append(d)
+        ctl = os.path.join(d, "serverjack-ctl")
+        with open(ctl, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(ctl, 0o755)
+        mod.CHANNEL, mod.SERVERJACK_CTL_PATH = "release", ctl
+        self.assertTrue(mod.update_available())
+
+    def test_release_channel_with_serverjack_ctl_missing(self):
+        d = tempfile.mkdtemp(prefix="sj-unit-ctl-")
+        _tmpdirs.append(d)
+        mod.CHANNEL = "release"
+        mod.SERVERJACK_CTL_PATH = os.path.join(d, "does-not-exist")
+        self.assertFalse(mod.update_available())
+
+    def test_git_channel_is_always_available(self):
+        mod.CHANNEL = "git"
+        mod.SERVERJACK_CTL_PATH = "/nonexistent/serverjack-ctl"
+        self.assertTrue(mod.update_available())
+
+    def test_unknown_channel_is_never_available(self):
+        mod.CHANNEL = "unknown"
+        self.assertFalse(mod.update_available())
+
+
 class ServerjackCtlUsageTests(unittest.TestCase):
     """bin/serverjack-ctl's usage() used to print its header comment via a
     hardcoded `sed -n '2,34p'` -- one line short of where the header
