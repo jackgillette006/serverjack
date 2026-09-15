@@ -233,7 +233,7 @@ for _ in $(seq 1 30); do
   sleep 0.5
 done
 
-USERS=(prereq_a prereq_b notty ts1 ts2 ts3 ts4 ts5 ts6 ts7 ts8)
+USERS=(prereq_a prereq_b notty ts1 ts2 ts3 ts4 ts5 ts6 ts7 ts8 ts9)
 for u in "${USERS[@]}"; do
   docker exec "$TESTER" useradd -m -s /bin/bash "$u"
   docker exec "$TESTER" loginctl enable-linger "$u"
@@ -286,6 +286,22 @@ check_serve_mapping() {  # $1 label  $2 user  $3 https_port  $4 expected backend
   out=$(docker exec --user "$user" "$TESTER" bash -c 'tailscale serve status' 2>&1)
   contains "$label: serve status shows https port $https" "$out" ":$https "
   contains "$label: serve status proxies to $want" "$out" "proxy $want"
+}
+
+# B2: the negative of check_serve_mapping -- proves a mapping is REALLY gone
+# (this installation's own remove_owned_mapping actually ran and succeeded),
+# not merely that install.sh was told --no-serve / a different port while
+# the old tailscale serve route kept proxying here regardless.
+check_no_serve_mapping() {  # $1 label  $2 user  $3 https_port
+  local label=$1 user=$2 https=$3 out
+  out=$(docker exec --user "$user" "$TESTER" bash -c 'tailscale serve status' 2>&1)
+  if [[ $out == *":$https "* ]]; then
+    echo "  FAIL $label -- https port $https still has a mapping:"
+    echo "$out" | sed 's/^/    | /'
+    failures=$((failures + 1))
+  else
+    echo "  PASS $label"
+  fi
 }
 
 env_val() {  # $1 user  $2 key -- reads ~/.config/serverjack/env inside the container
@@ -680,6 +696,66 @@ env_after=$(docker exec --user ts8 "$TESTER" bash -c 'sha256sum ~/.config/server
 result "ts8: env file unchanged by 'nothing'" "$env_before" "$env_after"
 active=$(docker exec --user ts8 "$TESTER" bash -c 'export XDG_RUNTIME_DIR="/run/user/$(id -u)"; systemctl --user is-active serverjack 2>/dev/null')
 result "ts8: serverjack still active after the git-checkout rerun" "active" "$active"
+
+echo "================================================================"
+echo "(p) B2: rerun menu's publish on/off/port-change actually change the route"
+reset_operator
+set_ts_state ts9 running "ivy@github" 0 0
+run_dialogue ts9 ts9 90 \
+  "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --port 7760" \
+  "-e SERVERJACK_RELEASE_BASE_URL=$BASE_URL" <<'JSON'
+[["Tailscale is running.", null],
+ ["Publish with tailscale serve", "y"],
+ ["Detected tailnet login: ivy@github", null],
+ ["Allow only this login?", "y"],
+ ["Do other people have Linux accounts on this machine?", "n"],
+ ["Run it now?", "y"],
+ ["not yet reachable from your phone", null]]
+JSON
+result "ts9 initial publish exits 0" "0" "$DLG_RC"
+check_serve_mapping "ts9 (initial, 443)" ts9 443 "http://127.0.0.1:7760"
+
+echo "  -- (p1) port change while staying published: the OLD port's owned"
+echo "     mapping must be gone once the new one is live"
+run_dialogue ts9port ts9 60 '~/.local/bin/serverjack-ctl setup --https-port 8443' "" <<'JSON'
+[["already installed here as a managed release", null],
+ ["Choice [1-4, default 4]:", "3"],
+ ["Tailscale is running.", null],
+ ["Publish with tailscale serve", "y"],
+ ["Detected tailnet login: ivy@github", null],
+ ["Allow only this login?", "y"],
+ ["not yet reachable from your phone", null]]
+JSON
+result "ts9 port change exits 0" "0" "$DLG_RC"
+check_serve_mapping "ts9 (new port 8443, B2)" ts9 8443 "http://127.0.0.1:7760"
+check_no_serve_mapping "ts9 (old port 443 gone after the port change, B2)" ts9 443
+
+echo "  -- (p2) on-to-off: must remove the owned mapping, not just skip serve"
+run_dialogue ts9off ts9 60 '~/.local/bin/serverjack-ctl setup' "" <<'JSON'
+[["already installed here as a managed release", null],
+ ["Choice [1-4, default 4]:", "3"],
+ ["Tailscale is running.", null],
+ ["Publish with tailscale serve", "n"],
+ ["not yet reachable from your phone", null]]
+JSON
+result "ts9 off exits 0" "0" "$DLG_RC"
+check_no_serve_mapping "ts9 off: https 8443 route actually removed (B2)" ts9 8443
+[[ $(env_val ts9 SERVERJACK_ALLOW) == "ivy@github" ]] && echo "  PASS ts9 off: allow-list untouched" \
+  || { echo "  FAIL ts9 off: allow-list -- got $(env_val ts9 SERVERJACK_ALLOW)"; failures=$((failures + 1)); }
+
+echo "  -- (p3) off-to-on: the allow-list question must be asked again, not"
+echo "     skipped for the local-only -> published transition"
+run_dialogue ts9on ts9 60 '~/.local/bin/serverjack-ctl setup' "" <<'JSON'
+[["already installed here as a managed release", null],
+ ["Choice [1-4, default 4]:", "3"],
+ ["Tailscale is running.", null],
+ ["Publish with tailscale serve", "y"],
+ ["Detected tailnet login: ivy@github", null],
+ ["Allow only this login?", "y"],
+ ["not yet reachable from your phone", null]]
+JSON
+result "ts9 off-to-on exits 0" "0" "$DLG_RC"
+check_serve_mapping "ts9 (republished, 8443, B2)" ts9 8443 "http://127.0.0.1:7760"
 
 echo
 if (( failures > 0 )); then
