@@ -507,8 +507,14 @@ to the whole tailnet, never a silent default; asks whether other Linux
 accounts share this machine (`--unix`); runs the one-time root steps
 (`loginctl enable-linger`, `tailscale set --operator`) inline, with your yes
 each time, instead of only printing them; then runs `install.sh` itself and
-verifies units, the loopback health check, and — when publishing — the
-tailnet URL, before printing the private address to open on your phone.
+checks units, the loopback health check, and — when publishing — that the
+tailnet URL answers, before printing the private address to open on your
+phone. That last check only confirms **the app answers locally** — it is
+not proof a phone can get in, and setup never claims it is: this process's
+own request carries no phone identity for tailscale to check (identity
+headers are only ever attached for traffic from another device), so a
+correctly `SERVERJACK_ALLOW`-restricted install can legitimately 403 itself.
+The real check is opening the printed URL on your own phone.
 
 Every question above has a matching flag, the same ones `install.sh` takes
 (`--no-serve`, `--tcp`/`--unix`, `--port N`, `--https-port N`, `--title

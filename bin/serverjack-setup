@@ -36,9 +36,13 @@
 #   7. Asks whether other Linux accounts share this machine (--unix).
 #   8. Runs the one-time root steps (linger, tailscale operator) inline,
 #      with your yes each time, instead of just printing them.
-#   9. Runs install.sh with everything resolved, then verifies: units
-#      active, loopback /healthz 200, and -- if publishing -- the tailnet
-#      URL itself, before declaring success.
+#   9. Runs install.sh with everything resolved, then checks: units active,
+#      loopback /healthz 200, and -- if publishing -- that the tailnet URL
+#      itself answers (C3: this confirms the app is reachable, never that
+#      SERVERJACK_ALLOW is keeping anyone out -- this process's own request
+#      carries no phone identity for tailscale to check, so a correctly
+#      restricted install can legitimately 403 itself; the real check is
+#      opening the URL on your phone).
 #
 # Flags -- the same ones install.sh takes, each one skipping the matching
 # question above instead of asking it (anything left unspecified is still
@@ -1042,12 +1046,26 @@ except Exception:
   fi
   local url="https://$host"; [[ $HTTPS_PORT != 443 ]] && url="$url:$HTTPS_PORT"; url="$url/"
   local code; code=$(local_http_code -m 10 "$url")
-  if [[ $code != 200 && -n ${TS_IP:-} ]]; then
+  # C3: 403 is not "unreachable" -- it is the opposite, the tailnet URL
+  # actually answered. This process's own request carries no phone identity
+  # for tailscale to check (identity headers are only ever attached for
+  # traffic FROM another device; a request from the server to its own
+  # public URL is exactly the case that can't have one), so a correctly
+  # SERVERJACK_ALLOW-restricted install can legitimately 403 itself --
+  # treating that as "not reachable" used to send someone chasing a DNS/
+  # serve problem that doesn't exist. Only retry the --resolve fallback for
+  # a code that might genuinely mean unreachable.
+  if [[ $code != 200 && $code != 403 && -n ${TS_IP:-} ]]; then
     code=$(local_http_code -m 10 --resolve "$host:$HTTPS_PORT:$TS_IP" "$url")
   fi
-  if [[ $code == 200 ]]; then
-    say "Ready: $url"
-    echo "Open it on your phone; Add to Home Screen for an app icon."
+  if [[ $code == 200 || $code == 403 ]]; then
+    say "The app answers locally at $url"
+    if [[ $code == 403 ]]; then
+      echo "This check itself got 403 -- expected, not a problem: it carries no identity for tailscale to attach (see above), so it only proves SERVERJACK_ALLOW is doing SOMETHING, never that a real phone gets through."
+    fi
+    # C3: never phrase this as "unauthorized users are denied" -- this
+    # self-check cannot establish that either way, whichever code it got.
+    echo "The real check is opening $url on your phone, not this message; Add to Home Screen there for an app icon once it works."
   else
     say "Installed locally at http://127.0.0.1:$port/; not yet reachable from your phone (tailnet check got HTTP $code)."
     echo "Remaining step: check \`tailscale serve status\` and DNS for $host, then re-run setup."
