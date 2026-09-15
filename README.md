@@ -36,6 +36,11 @@ Your coding agents, from your phone. Lightweight, private, self-hosted.
 
 ## Quick start
 
+Project page, with screenshots and what the guided setup asks:
+**<https://jackgillette.com/serverjack/>**. The one-command install below is the same
+thing the page serves as `curl -fsSL https://jackgillette.com/serverjack/install.sh | bash`
+(a thin launcher, `bootstrap/launcher.sh` here, that fetches the release bootstrap).
+
 Requirements: Linux, systemd, tmux, curl, and Python 3.10 or newer
 recommended (3.9 still works but is end-of-life upstream). Tailscale is
 optional but recommended.
