@@ -76,11 +76,22 @@ git_sha=$sha
 build_date=$build_date
 EOF
 
-# Deterministic archive: fixed mtime, numeric owner, sorted entries -- two
-# builds from the same tree (RELEASE's build_date aside, which is
-# deliberately real) produce byte-identical tarballs.
+# A12: fixed mtime, numeric owner, sorted entries -- two builds from the
+# same tree (run at different real times) produce byte-identical tarballs,
+# EXCEPT for RELEASE's own build_date field above, which is deliberately
+# real (a genuine record of when each build ran, not a reproducibility
+# input). --mtime USED TO reuse that same real, wall-clock $build_date,
+# which directly contradicted this comment: every file's mtime metadata
+# would differ between two builds of the identical tree run a minute apart.
+# SOURCE_DATE_EPOCH (the standard reproducible-builds convention) is
+# derived from the release COMMIT's own timestamp instead -- fixed for as
+# long as that commit is what's being released, however many times it gets
+# rebuilt. Falls back to the current time only when this isn't a git
+# checkout at all (git_sha above is "unknown" then too), which can't be
+# reproducible either way.
+SOURCE_DATE_EPOCH=$(git -C "$REPO" log -1 --format=%ct 2>/dev/null || date -u +%s)
 archive="$DIST/$name.tar.gz"
-tar --sort=name --mtime="$build_date" --owner=0 --group=0 --numeric-owner \
+tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
     -C "$stage" -czf "$archive" "$name"
 
 (cd "$DIST" && sha256sum "$(basename "$archive")" > SHA256SUMS)
