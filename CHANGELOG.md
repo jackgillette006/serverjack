@@ -27,9 +27,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
   `systemd --user`; finds actually-missing prerequisites (tmux, curl,
   python3, `ss`, tar, `sha256sum`, `flock`, ca-certificates — derived from
   what the scripts use, not the README's short list) and offers one
-  `sudo apt-get install`; refuses to silently take over an unrecognized
-  existing install or another account's serverjack on the same port; offers
-  to install/sign in to Tailscale or skip `tailscale serve` entirely for a
+  `sudo apt-get update && apt-get install -y ...`; for a genuinely fresh
+  install (not yet this account's own), refuses to silently take over an
+  unrecognized existing install or another account's serverjack already on
+  the target port; offers to install/sign in to Tailscale or skip `tailscale
+  serve` entirely for a
   self-managed reverse proxy; if publishing, asks who may reach it
   (`SERVERJACK_ALLOW`) — a detected single tailnet login by default, a typed
   list, or an explicit "yes" before ever leaving it open to the whole
