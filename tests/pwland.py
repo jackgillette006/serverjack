@@ -497,9 +497,12 @@ with sync_playwright() as p:
     default_sess = sess_from_url(page)
     MADE.append(default_sess)
     subprocess.run(T + ["send-keys", "-t", f"={default_sess}:", "pwd", "Enter"], capture_output=True)
-    out = wait_for(lambda: pane(default_sess) if pane(default_sess).rstrip().endswith("/projects") else "")
+    # Substring, not endswith(): the pane's last line by the time this is read
+    # is the *next* prompt (which also shows the cwd), not the bare pwd output
+    # line -- same convention the nested-dir check above already uses.
+    out = wait_for(lambda: pane(default_sess) if "/projects" in pane(default_sess) else "")
     ok("an empty Start lands the session in the new default dir",
-       out.rstrip().endswith("/projects"), out[-300:])
+       "/projects" in out, out[-300:])
 
     # The empty-query suggestion list now leads with the default dir itself,
     # then its own children (run.sh's fixture nests projects/ai/3d-lab under
@@ -522,6 +525,7 @@ with sync_playwright() as p:
        .startswith("~/projects "),
        page.locator("#pop input[name=dir]").get_attribute("placeholder"))
     page.goto(f"{BASE}/s/{default_sess}?popout=1")
+    page.click("#handle")   # popped-out windows start with #bar (and #add) hidden
     page.click("#add")
     ok("...and so does the popped-out terminal window",
        (page.locator("#pop input[name=dir]").get_attribute("placeholder") or "")
