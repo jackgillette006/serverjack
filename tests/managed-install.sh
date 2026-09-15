@@ -1152,6 +1152,22 @@ out=$(run_as tester6 "~/.local/bin/serverjack-ctl update" 2>&1); rc=$?
 [[ $rc -ne 0 ]] && echo "  PASS update after a full uninstall exits non-zero (no resurrection)" \
   || { echo "  FAIL update after a full uninstall exits non-zero -- got 0: $out"; failures=$((failures + 1)); }
 
+# A17: `serverjack-ctl setup` right after a full uninstall (no install-path,
+# no unit) used to die with "internal error: could not find install.sh" --
+# a perfectly ordinary "nothing installed" state reading like this tool
+# itself was broken. It must now say so plainly, not "internal error", and
+# point at the one-liner -- resolve_self() reaches this before any prompt,
+# so it needs no controlling terminal to fail this way.
+out=$(run_as tester6 "~/.local/bin/serverjack-ctl setup" 2>&1); rc=$?
+[[ $rc -ne 0 ]] && echo "  PASS tester6: setup after a full uninstall exits non-zero" \
+  || { echo "  FAIL tester6: setup after a full uninstall exited 0 -- got: $out"; failures=$((failures + 1)); }
+[[ $out == *"is not installed here"* ]] && echo "  PASS tester6: A17 -- says \"not installed\", not \"internal error\"" \
+  || { echo "  FAIL tester6: A17 -- expected \"is not installed here\" -- got: $out"; failures=$((failures + 1)); }
+[[ $out != *"internal error"* ]] && echo "  PASS tester6: no \"internal error\" wording for this ordinary state" \
+  || { echo "  FAIL tester6: still says \"internal error\" -- got: $out"; failures=$((failures + 1)); }
+[[ $out == *"curl -fsSL"* ]] && echo "  PASS tester6: points at the one-liner to reinstall" \
+  || { echo "  FAIL tester6: does not point at the one-liner -- got: $out"; failures=$((failures + 1)); }
+
 echo "================================================================"
 echo "== (y) A2: a fresh install that never becomes healthy keeps the"
 echo "     resumable \"installing\" marker -- a second curl|bash resumes,"
