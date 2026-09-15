@@ -413,6 +413,88 @@ validate_install_args() {
   done
 }
 
+# C1. Everything THIS stage itself needs (fetching/verifying/staging the
+# release, its own lock) -- deliberately NOT tmux or anything else
+# install.sh/serverjack-setup need: finding and offering to install ACTUAL
+# missing prerequisites, tmux included, is exactly what serverjack-setup
+# does next, and a hard requirement here would make that whole guided step
+# unreachable on a fresh machine that doesn't have tmux yet.
+#
+# A machine missing python3 used to fail here with a bare "missing
+# required command: python3" and exit 1 -- no install command, no offer to
+# fix it, and a caller (a script, or the exit code alone) couldn't tell
+# this apart from any other failure. Prints the exact apt/dnf command for
+# whatever's actually missing and, with a controlling terminal, offers to
+# run it with sudo (default no, same consent pattern as every other root
+# step this project ever takes -- see bin/serverjack-setup's
+# run_privileged()); without a terminal, or if declined, exits 2 with
+# nothing written under ~/.local/share/serverjack (this runs before
+# anything else in main() touches that at all).
+check_prerequisite_floor() {
+  local -a missing_bins=() missing_pkgs=()
+  local bin pkg
+  for bin in bash curl python3 tar sha256sum systemctl flock; do
+    command -v "$bin" >/dev/null 2>&1 || missing_bins+=("$bin")
+  done
+  # No single command proves CA certificates are installed -- dpkg's own
+  # record on an apt-based system, else fall back to the common trust-
+  # bundle paths (works across distros that don't use dpkg at all).
+  local have_ca=1
+  if command -v dpkg >/dev/null 2>&1; then
+    dpkg -s ca-certificates >/dev/null 2>&1 || have_ca=0
+  elif [[ ! -e /etc/ssl/certs/ca-certificates.crt && ! -e /etc/pki/tls/certs/ca-bundle.crt ]]; then
+    have_ca=0
+  fi
+  for bin in "${missing_bins[@]}"; do
+    case "$bin" in
+      bash)      pkg=bash ;;
+      curl)      pkg=curl ;;
+      python3)   pkg=python3 ;;
+      tar)       pkg=tar ;;
+      sha256sum) pkg=coreutils ;;
+      systemctl) pkg=systemd ;;
+      flock)     pkg=util-linux ;;
+      *)         pkg=$bin ;;
+    esac
+    [[ " ${missing_pkgs[*]:-} " == *" $pkg "* ]] || missing_pkgs+=("$pkg")
+  done
+  (( have_ca )) || missing_pkgs+=(ca-certificates)
+  (( ${#missing_pkgs[@]} == 0 )) && return 0
+
+  local install_cmd
+  if command -v apt-get >/dev/null 2>&1; then
+    install_cmd="sudo apt-get update && sudo apt-get install -y ${missing_pkgs[*]}"
+  elif command -v dnf >/dev/null 2>&1; then
+    install_cmd="sudo dnf install -y ${missing_pkgs[*]}"
+  else
+    install_cmd="install these yourself (no apt-get or dnf found): ${missing_pkgs[*]}"
+  fi
+  echo "Missing prerequisites: ${missing_pkgs[*]}" >&2
+  echo "  $install_cmd" >&2
+
+  if [[ $install_cmd == sudo* ]]; then
+    # Same /dev/tty-open-not-just-stat trick used everywhere else in this
+    # project: the path always "exists"; opening it (read+write) is what
+    # fails when there's truly no controlling terminal (a plain `curl |
+    # bash` with no pty, a non-interactive runner).
+    if { exec 8<>/dev/tty; } 2>/dev/null; then
+      local reply=
+      printf 'Install them now with sudo? [y/N] ' >&8
+      IFS= read -r reply <&8 || reply=""
+      exec 8>&-
+      case "${reply,,}" in
+        y|yes)
+          if eval "$install_cmd"; then
+            return 0
+          fi
+          echo "that failed -- install the missing prerequisites yourself, then re-run this." >&2
+          ;;
+      esac
+    fi
+  fi
+  exit 2
+}
+
 main() {
   OPT_VERSION=
   local -a install_args=()
@@ -434,15 +516,7 @@ main() {
   # own comment for why this ordering is the whole point.
   validate_install_args ${install_args[@]+"${install_args[@]}"}
 
-  # Only what THIS stage itself uses: fetching/verifying/staging the release
-  # and its own lock. Deliberately NOT tmux (or anything else install.sh
-  # needs) -- finding and offering to install actual missing prerequisites,
-  # tmux included, is exactly what bin/serverjack-setup does next; a hard
-  # requirement here would make phase C's whole guided-prerequisites step
-  # unreachable on a fresh machine that doesn't have tmux yet.
-  for c in curl sha256sum tar python3 systemctl flock; do
-    command -v "$c" >/dev/null 2>&1 || { echo "missing required command: $c" >&2; exit 1; }
-  done
+  check_prerequisite_floor
 
   refuse_root
   refuse_if_existing_install
