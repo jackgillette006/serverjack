@@ -363,20 +363,22 @@ stage_and_activate() {  # $@ = install_args to persist (see write_install_json/f
   ln -s "releases/$TARGET_VERSION" "$tmp_link"
   mv -T "$tmp_link" "$current"
 
+  # A3: bin/serverjack-lib.sh's shared update_install_json(), not a hand-
+  # rolled write -- the extracted release ($RELEASE_DIR, just staged above)
+  # carries its own copy, which is guaranteed to exist by this point. Every
+  # bootstrap-driven install is a FRESH one (refuse_if_existing_install()
+  # above refuses outright otherwise), so "previous" is always null here,
+  # same as before.
+  # shellcheck source=bin/serverjack-lib.sh
+  source "$RELEASE_DIR/bin/serverjack-lib.sh"
   local now; now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  local tmp_json; tmp_json=$(mktemp "$share/.install.json.XXXXXX")
-  python3 - "$TARGET_VERSION" "$now" "$@" > "$tmp_json" <<'PY'
-import json
-import sys
-
-version, installed_at = sys.argv[1], sys.argv[2]
-install_args = sys.argv[3:]
-json.dump({"channel": "release", "version": version, "installed_at": installed_at,
-           "previous": None, "install_args": install_args, "state": "installing"},
-          sys.stdout, indent=2)
-print()
-PY
-  mv -f "$tmp_json" "$share/install.json"
+  update_install_json "$share/install.json" \
+    channel release \
+    version "$TARGET_VERSION" \
+    installed_at "$now" \
+    previous __NULL__ \
+    state installing \
+    --set-args "$@"
 }
 
 main() {

@@ -848,41 +848,19 @@ build_install_args() {
 # installed_args()) replays what this install ACTUALLY ended up as, not a
 # partial or stale record.
 #
-# Same five-field shape bin/serverjack-ctl's own write_install_json() writes
-# (channel/version/installed_at/previous/install_args) -- version/
-# installed_at/previous are read back from what's already on disk (written
-# by bootstrap/serverjack-bootstrap.sh.in's stage_and_activate(), which this
-# never touches) rather than reconstructed here, so this stays a drop-in
-# match for that shape without needing its own copy of those values. A
-# "state" key, if bootstrap wrote "installing", is never carried forward --
-# by the time this runs, install.sh has already run to completion (and
-# cleared it itself; see the matching comment there), so its absence here
-# is correct, not a loss.
+# A3: uses bin/serverjack-lib.sh's shared update_install_json() (sourced in
+# main() below) instead of rewriting the whole document from a fixed set of
+# keys -- the old version rebuilt {channel, version, installed_at, previous,
+# install_args} from scratch every time, which silently DROPPED any OTHER
+# key a different writer had set, most importantly "state": "activating"
+# left by an interrupted `serverjack-ctl update`/`rollback` running
+# concurrently with (or just before) the rerun menu's publish option, which
+# also calls this. update_install_json's --set-args only ever touches
+# "install_args" -- every other key (state included, whatever it is) is
+# left exactly as it was.
 record_install_args() {
   [[ -f "$SHARE/install.json" ]] || return 0
-  local tmp; tmp=$(mktemp "$SHARE/.install.json.XXXXXX")
-  python3 - "$SHARE/install.json" "${INSTALL_ARGS[@]}" > "$tmp" <<'PY'
-import json
-import sys
-
-path, args = sys.argv[1], sys.argv[2:]
-try:
-    with open(path, encoding="utf-8") as fh:
-        doc = json.load(fh)
-    if not isinstance(doc, dict):
-        doc = {}
-except (OSError, ValueError):
-    doc = {}
-json.dump({
-    "channel": "release",
-    "version": doc.get("version"),
-    "installed_at": doc.get("installed_at"),
-    "previous": doc.get("previous"),
-    "install_args": args,
-}, sys.stdout, indent=2)
-print()
-PY
-  mv -f "$tmp" "$SHARE/install.json"
+  update_install_json "$SHARE/install.json" --set-args "${INSTALL_ARGS[@]}"
 }
 
 step9_install_and_verify() {

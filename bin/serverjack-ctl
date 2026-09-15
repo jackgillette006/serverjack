@@ -285,25 +285,24 @@ except Exception:
     pass' < "$INSTALL_JSON" 2>/dev/null
 }
 
+# A3: uses bin/serverjack-lib.sh's shared update_install_json() (resolve_lib()
+# above already sourced it) rather than hand-rolling a fixed-key write --
+# ctl IS the one caller that should fully control "state" (it's the only
+# place that ever sets "activating"), so it explicitly deletes that key
+# when $3 is empty rather than relying on preservation.
 write_install_json() {  # $1 version, $2 previous (may be empty), $3 state ("" or "activating"), $4.. install_args
-  local version=$1 previous=$2 state=$3 tmp
+  local version=$1 previous=$2 state=$3
   shift 3
+  local state_val=__DELETE__
+  [[ -n $state ]] && state_val=$state
   mkdir -p "$SHARE"
-  tmp=$(mktemp "$SHARE/.install.json.XXXXXX")
-  python3 - "$version" "$previous" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$state" "$@" > "$tmp" <<'PY'
-import json
-import sys
-
-version, previous, installed_at, state = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-install_args = sys.argv[5:]
-doc = {"channel": "release", "version": version, "installed_at": installed_at,
-       "previous": previous or None, "install_args": install_args}
-if state:
-    doc["state"] = state
-json.dump(doc, sys.stdout, indent=2)
-print()
-PY
-  mv -f "$tmp" "$INSTALL_JSON"
+  update_install_json "$INSTALL_JSON" \
+    channel release \
+    version "$version" \
+    installed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    previous "${previous:-__NULL__}" \
+    state "$state_val" \
+    --set-args "$@"
 }
 
 # Atomic symlink swap: $1 is what "current" should point at, either a path
