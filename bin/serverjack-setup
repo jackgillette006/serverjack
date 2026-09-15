@@ -66,8 +66,44 @@ SHARE=$HOME/.local/share/serverjack
 CFG_DIR=$HOME/.config/serverjack
 ENV_FILE=$CFG_DIR/env
 UNIT_DIR=$HOME/.config/systemd/user
+LOCK=$SHARE/.lock
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
+
+# ------------------------------------------------------------------- A4/lock
+# fd 9 on ~/.local/share/serverjack/.lock -- the SAME lock bin/serverjack-ctl's
+# with_lock() serializes update/rollback/uninstall/prune against. Neither
+# this script nor a plain `bash bin/serverjack-setup` used to take it at
+# all, even though ctl's own cmd_setup() already closes its inherited fd 9
+# before exec'ing here specifically so THIS script could take its own
+# (narrower) lock without deadlocking -- see that function's comment.
+# Without this, a `serverjack-ctl update` running at the same moment as a
+# guided setup (fresh install, or the rerun menu) could genuinely
+# interleave: both processes swapping "current", writing install.json and
+# restarting units with no coordination at all.
+#
+# Acquired NARROWLY, only around an actual block of mutation (install.sh's
+# run plus the install.json/env writes that go with it; the rerun menu's
+# allow-list or publish changes) -- never across an interactive prompt. A
+# guided session can sit at a prompt for as long as a human takes to
+# answer; holding the lock that whole time would make every OTHER
+# serverjack-ctl/serverjack-setup invocation on this account wait on a
+# human, not a computer. Always released again immediately after (lock_release),
+# and in particular BEFORE the rerun menu's "1) update" hands off to
+# `serverjack-ctl update` -- that spawns a NEW process which takes this
+# SAME lock itself; if we still held it (even just inherited, unclosed, by
+# that child), it would wait on us while we wait on it.
+lock_acquire() {
+  mkdir -p "$SHARE"
+  exec 9>"$LOCK"
+  if ! flock -n 9; then
+    say "Waiting for another serverjack-ctl/serverjack-setup run to finish..."
+    flock 9
+  fi
+}
+lock_release() {
+  exec 9>&- 2>/dev/null || true
+}
 
 usage() {
   sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -865,6 +901,20 @@ record_install_args() {
 
 step9_install_and_verify() {
   build_install_args
+  # A4: take the mutation lock now, right before the first actual write --
+  # everything before this point (steps 1-8) was prompts and read-only
+  # checks, which could genuinely take as long as a human takes to answer.
+  lock_acquire
+  # Revalidate under the lock: handle_existing_install() (way back at the
+  # start of main(), before any of the prompts step9 waited through) found
+  # no unit here -- but a concurrent bootstrap/`serverjack-ctl update` could
+  # have installed one in the meantime. Refuse rather than silently
+  # colliding with it now that we actually hold the lock.
+  if [[ -f "$UNIT_DIR/serverjack.service" ]]; then
+    lock_release
+    echo "serverjack was installed here by something else while this setup was running (unit now present: $UNIT_DIR/serverjack.service) -- refusing to also install. Re-run setup to see the rerun menu for whatever is there now." >&2
+    exit 1
+  fi
   # The allow-list, when this run resolved one, is passed via --allow above
   # (build_install_args) so install.sh itself writes it to the env file
   # before it starts or publishes anything -- there is deliberately no
@@ -874,6 +924,7 @@ step9_install_and_verify() {
   say "Running: bash install.sh ${INSTALL_ARGS[*]}"
   bash "$INSTALL_SH" "${INSTALL_ARGS[@]}"
   record_install_args
+  lock_release
   verify_and_report
 }
 
@@ -987,6 +1038,9 @@ rerun_publish_menu() {  # $1 old_listen  $2 old_https_port  $3 old_was_published
     check_serve_clash
   fi
   build_install_args
+  # A4: narrowly around the actual mutation, same as step9_install_and_verify
+  # -- everything above (the prompts) could take as long as a human takes.
+  lock_acquire
   bash "$INSTALL_SH" "${INSTALL_ARGS[@]}"
   record_install_args
   if command -v tailscale >/dev/null 2>&1 && (( old_was_published )) \
@@ -1003,7 +1057,31 @@ rerun_publish_menu() {  # $1 old_listen  $2 old_https_port  $3 old_was_published
       echo "Warning: could not inspect tailscale serve status to remove the old https://<host>:$old_https/ route." >&2
     fi
   fi
+  lock_release
   verify_and_report
+}
+
+# Case "2) allow-list" for the rerun menu (rerun_managed()/rerun_git() below)
+# -- shared here rather than duplicated in both, same reasoning as
+# rerun_publish_menu() above. Wraps the actual mutation (env_setcfg +
+# restart) in the A4 lock, narrowly, around just that -- not the prompts
+# before it.
+rerun_allow_list_menu() {
+  if ! command -v tailscale >/dev/null 2>&1; then
+    echo "Tailscale isn't installed -- nothing to base an allow-list on. Run setup fresh to install it first." >&2
+    return 0
+  fi
+  read_tailscale_self
+  if [[ $TS_TAGGED == 1 ]]; then
+    prompt_allow_list_required
+  else
+    prompt_allow_list_optional
+  fi
+  lock_acquire
+  env_setcfg SERVERJACK_ALLOW "$ALLOW_VALUE"
+  systemctl --user restart serverjack serverjack-ttyd
+  lock_release
+  say "Updated the allow-list."
 }
 
 rerun_managed() {
@@ -1036,21 +1114,7 @@ except Exception:
   local choice; choice=$(ask_line "Choice [1-4, default 4]:")
   case "${choice:-4}" in
     1) "$HOME/.local/bin/serverjack-ctl" update ;;
-    2)
-      if ! command -v tailscale >/dev/null 2>&1; then
-        echo "Tailscale isn't installed -- nothing to base an allow-list on. Run setup fresh to install it first." >&2
-        return 0
-      fi
-      read_tailscale_self
-      if [[ $TS_TAGGED == 1 ]]; then
-        prompt_allow_list_required
-      else
-        prompt_allow_list_optional
-      fi
-      env_setcfg SERVERJACK_ALLOW "$ALLOW_VALUE"
-      systemctl --user restart serverjack serverjack-ttyd
-      say "Updated the allow-list."
-      ;;
+    2) rerun_allow_list_menu ;;
     3)
       rerun_publish_menu "$listen" "$https_port" "$( [[ $serve_state == published* ]] && echo 1 || echo 0 )"
       ;;
@@ -1093,21 +1157,7 @@ rerun_git() {  # $1 = the checkout's absolute path
   local choice; choice=$(ask_line "Choice [1-4, default 4]:")
   case "${choice:-4}" in
     1) ( cd "$repo" && git pull --ff-only && bash install.sh ) ;;
-    2)
-      if ! command -v tailscale >/dev/null 2>&1; then
-        echo "Tailscale isn't installed -- nothing to base an allow-list on. Run setup fresh to install it first." >&2
-        return 0
-      fi
-      read_tailscale_self
-      if [[ $TS_TAGGED == 1 ]]; then
-        prompt_allow_list_required
-      else
-        prompt_allow_list_optional
-      fi
-      env_setcfg SERVERJACK_ALLOW "$ALLOW_VALUE"
-      systemctl --user restart serverjack serverjack-ttyd
-      say "Updated the allow-list."
-      ;;
+    2) rerun_allow_list_menu ;;
     3)
       rerun_publish_menu "$listen" "$https_port" "$( [[ $serve_state == published* ]] && echo 1 || echo 0 )"
       ;;
