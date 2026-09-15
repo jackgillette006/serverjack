@@ -201,7 +201,7 @@ fetch_retry() {  # $1 url  $2 output path
   done
   return 1
 }
-TTYD_VER=$(sed -n 's/^TTYD_VER=//p' "$REPO/install.sh")
+TTYD_VER=$(sed -n 's/^TTYD_VER=//p' "$REPO/scripts/fetch-ttyd.sh")
 FZF_VER=$(sed -n 's/^FZF_VER=//p' "$REPO/install.sh")
 say "Pre-fetching ttyd $TTYD_VER / fzf $FZF_VER (x86_64) for the test webroot"
 fetch_retry "https://github.com/tsl0922/ttyd/releases/download/$TTYD_VER/ttyd.x86_64" \
