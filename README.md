@@ -34,8 +34,26 @@ curl -fsSL https://github.com/jackgillette006/serverjack/releases/latest/downloa
 
 That downloads one specific released version — checksummed, with the digest
 embedded in the bootstrap script itself, not fetched separately — into
-`~/.local/share/serverjack/`, points a `current` symlink at it, and starts it.
-No checkout, no directory to remember. Prefer to look before you run it?
+`~/.local/share/serverjack/`, points a `current` symlink at it, then hands off
+to a short guided setup (`bin/serverjack-setup`) that asks, on your terminal,
+whatever install.sh itself never does:
+
+- missing prerequisites (tmux, curl, python3, iproute2, ...) — one
+  `sudo apt-get install` you approve
+- install/sign in to Tailscale, or skip `tailscale serve` for your own proxy
+- who may reach it (an allow-list, if your tailnet has more than you on it)
+- whether other Linux accounts share this machine (`--unix` instead of a port)
+- the one-time root steps (`loginctl enable-linger`, `tailscale set
+  --operator`) — offered and run for you, not just printed
+
+It never guesses: if there's no terminal to ask on (this is what a plain
+`curl | bash` with no answers waiting looks like), or sudo is refused, it
+prints exactly what's left to do and stops — nothing is silently switched to
+a broad-access default. Answer everything up front instead with the same
+flags `install.sh` takes (`--no-serve`, `--tcp`/`--unix`, `--port N`,
+`--https-port N`, `--title NAME`) appended to the command above, and it skips
+straight past the matching questions. No checkout, no directory to remember.
+Prefer to look before you run it?
 
 ```sh
 curl -fsSLO https://github.com/jackgillette006/serverjack/releases/latest/download/serverjack-bootstrap.sh
@@ -440,13 +458,45 @@ bootstrap downloads one specific version — sha256-verified against a digest
 embedded in the bootstrap script itself, not fetched separately — extracts it
 to `~/.local/share/serverjack/releases/<version>/`, points a `current` symlink
 at it, writes `~/.local/share/serverjack/install.json` recording the channel
-and version, then hands off to that release's own `install.sh` with your
-arguments and terminal intact. `--version X.Y.Z` installs a specific released
-version instead of the latest one; any other flag (`--no-serve`, `--tcp`,
-`--port N`, ...) passes straight through — see the flags table below. It
-refuses outright, with instructions, rather than silently take over an
-existing git-checkout or managed install; refuses as root; and reads any
-prompt of its own from `/dev/tty`, never your terminal's `curl | bash` stdin.
+and version, then hands off to that release's own `bin/serverjack-setup` with
+your arguments and terminal intact. It refuses outright, with instructions,
+rather than silently take over an existing git-checkout or managed install;
+refuses as root.
+
+**`serverjack-setup` is the guided part** — everything `install.sh` itself
+never asks. In order: refuses root (with the same account-to-use-instead
+instructions) and detects being run through `sudo -u` by mistake; confirms
+this is a supported OS (Debian 12/13, Ubuntu 22.04/24.04, x86_64/aarch64)
+with a working `systemd --user`; finds actually-missing prerequisites (not
+just what the README lists) and offers one `sudo apt-get install`; refuses to
+silently take over an unrecognized existing install or another account's
+serverjack on the same port; offers to install/sign in to Tailscale or skip
+`tailscale serve` entirely for your own reverse proxy; if publishing, asks
+who may reach it (`SERVERJACK_ALLOW`) — a detected single tailnet login by
+default, a typed comma-separated list, or an explicit "yes" to leave it open
+to the whole tailnet, never a silent default; asks whether other Linux
+accounts share this machine (`--unix`); runs the one-time root steps
+(`loginctl enable-linger`, `tailscale set --operator`) inline, with your yes
+each time, instead of only printing them; then runs `install.sh` itself and
+verifies units, the loopback health check, and — when publishing — the
+tailnet URL, before printing the private address to open on your phone.
+
+Every question above has a matching flag, the same ones `install.sh` takes
+(`--no-serve`, `--tcp`/`--unix`, `--port N`, `--https-port N`, `--title
+NAME`) appended after the bootstrap command (or `--version X.Y.Z` to install
+a specific released version instead of the latest one — see the flags table
+below for what each does once installed). A flag answers its question
+instead of asking it; whatever is left unanswered is still asked on
+`/dev/tty` — **never your terminal's `curl | bash` stdin**, which is why a
+plain, unflagged `curl | bash` still works even though its own stdin is the
+download pipe. If there is no controlling terminal to ask a still-unanswered
+question on, or sudo is refused, it prints exactly what's left to do and
+stops — it never falls back to a broad-access default. Re-run it any time,
+by hand (`bash bin/serverjack-setup`, from a checkout) or via
+`serverjack-ctl setup`: on an already-installed account it shows the current
+state (version, publish status, allow-list) and offers update /
+change-allow-list / change-publish-settings / leave-it-alone, rather than
+refusing outright.
 
 Managing it afterwards — updates, rollback, uninstall — is `serverjack-ctl`
 (installed to `~/.local/bin/serverjack-ctl`): see
