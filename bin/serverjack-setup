@@ -911,10 +911,14 @@ verify_and_report() {
   local port; port=$(env_get SERVERJACK_PORT 7680)
   local listen; listen=$(env_get SERVERJACK_LISTEN tcp)
   local -a healthz_args
+  # -m/--connect-timeout: B4 -- bound each request so a listener that
+  # accepts and never responds can't hang a single check forever (the
+  # wait_local_healthz loop below can only re-check its own deadline once
+  # the request it's waiting on actually returns).
   if [[ $listen == unix ]]; then
-    healthz_args=(--unix-socket "${XDG_RUNTIME_DIR}/serverjack/web.sock" http://serverjack/healthz)
+    healthz_args=(-m 5 --connect-timeout 5 --unix-socket "${XDG_RUNTIME_DIR}/serverjack/web.sock" http://serverjack/healthz)
   else
-    healthz_args=("http://127.0.0.1:$port/healthz")
+    healthz_args=(-m 5 --connect-timeout 5 "http://127.0.0.1:$port/healthz")
   fi
   # A single immediate curl right after `systemctl restart` (or install.sh's
   # own restart, just before this runs) raced the app's own startup time and
@@ -922,6 +926,17 @@ verify_and_report() {
   # later -- poll instead, same helper install.sh's own final check uses.
   if ! wait_local_healthz 30 "${healthz_args[@]}"; then
     echo "Local health check failed (HTTP $(local_http_code "${healthz_args[@]}")). Check: journalctl --user -u serverjack -n 50" >&2
+    exit 1
+  fi
+  # B4: /healthz is served by the `serverjack` unit alone -- it says nothing
+  # about serverjack-ttyd, so an HTTP-only check here used to declare success
+  # with the terminal completely unreachable (ttyd stopped, or crash-
+  # looping). Check both units independently -- `systemctl is-active` with
+  # MULTIPLE names is a logical OR (systemctl(1): "0 if at least one is
+  # active"), not AND, so this can't be one call either.
+  if ! { systemctl --user is-active --quiet serverjack \
+      && systemctl --user is-active --quiet serverjack-ttyd; }; then
+    echo "serverjack answers healthz, but serverjack-ttyd is not active -- the terminal will not work. Check: journalctl --user -u serverjack-ttyd -n 50" >&2
     exit 1
   fi
   if (( NO_SERVE )); then
