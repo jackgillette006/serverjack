@@ -137,17 +137,30 @@ resolve_self() {
 # the first question, and the same clean stop + checklist on failure.
 TTY_CHECKED=0
 TTY_OK=0
-ensure_tty() {
+# Populates TTY_CHECKED/TTY_OK without exiting -- used by a caller that has
+# its own safe default when unattended (step7_shared_machine's tcp, which is
+# install.sh's own longstanding default too, not a broadened one) instead of
+# treating "no tty" as a hard stop the way ensure_tty()/every other prompt
+# does. `--no-serve` alone (no --tcp/--unix) completing fully unattended is
+# an existing, tested contract (tests/managed-install.sh predates this
+# script and still assumes it) -- found by that suite actually failing at
+# exactly this question once the bootstrap started handing off here instead
+# of straight to install.sh.
+tty_available() {
   if (( TTY_CHECKED )); then
-    (( TTY_OK )) && return 0
-    no_tty_and_exit
+    (( TTY_OK ))
+    return
   fi
   TTY_CHECKED=1
   if { exec 8<>/dev/tty; } 2>/dev/null; then
     TTY_OK=1
-    return 0
+  else
+    TTY_OK=0
   fi
-  no_tty_and_exit
+  (( TTY_OK ))
+}
+ensure_tty() {
+  tty_available || no_tty_and_exit
 }
 
 no_tty_and_exit() {
@@ -700,6 +713,19 @@ step7_shared_machine() {
   if [[ -n $OPT_LISTEN ]]; then
     LISTEN=$OPT_LISTEN
     say "Listen mode: $LISTEN (--$LISTEN given)"
+    return 0
+  fi
+  if ! tty_available; then
+    # No controlling terminal and neither --tcp nor --unix was given: fall
+    # back to install.sh's own longstanding default (tcp) rather than the
+    # hard stop every other still-unanswered question gets. Unlike an empty
+    # SERVERJACK_ALLOW (which really does widen who gets a shell), tcp vs.
+    # unix only matters on a machine OTHER local accounts share -- tcp still
+    # keeps them out via the peer-uid check -- so defaulting here isn't the
+    # "silently choose a broad-access configuration" this flow otherwise
+    # refuses to do; it's the same choice install.sh has always made
+    # unattended. If this machine really is shared, pass --unix explicitly.
+    LISTEN=tcp
     return 0
   fi
   if ask_yn "Do other people have Linux accounts on this machine?" n; then
