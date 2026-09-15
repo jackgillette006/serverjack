@@ -39,7 +39,8 @@ for c in tar sha256sum git; do
   command -v "$c" >/dev/null 2>&1 || { echo "missing: $c" >&2; exit 1; }
 done
 
-for f in bin systemd install.sh uninstall.sh LICENSE README.md CHANGELOG.md docs/FAQ.md; do
+for f in bin systemd install.sh uninstall.sh LICENSE README.md CHANGELOG.md docs/FAQ.md \
+         scripts/fetch-ttyd.sh; do
   [[ -e $f ]] || { echo "missing required release file: $f" >&2; exit 1; }
 done
 
@@ -57,6 +58,11 @@ cp -a bin "$pkg/bin"
 cp -a systemd "$pkg/systemd"
 cp install.sh uninstall.sh LICENSE README.md CHANGELOG.md "$pkg/"
 cp docs/FAQ.md "$pkg/docs/FAQ.md"
+# install.sh shells out to this for the pinned ttyd download (shared with
+# CI) -- without it in the archive, a real managed install's install.sh
+# fails at that step with "No such file or directory".
+mkdir -p "$pkg/scripts"
+cp scripts/fetch-ttyd.sh "$pkg/scripts/fetch-ttyd.sh"
 
 # A dev checkout accumulates things a release archive should not ship.
 find "$pkg" -name '__pycache__' -type d -prune -exec rm -rf {} +
