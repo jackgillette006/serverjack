@@ -127,9 +127,12 @@ jobs:
       - name: pyflakes
         run: |
           pip install --disable-pip-version-check pyflakes
-          python3 -m pyflakes bin/serverjack bin/ttyd-ws-check.py tests/*.py
+          python3 -m pyflakes bin/serverjack bin/ttyd-ws-check.py tests/*.py scripts/check-readme-anchors.py
+
+      - name: README anchor links (A14)
+        run: python3 scripts/check-readme-anchors.py README.md
 
       - name: py_compile under Python 3.9
         run: |
           docker run --rm -v "$PWD":/w -w /w python:3.9-slim \
-            python3 -m py_compile bin/serverjack bin/ttyd-ws-check.py tests/*.py
+            python3 -m py_compile bin/serverjack bin/ttyd-ws-check.py tests/*.py scripts/check-readme-anchors.py
