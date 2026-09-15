@@ -17,14 +17,13 @@
 # never touches the real serverjack units, the real tmux server, or
 # ~/.config/serverjack.
 #
-# What's different from make.sh: instead of three static screenshots, this
-# drives gif_record.py to record a Playwright video (WebKit, iPhone 14
-# emulation, device_scale_factor=2) of the demo flow -- land on the
-# phone-emulated landing page, pick the OpenCode pill, type
-# ~/projects/3d-lab into the "...or type a path" input (the <select>
-# picker never renders as a native popup under emulation, so typing is the
-# only part of it that's actually visible), tap Start, sit on the live
-# terminal while the real OpenCode TUI opens in that directory (see
+# What's different from make.sh: instead of static screenshots, this drives
+# gif_record.py to record a Playwright video (WebKit, iPhone 14 emulation,
+# device_scale_factor=2) of the demo flow -- land on the phone-emulated
+# landing page, pick the OpenCode pill, type ~/projects/3d-lab into the
+# directory combobox character by character (the live suggestion list
+# dropping in as it goes is visible on screen too), tap Start, sit on the
+# live terminal while the real OpenCode TUI opens in that directory (see
 # gif_record.py's docstring), tap back to the list -- then converts the
 # recording to a GIF and an MP4 with ffmpeg in a container.
 set -Eeuo pipefail
