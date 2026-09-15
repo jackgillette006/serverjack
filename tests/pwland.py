@@ -1,13 +1,16 @@
 """Landing page: Start a session, shortcuts, and the agent cards.
 
-Chromium desktop only -- the landing page has no engine-specific code, and the
-things worth proving here are server-side (a command really ran in a real tmux
-session, a shortcut was stored and removed, an agent card's buttons hit the
-right route). run.sh points the app at shots/cfg with a single fake tool
-(bin=true, login_check=true, run=bash, one action `hello`), a second one with
-nothing but a run command, and a third whose `bin` exists only in a directory
-named by its own tools.json "paths" entry (never on PATH) -- so nothing here
-touches a real coding CLI.
+Chromium desktop, plus one small WebKit iPhone block at the end for the
+directory picker's touch behaviour -- the landing page otherwise has no
+engine-specific code, and the things worth proving here are server-side (a
+command really ran in a real tmux session, a shortcut was stored and removed,
+an agent card's buttons hit the right route). run.sh points the app at
+shots/cfg with a single fake tool (bin=true, login_check=true, run=bash, one
+action `hello`), a second one with nothing but a run command, and a third
+whose `bin` exists only in a directory named by its own tools.json "paths"
+entry (never on PATH) -- so nothing here touches a real coding CLI. It also
+seeds a nested project dir (projects/ai/3d-lab/scenes) under the fixture
+HOME, for the directory-picker search block.
 """
 import json
 import os
@@ -114,8 +117,9 @@ with sync_playwright() as p:
        page.locator("#cmd").count() == 1 and page.locator("#dir").count() == 1
        and page.locator("input[name=what][value=shell]:checked").count() == 1
        and page.locator('form[action="/start"] button[type=submit]').count() == 1)
-    ok("the directory picker defaults to ~",
-       page.eval_on_selector("#dir", "el => el.selectedOptions[0].textContent.trim()") == "~")
+    ok("the directory picker is a combobox that defaults to ~ (empty value)",
+       page.locator("#dir").input_value() == ""
+       and "~" in (page.locator("#dir").get_attribute("placeholder") or ""))
     ok("fake2 (ready, no server/actions) is offered as a Start radio",
        page.locator("input[name=what][value=fake2]").count() == 1)
     sysline = page.locator(".sysline").inner_text() if page.locator(".sysline").count() else ""
@@ -178,7 +182,7 @@ with sync_playwright() as p:
 
     # no name, a custom directory: <type>-<basename> (/tmp always exists, no setup needed)
     page.goto(f"{BASE}/")
-    page.fill('form[action="/start"] input[name=dir_custom]', "/tmp")
+    page.fill('form[action="/start"] input[name=dir]', "/tmp")
     page.click('form[action="/start"] button[type=submit]')
     page.wait_for_selector("#tabs .tab.on")
     dircust_sess = sess_from_url(page)
@@ -189,7 +193,7 @@ with sync_playwright() as p:
 
     # same, but the fake agent instead of a shell: <tool id>-<basename>
     page.goto(f"{BASE}/")
-    page.fill('form[action="/start"] input[name=dir_custom]', "/tmp")
+    page.fill('form[action="/start"] input[name=dir]', "/tmp")
     pick_what(page, "fake")
     page.click('form[action="/start"] button[type=submit]')
     page.wait_for_selector("#tabs .tab.on")
@@ -198,6 +202,58 @@ with sync_playwright() as p:
     ok("no name for an agent in a custom directory defaults to <tool>-<directory>",
        bool(re.fullmatch(r"fake-tmp(-\d+)?", fakedir_sess or "")) and exists(fakedir_sess),
        f"url={page.url}")
+
+    # -------------------------------------------- directory picker search --
+    # run.sh's fixture drops a nested project dir at
+    # <TEST_HOME>/projects/ai/3d-lab/scenes for this block.
+    page.goto(f"{BASE}/")
+    dirbox = page.locator("#dir")
+    dirbox.click()
+    dirbox.fill("3d")
+    page.wait_for_selector('.dirpick .dirlist li:has-text("3d-lab")')
+    row_text = page.eval_on_selector_all(
+        '#startform .dirpick .dirlist li', "els => els.map(e => e.textContent)")
+    ok("typing part of a nested folder's name finds it",
+       any("3d-lab" in t for t in row_text), str(row_text))
+
+    # Tab fills the highlighted-or-first match plus a trailing "/", keeps
+    # focus, and re-queries -- showing that match's own children.
+    page.keyboard.press("Tab")
+    page.wait_for_function("document.querySelector('#dir').value.endsWith('/3d-lab/')")
+    ok("Tab fills the picked path with a trailing slash and keeps focus",
+       dirbox.input_value().endswith("/3d-lab/")
+       and page.evaluate("document.activeElement.id") == "dir", dirbox.input_value())
+    # "scenes" may already be showing at this point -- the *previous* "3d"
+    # search already matched it too (a path ranks via a substring of an
+    # ancestor's name, not just its own basename, and "ai/3d-lab/scenes"
+    # contains "3d"). So wait for the re-query to actually land: the list
+    # settles to exactly that one child, not the earlier two-item list.
+    page.wait_for_function(
+        "document.querySelectorAll('#startform .dirlist li').length === 1 "
+        "&& document.querySelector('#startform .dirlist li').textContent.includes('scenes')")
+    child_text = page.eval_on_selector_all(
+        '#startform .dirpick .dirlist li', "els => els.map(e => e.textContent)")
+    ok("...and the list now shows its child directory",
+       any("scenes" in t for t in child_text), str(child_text))
+
+    # ArrowDown + Enter picks the highlighted item and does not submit.
+    before_url = page.url
+    page.keyboard.press("ArrowDown")
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(150)
+    ok("ArrowDown+Enter picks the highlighted item without submitting",
+       dirbox.input_value().endswith("/scenes") and page.url == before_url,
+       f"value={dirbox.input_value()!r} url={page.url}")
+
+    # Starting a session with that picked nested dir actually lands in it.
+    page.click('form[action="/start"] button[type=submit]')
+    page.wait_for_selector("#tabs .tab.on")
+    nested_sess = sess_from_url(page)
+    MADE.append(nested_sess)
+    subprocess.run(T + ["send-keys", "-t", f"={nested_sess}:", "pwd", "Enter"], capture_output=True)
+    out = wait_for(lambda: pane(nested_sess) if "3d-lab/scenes" in pane(nested_sess) else "")
+    ok("starting a session with a picked nested dir lands in that dir",
+       "3d-lab/scenes" in out, out[-300:])
 
     # a name already in use is refused, and the rest of the form is kept
     page.goto(f"{BASE}/")
@@ -433,6 +489,25 @@ with sync_playwright() as p:
     ok("cross-site POST /start is refused", r.status == 403, str(r.status))
     ok("...and nothing was started", not exists("echo"), "session 'echo' exists")
     b.close()
+
+    print("webkit iphone:")
+    ib = p.webkit.launch()
+    ictx = ib.new_context(**p.devices["iPhone 14"])
+    ipage = ictx.new_page()
+    ipage.on("pageerror", lambda e: print("   [pageerror]", e))
+    ipage.goto(f"{BASE}/")
+    idirbox = ipage.locator("#dir")
+    idirbox.tap()
+    idirbox.fill("3d")
+    ipage.wait_for_selector('.dirpick .dirlist li:has-text("3d-lab")')
+    item = ipage.locator('#startform .dirpick .dirlist li').first
+    target = item.get_attribute("data-path")
+    item.tap()
+    ok("tapping a suggestion on iPhone fills the input",
+       bool(target) and idirbox.input_value() == target,
+       f"target={target!r} value={idirbox.input_value()!r}")
+    ictx.close()
+    ib.close()
 
 # Keep the suite tidy even before run.sh removes its isolated tmux server.
 for name in MADE:

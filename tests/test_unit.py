@@ -26,8 +26,10 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zlib
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVERJACK_PATH = os.path.join(HERE, "..", "bin", "serverjack")
@@ -362,14 +364,126 @@ class ToolsJsonMergeTests(unittest.TestCase):
             self.assertNotIn("Open with remote control", labels, tid)
 
 
-class DirOptionsTests(unittest.TestCase):
-    """dir_options(): ~ is always first and pre-selected, regardless of
-    where dir_choices() would otherwise place it."""
+class DirSearchTests(unittest.TestCase):
+    """GET /api/dirs?q= (dir_search() and the mode functions it dispatches
+    to): the directory-picker combobox's only data source. A temp tree
+    stands in for DIR_ROOTS/HOME so nothing here depends on this machine's
+    real filesystem."""
 
-    def test_home_is_first_and_selected(self):
-        first_line = mod.dir_options().split("\n", 1)[0]
-        self.assertIn(f'value="{mod.esc(mod.HOME)}"', first_line)
-        self.assertIn(" selected", first_line)
+    def setUp(self):
+        self.old_home, self.old_roots = mod.HOME, mod.DIR_ROOTS
+        self.old_depth = mod.DIR_DEPTH
+        self.fake_home = tempfile.mkdtemp(prefix="sj-unit-dirsearch-home-")
+        _tmpdirs.append(self.fake_home)
+        self.root = os.path.join(self.fake_home, "work")
+        # Ranking fixture: an exact, a prefix, and a substring match for "alpha".
+        os.makedirs(os.path.join(self.root, "alpha"))
+        os.makedirs(os.path.join(self.root, "alphabet"))
+        os.makedirs(os.path.join(self.root, "my-alpha-thing"))
+        # Nested match at depth 3 (root=0, projects=1, ai=2, 3d-lab=3).
+        os.makedirs(os.path.join(self.root, "projects", "ai", "3d-lab"))
+        # Hidden and pruned -- never indexed, even the pruned dir's own children.
+        os.makedirs(os.path.join(self.root, ".hidden"))
+        os.makedirs(os.path.join(self.root, "node_modules", "should-not-appear"))
+        # A second root, for the empty-q "HOME first, then roots+children" order.
+        self.root2 = os.path.join(self.fake_home, "extra")
+        os.makedirs(os.path.join(self.root2, "child-b"))
+        os.makedirs(os.path.join(self.root2, "child-a"))
+        # A directory directly under HOME, for path-mode "~/pro" completion.
+        os.makedirs(os.path.join(self.fake_home, "projects"))
+        mod.HOME = self.fake_home
+        mod.DIR_ROOTS = [self.root, self.root2]
+        mod._DIR_INDEX_CACHE = None
+
+    def tearDown(self):
+        mod.HOME, mod.DIR_ROOTS, mod.DIR_DEPTH = self.old_home, self.old_roots, self.old_depth
+        mod._DIR_INDEX_CACHE = None
+
+    def names(self, q):
+        paths, _truncated = mod._dir_search_name(q)
+        return [os.path.basename(p) for p in paths]
+
+    def test_ranking_is_exact_then_prefix_then_substring(self):
+        self.assertEqual(self.names("alpha"), ["alpha", "alphabet", "my-alpha-thing"])
+
+    def test_nested_match_at_depth_3(self):
+        status, obj = mod.dir_search("3d-lab")
+        self.assertEqual(status, 200)
+        paths = [d["path"] for d in obj["dirs"]]
+        self.assertIn(os.path.join(self.root, "projects", "ai", "3d-lab"), paths)
+
+    def test_path_mode_completes_children_of_tilde_relative(self):
+        paths, _truncated = mod._dir_search_path("~/pro")
+        self.assertEqual(paths, [os.path.join(self.fake_home, "projects")])
+
+    def test_path_mode_completes_children_of_an_absolute_dir(self):
+        paths, _truncated = mod._dir_search_path(os.path.join(self.root, "al"))
+        self.assertEqual([os.path.basename(p) for p in paths], ["alpha", "alphabet"])
+
+    def test_hidden_and_pruned_dirs_never_appear(self):
+        entries, _truncated = mod.dir_index()
+        paths = [p for p, _depth, _root in entries]
+        self.assertFalse(any(os.sep + ".hidden" in p for p in paths))
+        self.assertFalse(any("node_modules" in p for p in paths))
+        self.assertFalse(any("should-not-appear" in p for p in paths))
+        # And a name search for the hidden/pruned dirs' own names finds nothing.
+        self.assertEqual(self.names("hidden"), [])
+        self.assertEqual(self.names("should-not-appear"), [])
+
+    def test_depth_cap_is_respected(self):
+        deep = self.root
+        for i in range(1, 8):
+            deep = os.path.join(deep, f"deep{i}")
+            os.makedirs(deep)
+        mod.DIR_DEPTH = 3
+        mod._DIR_INDEX_CACHE = None
+        entries, _truncated = mod.dir_index()
+        depths = {os.path.basename(p): d for p, d, _root in entries}
+        self.assertIn("deep3", depths)
+        self.assertEqual(depths["deep3"], 3)
+        self.assertNotIn("deep4", depths)
+
+    def test_a_path_indexed_by_two_overlapping_roots_is_not_duplicated(self):
+        # A root nested under another root (SERVERJACK_DIRS="~/projects/x:~",
+        # the demo fixture's own shape) walks "alpha" twice -- once as its
+        # own root, once again as a descendant of self.root. It must still
+        # appear only once in the results (alphabet and my-alpha-thing are
+        # unrelated paths and legitimately still both match too).
+        mod.DIR_ROOTS = [self.root, os.path.join(self.root, "alpha")]
+        mod._DIR_INDEX_CACHE = None
+        results = self.names("alpha")
+        self.assertEqual(results.count("alpha"), 1, results)
+        self.assertEqual(sorted(results), sorted(set(results)), results)
+
+    def test_empty_q_returns_home_first_then_roots_and_children(self):
+        status, obj = mod.dir_search("")
+        self.assertEqual(status, 200)
+        paths = [d["path"] for d in obj["dirs"]]
+        self.assertEqual(paths[0], self.fake_home)
+        # dir_choices()'s own order after that: each root, then its
+        # (alphabetically sorted) first-level children, root by root.
+        i = paths.index(self.root2)
+        self.assertEqual(paths[i:i + 3],
+                         [self.root2,
+                          os.path.join(self.root2, "child-a"),
+                          os.path.join(self.root2, "child-b")])
+
+    def test_query_over_512_chars_is_rejected(self):
+        status, obj = mod.dir_search("x" * 513)
+        self.assertEqual(status, 400)
+        self.assertIn("error", obj)
+
+    def test_index_is_cached_for_the_ttl(self):
+        mod.dir_index()   # build and cache
+        os.makedirs(os.path.join(self.root, "late-arrival"))
+        with mock.patch("time.time", return_value=time.time()):
+            entries, _truncated = mod.dir_index()
+            self.assertFalse(any(p.endswith("late-arrival") for p, _d, _r in entries),
+                             "a cache hit should not see a directory created after it was built")
+        with mock.patch("time.time", return_value=time.time() + mod.DIR_INDEX_TTL + 1):
+            entries, _truncated = mod.dir_index()
+            self.assertTrue(any(p.endswith("late-arrival") for p, _d, _r in entries),
+                            "past the TTL, the index should rebuild and see the new directory")
 
 
 class TermThemeTests(unittest.TestCase):

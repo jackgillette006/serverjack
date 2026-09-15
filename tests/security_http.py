@@ -47,6 +47,15 @@ for path in ("/healthz", "/api/status"):
     status = request_status(AUTH, "POST", path, headers)
     ok(f"restricted POST {path} requires identity", status == 403, str(status))
 
+# /api/dirs is not in OPEN_PATHS (unlike /healthz and /api/status above), so
+# it must require the same identity as /api/sessions and every other GET API
+# route: an unauthenticated peer gets exactly the same 403 the rest do.
+sessions_status = request_status(AUTH, "GET", "/api/sessions")
+dirs_status = request_status(AUTH, "GET", "/api/dirs?q=")
+ok("restricted GET /api/dirs requires identity", dirs_status == 403, str(dirs_status))
+ok("...the same status as /api/sessions", dirs_status == sessions_status,
+   f"dirs={dirs_status}, sessions={sessions_status}")
+
 for value, expected in (("invalid", 400), ("-1", 400), ("65537", 413)):
     status = raw_content_length(value)
     ok(f"Content-Length {value!r} is rejected", status == expected,
