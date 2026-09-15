@@ -469,6 +469,65 @@ with sync_playwright() as p:
        sr.status == 200, str(sr.status))
     ok("...while the page itself is still 403", pr.status == 403, str(pr.status))
 
+    # ------------------------------------------- default base directory ----
+    # Deliberately last among the functional checks: changing the default
+    # away from HOME would break every earlier "no dir typed -> named for
+    # just the type, no directory part" assertion above (they all resolve an
+    # empty picker to HOME's own default_session_name() behaviour).
+    page.goto(f"{BASE}/")
+    ok("no default set yet: the picker placeholder still starts with the plain ~",
+       (page.locator("#dir").get_attribute("placeholder") or "").startswith("~ "),
+       page.locator("#dir").get_attribute("placeholder"))
+
+    page.click("details.ddchange summary")
+    page.fill("#dd_dir", "~/projects")
+    page.click('form[action="/prefs"] button[type=submit]')
+    page.wait_for_load_state()
+    ok("saving redirects back with a confirmation note",
+       page.locator(".flash").count() == 1
+       and "Default directory: ~/projects" in page.locator(".flash").inner_text(),
+       page.locator(".flash").inner_text() if page.locator(".flash").count() else "no .flash shown")
+    ok("the picker placeholder now names the new default",
+       (page.locator("#dir").get_attribute("placeholder") or "").startswith("~/projects "),
+       page.locator("#dir").get_attribute("placeholder"))
+
+    # An empty Start now lands the session in the new default, not HOME.
+    page.click('form[action="/start"] button[type=submit]')
+    page.wait_for_selector("#tabs .tab.on")
+    default_sess = sess_from_url(page)
+    MADE.append(default_sess)
+    subprocess.run(T + ["send-keys", "-t", f"={default_sess}:", "pwd", "Enter"], capture_output=True)
+    out = wait_for(lambda: pane(default_sess) if pane(default_sess).rstrip().endswith("/projects") else "")
+    ok("an empty Start lands the session in the new default dir",
+       out.rstrip().endswith("/projects"), out[-300:])
+
+    # The empty-query suggestion list now leads with the default dir itself,
+    # then its own children (run.sh's fixture nests projects/ai/3d-lab under
+    # it, so "ai" is the one child).
+    page.goto(f"{BASE}/")
+    page.locator("#dir").click()
+    page.wait_for_selector('.dirpick .dirlist li')
+    first_two = page.eval_on_selector_all(
+        '#startform .dirpick .dirlist li', "els => els.slice(0, 2).map(e => e.textContent)")
+    ok("the empty-query list now leads with the default dir, then its children",
+       len(first_two) == 2 and "projects" in first_two[0] and "ai" in first_two[1],
+       str(first_two))
+
+    # The terminal page's own new-session panel (#pop) picks up the same
+    # default too -- both the ordinary view and a popped-out window.
+    page.goto(f"{BASE}/s/{default_sess}")
+    page.click("#add")
+    ok("the terminal page's new-session panel reflects the new default",
+       (page.locator("#pop input[name=dir]").get_attribute("placeholder") or "")
+       .startswith("~/projects "),
+       page.locator("#pop input[name=dir]").get_attribute("placeholder"))
+    page.goto(f"{BASE}/s/{default_sess}?popout=1")
+    page.click("#add")
+    ok("...and so does the popped-out terminal window",
+       (page.locator("#pop input[name=dir]").get_attribute("placeholder") or "")
+       .startswith("~/projects "),
+       page.locator("#pop input[name=dir]").get_attribute("placeholder"))
+
     # ------------------------------------------------------- clean up ----
     page.goto(f"{BASE}/")
     for name in [n for n in MADE if n and exists(n)]:

@@ -231,6 +231,12 @@ cat > "$CFG/shortcuts.json" <<'JSON'
  {"id": "sc-snapshot", "label": "Snapshot to NAS",
   "cmd": "restic -r sftp:nas:/backups backup ~/projects"}]
 JSON
+# A non-trivial default directory, so the Start card's "Starts in
+# ~/projects · change" line (and the placeholder it feeds into every other
+# picker on the page) shows something other than the trivial "~" default.
+cat > "$CFG/prefs.json" <<JSON
+{"default_dir": "$FAKE_HOME/projects"}
+JSON
 chmod 600 "$CFG"/*.json
 
 # ------------------------------------------------------------ isolated tmux
