@@ -671,6 +671,19 @@ fi
 
 # ---------------------------------------------------------------- summary
 echo
+# Found 2026-09-15, first real WSL run (see bin/serverjack-lib.sh's is_wsl()
+# and bin/serverjack-setup's step7b_wsl_port, which already offers to move
+# off 7680 during a GUIDED install). This note is for everyone else: a
+# plain `bash install.sh`/one-liner run with no prompt at all, or one where
+# that earlier offer was declined. The actual condition and wording live in
+# bin/serverjack-lib.sh's wsl_port_note() (shared, and pulled out to there
+# specifically so tests/wsl-detect.sh can prove both directly -- reaching
+# this point in install.sh needs a real systemd install, which a host-side
+# test doesn't have).
+if out=$(wsl_port_note "$LISTEN" "$SERVERJACK_PORT" "$ENV_FILE"); then
+  printf '%s\n' "$out"
+  echo
+fi
 if (( ${#todo[@]} )); then
   say "One-time root steps still needed (then re-run: bash install.sh):"
   printf '  %s\n' "${todo[@]}"

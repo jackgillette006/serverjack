@@ -9,6 +9,81 @@
 # (like the `|| true` guards below, each found the hard way) can't miss the
 # other.
 
+# True when this is WSL (Windows Subsystem for Linux) -- bin/serverjack-setup's
+# step7b_wsl_port and install.sh's final summary both use it to warn that
+# Windows Delivery Optimization (DoSvc) silently holds TCP port 7680 on the
+# WINDOWS side of a WSL2 install: serverjack's own port_free() above runs
+# INSIDE the VM and sees the port as free there, so a plain install answers
+# fine on 127.0.0.1:7680 inside WSL while the Windows browser can never
+# reach it -- WSL2's localhost relay can't bind a port Windows itself
+# already holds. Found 2026-09-15, first real WSL run.
+# Checked three ways, any one is enough:
+#   - WSL_DISTRO_NAME: exported by WSL's own init into every interactive
+#     shell, WSL1 and WSL2 alike
+#   - the kernel release string containing "microsoft" (case-insensitive) --
+#     WSL2's is literally "*-microsoft-standard-WSL2"
+#   - /proc/version containing "microsoft" -- WSL1 names it there instead
+#     (its kernel release string is a real Linux one with no such marker)
+# Test-only overrides, same naming and reasoning as bin/serverjack-setup's
+# own SERVERJACK_SETUP_TEST_OS_RELEASE (a container can't actually BE WSL,
+# so a test points these at a throwaway file instead): unset in every
+# normal invocation. Every line here is safe under a caller's `set -e`
+# without an explicit `|| true`: the WSL_DISTRO_NAME check is a plain `A &&
+# return 0`, where a false A is a non-final command in a && list and so
+# (verified against a real bash, not assumed) does not trigger errexit even
+# as a standalone statement; the two file checks go further and wrap the
+# whole `COND && grep` in `if ...; then return 0; fi`, whose condition is
+# unconditionally exempt from set -e either way. So a non-WSL machine (the
+# common case: no marker in either file) can never abort the sourcing script, the
+# same reasoning as port_holder()/serve_backend_for()'s `|| true` guards
+# just below.
+is_wsl() {
+  [[ -n ${WSL_DISTRO_NAME:-} ]] && return 0
+  local osrelease=${SERVERJACK_TEST_OSRELEASE_FILE:-/proc/sys/kernel/osrelease}
+  if [[ -r $osrelease ]] && grep -qi microsoft "$osrelease" 2>/dev/null; then
+    return 0
+  fi
+  local procversion=${SERVERJACK_TEST_PROCVERSION_FILE:-/proc/version}
+  if [[ -r $procversion ]] && grep -qi microsoft "$procversion" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+# The one-paragraph WSL note install.sh's own final summary prints -- pulled
+# out to here, as its own testable function, rather than left as an inline
+# block there, specifically so tests/wsl-detect.sh can prove its condition
+# and exact wording directly (a host-side test has no way to drive
+# install.sh far enough to reach its summary section at all -- that needs a
+# real systemd install). Applies only in tcp mode, only while the port is
+# still the untouched default (7680 -- bin/serverjack-setup's own
+# step7b_wsl_port already offers to move off it during a GUIDED install;
+# this note is for everyone else, a plain `bash install.sh`/one-liner run
+# with no prompt at all, or one where that earlier offer was declined), and
+# only on WSL (is_wsl()). Prints nothing and returns 1 when the note does
+# not apply; prints the note to stdout and returns 0 when it does -- a
+# caller uses it exactly like `if out=$(wsl_port_note ...); then echo
+# "$out"; fi`, matching serve_backend_for()'s own "empty/failure means
+# nothing to do" shape, and, being a command-substitution assignment as an
+# if-condition, safe under a caller's set -e regardless of which way it
+# goes (same reasoning as this file's other `$(...)`-returning helpers).
+# $1 = LISTEN (tcp|unix)  $2 = SERVERJACK_PORT  $3 = env file path (for the
+# fix instructions only -- never read or written here).
+wsl_port_note() {
+  local listen=$1 port=$2 env_file=$3
+  [[ $listen == tcp ]] || return 1
+  [[ $port == 7680 ]] || return 1
+  is_wsl || return 1
+  cat <<TXT
+This looks like WSL. Reach serverjack from Windows at http://127.0.0.1:$port/ --
+use 127.0.0.1, not localhost (Windows resolves "localhost" to IPv6 first, which WSL2's
+relay does not answer on). Port 7680 collides with Windows Delivery Optimization on the
+Windows side, though, so the Windows browser likely cannot reach it there at all: set
+SERVERJACK_PORT=7690 in $env_file and restart (systemctl --user restart serverjack
+serverjack-ttyd), or pass --port 7690 on the one-liner next time, to move it.
+TXT
+}
+
 # True if nothing is listening on TCP port $1 (any interface, any account).
 port_free() { ! ss -ltnp 2>/dev/null | grep -q ":$1 "; }
 

@@ -7,6 +7,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+- **WSL**: `bin/serverjack-setup` now detects WSL and, while the port is
+  still the untouched default (7680), offers to install on `--port 7690`
+  instead — Windows Delivery Optimization already listens on 7680 on the
+  *Windows* side of a WSL2 machine, so a Windows browser could never reach
+  serverjack there even though it comes up fine on `127.0.0.1:7680` inside
+  the VM. `install.sh`'s own final summary prints the same warning and fix
+  for anyone who lands on 7680 without going through the guided prompt. See
+  the README's new [WSL](README.md#wsl) note.
+
 ## 1.4.0 - 2026-09-15
 
 ### Fixed (round 5 review: security blockers, 17 install-flow findings, 7 installer gaps)
