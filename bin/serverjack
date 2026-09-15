@@ -63,6 +63,7 @@ Routes
     POST /run                  legacy alias for /start's "shell + command"
                                case, kept working for anything still using it
     POST /shortcuts/add, /shortcuts/del, /shortcuts/run
+    POST /prefs                the Start card's "change" default-directory form
     POST /tools (dispatches to /tools/install, /tools/login, /tools/open,
          /tools/action, /tools/server, /tools/daemon, /tools/autostart)
 
@@ -77,6 +78,8 @@ Config files, all in $SERVERJACK_CONFIG (default ~/.config/serverjack):
     shortcuts.json  saved one-click commands
     autostart.json  [{"tool": id, "kind": "server"|"daemon", "dir": path}] --
                     servers/daemons to bring up shortly after serverjack starts
+    prefs.json      {"default_dir": path} -- set from the Start card's
+                    "change" link, or SERVERJACK_DEFAULT_DIR/HOME when unset
 
 Stdlib only, no dependencies. Runs as your user and talks to your normal tmux
 server, so it sees the same sessions as any other login.
@@ -127,6 +130,10 @@ Configuration is by environment variables (see install.sh / README):
     SERVERJACK_DIR_DEPTH
                       how many levels deep the directory picker's search
                       index walks under each SERVERJACK_DIRS root  default 5
+    SERVERJACK_DEFAULT_DIR
+                      fallback for the picker's empty-value default when
+                      prefs.json has no "default_dir" of its own (set from
+                      the Start card's "change" link)         default HOME
     SERVERJACK_TOOLS  comma-separated agent ids to show, in that order
                       (default: every tool in the registry below)
     SERVERJACK_TERM   URL path this app serves the terminal on  default /term/
@@ -665,6 +672,7 @@ CONFIG_DIR = os.environ.get("SERVERJACK_CONFIG") or os.path.join(
 SHORTCUTS_FILE = os.path.join(CONFIG_DIR, "shortcuts.json")
 TOOLS_FILE = os.path.join(CONFIG_DIR, "tools.json")
 AUTOSTART_FILE = os.path.join(CONFIG_DIR, "autostart.json")
+PREFS_FILE = os.path.join(CONFIG_DIR, "prefs.json")
 try:
     AUTOSTART_DELAY = float(os.environ.get("SERVERJACK_AUTOSTART_DELAY") or 15)
 except ValueError:
@@ -1179,6 +1187,72 @@ def rename_session(old, new):
     return new, None
 
 
+# ---------- prefs: small owner-editable settings (currently just the
+# default directory the picker falls back to). Reuses save_private_json()
+# (defined below, in the shortcuts section) for the same atomic-write,
+# mode-600, no-predictable-tmpname treatment shortcuts.json and
+# autostart.json get -- a default dir is not a secret, but there is no
+# reason to treat it any less carefully than the files beside it.
+
+def load_prefs():
+    """The saved prefs dict, or {} for a missing or unusable prefs.json --
+    same malformed-file tolerance as load_tools(): a missing file is the
+    normal "nothing set yet" case, and a present-but-broken one is ignored
+    (with a logged error) rather than taking the page down."""
+    try:
+        with open(PREFS_FILE) as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("expected a JSON object")
+        return data
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        sys.stderr.write(f"Ignoring {PREFS_FILE}: {e}\n")
+        return {}
+
+
+def save_prefs(data):
+    save_private_json(PREFS_FILE, data)
+
+
+def default_dir():
+    """The directory an empty picker, a relative typed path, and a new
+    session's default name all fall back to: prefs.json's "default_dir",
+    else $SERVERJACK_DEFAULT_DIR, else HOME. Always an existing absolute
+    realpath -- validate_default_dir() checked that at save time, but this
+    re-checks too, so a prefs.json entry that pointed at a directory since
+    removed quietly falls back instead of breaking the picker."""
+    d = (load_prefs().get("default_dir") or "").strip()
+    if not d:
+        d = (os.environ.get("SERVERJACK_DEFAULT_DIR") or "").strip()
+    if d:
+        d = os.path.expanduser(d)
+        if os.path.isdir(d):
+            return os.path.realpath(d)
+    return HOME
+
+
+def validate_default_dir(raw):
+    """(realpath, None) or (None, error) for saving a new default_dir.
+    Unlike resolve_dir(), this never creates the directory: silently
+    creating one just because someone fat-fingered the default-dir field
+    would be a much worse surprise here than the same typo in an ordinary
+    new-session directory, where "start a shell in a new project dir" is
+    the whole point. A relative typed path resolves against the *current*
+    default dir, same as everywhere else in the picker."""
+    d = (raw or "").strip()
+    if not d:
+        return None, "Give a directory."
+    d = os.path.expanduser(d)
+    if not os.path.isabs(d):
+        d = os.path.join(default_dir(), d)
+    d = os.path.realpath(d)
+    if not os.path.isdir(d):
+        return None, f"Not a directory: {d}"
+    return d, None
+
+
 def resolve_dir(dir_value, dir_custom=None):
     """The directory a session starts in. The .dirpick combobox posts one
     "dir" field, typed or picked from its suggestions -- a suggestion always
@@ -1186,11 +1260,14 @@ def resolve_dir(dir_value, dir_custom=None):
     user typed it on purpose: "start a shell/agent in a new project dir").
     dir_custom is accepted only for backward compatibility (old API callers,
     a hand-built form): when present it takes priority over dir_value, same
-    as the picker's old select+typed-override pair did."""
-    d = (dir_custom or "").strip() or (dir_value or "").strip() or HOME
+    as the picker's old select+typed-override pair did. An empty picker, and
+    a relative typed path, both resolve against default_dir() -- the owner's
+    chosen default, not always HOME."""
+    base = default_dir()
+    d = (dir_custom or "").strip() or (dir_value or "").strip() or base
     d = os.path.expanduser(d)
     if not os.path.isabs(d):
-        d = os.path.join(HOME, d)
+        d = os.path.join(base, d)
     d = os.path.realpath(d)
     if not os.path.isdir(d):
         if os.path.exists(d):
@@ -1509,11 +1586,35 @@ def _dir_walk(dirpath, root, depth, deadline, entries, truncated):
             _dir_walk(e.path, root, depth + 1, deadline, entries, truncated)
 
 
+def _index_roots():
+    """DIR_ROOTS, plus the current default_dir() when it is not already
+    reachable from one of them -- so a default dir picked from outside
+    SERVERJACK_DIRS still gets indexed and turns up in a name search, not
+    just in _dir_search_empty()'s own explicit "default dir first" list.
+    "Reachable" covers both directions: the default dir already being one of
+    DIR_ROOTS or nested under one (the usual case -- HOME is always a
+    DIR_ROOTS entry, and that's the fallback), or a DIR_ROOTS entry being
+    nested under the default dir instead, which would make indexing it
+    separately just re-walk that root's own content a second time under a
+    different root tag (and, since dir_index()'s DIR_DEPTH cap is relative
+    to whichever root reached a path, at a different depth -- see
+    _dir_walk())."""
+    d = default_dir()
+    roots = list(DIR_ROOTS)
+    for r in roots:
+        if (d == r or d.startswith(r.rstrip(os.sep) + os.sep)
+                or r.startswith(d.rstrip(os.sep) + os.sep)):
+            return roots
+    return roots + [d]
+
+
 def dir_index():
-    """(entries, truncated). entries is every directory under DIR_ROOTS, as
-    (abs_path, depth, root) -- depth 0 is a DIR_ROOTS entry itself -- hidden
-    names, DIR_PRUNE names and anything past DIR_DEPTH left out. Rebuilt at
-    most once every DIR_INDEX_TTL seconds (module-level cache)."""
+    """(entries, truncated). entries is every directory under
+    _index_roots(), as (abs_path, depth, root) -- depth 0 is a root entry
+    itself -- hidden names, DIR_PRUNE names and anything past DIR_DEPTH left
+    out. Rebuilt at most once every DIR_INDEX_TTL seconds (module-level
+    cache), so a default dir changed via /prefs can take up to that long to
+    show up in a name search."""
     global _DIR_INDEX_CACHE
     now = time.time()
     if _DIR_INDEX_CACHE is not None and now - _DIR_INDEX_CACHE[0] < DIR_INDEX_TTL:
@@ -1521,7 +1622,7 @@ def dir_index():
     entries = []
     truncated = [False]
     deadline = now + DIR_INDEX_BUDGET
-    for root in DIR_ROOTS:
+    for root in _index_roots():
         if not os.path.isdir(root):
             continue
         if len(entries) >= DIR_INDEX_CAP:
@@ -1649,11 +1750,29 @@ def _dir_search_path(q):
 
 
 def _dir_search_empty():
-    """HOME first, then dir_choices()'s own order -- exactly the old
-    dropdown's list, just with ~ moved to the front (dir_choices() itself is
-    untouched: dir_options() used to do this same reordering)."""
-    dirs = dir_choices()
-    return [HOME] + [d for d in dirs if d != HOME], False
+    """The default dir and its own first-level children first (so the
+    common case -- starting a session right where you usually do -- needs
+    no typing at all), then HOME, then dir_choices()'s own order for
+    whatever isn't already listed -- exactly the old dropdown's list, just
+    with ~ moved up front (dir_choices() itself is untouched: dir_options()
+    used to do this same reordering). When the default dir IS HOME (the
+    common case before anyone ever changes it), this is unchanged from
+    before default dirs existed: HOME, then its children, then the rest."""
+    d = default_dir()
+    head = [d]
+    try:
+        for e in sorted(os.scandir(d), key=lambda e: e.name.lower()):
+            if e.is_dir() and not e.name.startswith("."):
+                head.append(e.path)
+    except OSError:
+        pass
+    seen = set(head)
+    out = list(head)
+    for p in [HOME] + dir_choices():
+        if p not in seen:
+            out.append(p)
+            seen.add(p)
+    return out, False
 
 
 def _dir_show(path):
