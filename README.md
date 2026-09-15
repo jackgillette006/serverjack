@@ -20,11 +20,18 @@ Your coding agents, from your phone. Lightweight, private, self-hosted.
 - One stdlib Python file — the app itself; the installer also fetches a
   prebuilt ttyd binary and fzf.
 - Runs as your own account: no Node runtime, no root in daily use. The
-  installer prints at most two one-time root commands (enable linger for
-  boot start, the Tailscale operator grant for serve) when they're needed.
-- Reachable only over Tailscale by default (`tailscale serve`); on a shared
-  tailnet, set `SERVERJACK_ALLOW`.
-- Never phones home: no telemetry, no analytics, no update checks.
+  installer prints (or, on the guided path, offers to run) at most two or
+  three one-time root commands — enable linger for boot start, the
+  Tailscale operator grant for serve without sudo, and on a shared machine
+  the one `sudo tailscale serve` a Unix socket needs — only when they're
+  actually needed.
+- Reachable only over Tailscale by default (`tailscale serve`); an unset
+  allow-list admits anyone who can reach that route, a shared tailnet or a
+  shared device included — set `SERVERJACK_ALLOW` to restrict it.
+- Never phones home: serverjack itself has no telemetry, analytics or
+  update checks (the installer/bootstrap does check GitHub for the latest
+  release on `serverjack-ctl update`; Tailscale and any coding agent you
+  install are each their own vendor's software, with their own behavior).
 - Installs with one command.
 
 ## Quick start
@@ -328,10 +335,10 @@ docker, systemd, logs, disks, the `sudo` prompt the agent can't answer.
 **[VibeTunnel](https://github.com/amantus-ai/vibetunnel), Agentboard,
 [Codeman](https://github.com/Ark0N/Codeman)** — genuinely good, and worth a
 look. VibeTunnel ships prebuilt binaries (an npm package or a macOS app);
-Codeman's Linux installer documents installing Node.js and a build toolchain,
-because `node-pty` ships no Linux prebuilds and compiles from source.
-serverjack needs neither: no Node runtime, and nothing to compile — a Python
-file and a downloaded binary.
+Codeman's Linux installer documents installing Node.js and a build
+toolchain, because `node-pty` ships no Linux prebuilds and compiles from
+source. serverjack needs neither: no Node runtime, and nothing to compile —
+a Python file and a downloaded binary.
 
 **Plain ttyd** — serverjack is ttyd plus the parts ttyd doesn't have: a
 session list, a launcher, phone keys, and a page that survives a screen lock.
@@ -454,7 +461,8 @@ it runs, and it is the same one the vendor's own docs tell you to paste.
 
 ## Install (no sudo)
 
-Requirements: Linux, systemd, tmux, python3, curl. Tailscale optional.
+Requirements: Linux, systemd, tmux, curl, and Python 3.10 or newer
+recommended (3.9 still works but is end-of-life upstream). Tailscale optional.
 
 **The real floor for the one-command install** (the launcher and the
 bootstrap both check this, before downloading or staging anything): `bash`,
@@ -584,8 +592,10 @@ published at all, because serverjack proxies the terminal to it.
 
 **Tested on:** the maintainer's Debian 13 server (x86_64), with iPhone Safari
 (Add to Home Screen) and a Windows desktop browser; one independent user's
-server, with a Mac browser and iPhone; a clean Debian 13 container install;
-and CI on Ubuntu 24.04 with Chromium, Firefox and WebKit emulation.
+server, with a Mac browser and iPhone; a clean Debian 13 systemd container
+(the same image `tests/managed-install.sh`/`tests/guided-install.sh` run the
+bootstrap/guided-setup path against); and CI on Ubuntu 24.04 with Chromium,
+Firefox and WebKit emulation.
 
 Flags (all optional):
 
