@@ -1203,9 +1203,25 @@ result "tester6: A5 -- persisted --no-serve means a plain re-run never calls tai
 run_as tester6 "cd ~/checkout2 && bash uninstall.sh" >/dev/null 2>&1
 
 echo "================================================================"
+echo "== (yy) A10: an unknown flag is refused BEFORE anything is downloaded"
+echo "     or staged (not discovered later by serverjack-setup)"
+provision_ttyd_fzf tester8
+out=$(run_as tester8 "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --bogus" 2>&1); rc=$?
+result "tester8: bootstrap with --bogus exits 2" "2" "$rc"
+[[ $out == *"unknown option: --bogus"* ]] && echo "  PASS tester8: names the bad flag" \
+  || { echo "  FAIL tester8: does not name the bad flag -- got: $out"; failures=$((failures + 1)); }
+share_created=$(run_as tester8 "test -e ~/.local/share/serverjack && echo present || echo gone")
+result "tester8: nothing under \$SHARE was created (--bogus refusal)" "gone" "$share_created"
+# --ttyd-port (install.sh's own legacy, ignored-with-a-warning flag) must
+# NOT be treated as unknown -- same acceptance install.sh itself gives it.
+out=$(run_as tester8 "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --no-serve --ttyd-port 9999 --port 7791" 2>&1); rc=$?
+result "tester8: --ttyd-port (legacy) does not get refused, install still exits 0" "0" "$rc"
+[[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
+run_as tester8 "~/.local/bin/serverjack-ctl uninstall --yes" >/dev/null 2>&1
+
+echo "================================================================"
 echo "== (zz) A7: serverjack-ctl update refuses when SHA256SUMS disagrees"
 echo "     with the bootstrap's own embedded sha256 (V8)"
-provision_ttyd_fzf tester8
 out=$(run_as tester8 "curl -fsSL $BASE_URL/v$V1/serverjack-bootstrap.sh | bash -s -- --no-serve --port 7790" 2>&1); rc=$?
 result "tester8: fresh V1 install exits 0" "0" "$rc"
 [[ $rc -ne 0 ]] && echo "$out" | sed 's/^/    | /'
