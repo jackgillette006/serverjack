@@ -37,8 +37,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
   list, or an explicit "yes" before ever leaving it open to the whole
   tailnet; asks whether other Linux accounts share the machine (`--unix`);
   runs the one-time root steps (`loginctl enable-linger`,
-  `tailscale set --operator`) inline instead of only printing them, keeping
-  another account's existing operator grant unless you say to replace it,
+  `tailscale set --operator`) inline instead of only printing them, showing
+  the exact `sudo` command first and defaulting every such prompt to **no**
+  (a bare Enter runs nothing), keeping another account's existing operator
+  grant unless you explicitly say to replace it,
   and offering an alternate `--https-port` rather than overwriting an
   existing foreign `tailscale serve` mapping; then runs `install.sh` and
   verifies units, the loopback health check, and — when publishing — the

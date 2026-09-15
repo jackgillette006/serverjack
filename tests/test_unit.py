@@ -23,6 +23,8 @@ import os
 import shutil
 import stat
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 import zlib
@@ -667,6 +669,108 @@ class InstallChannelTests(unittest.TestCase):
                 with open(os.path.join(repo, "RELEASE"), "w", encoding="utf-8") as fh:
                     fh.write("version=1.7.0\n")
                 self.assertEqual(self._channel_for(home, repo), ("release", "1.7.0"))
+
+
+class ServerjackCtlUsageTests(unittest.TestCase):
+    """bin/serverjack-ctl's usage() used to print its header comment via a
+    hardcoded `sed -n '2,34p'` -- one line short of where the header
+    actually ends (found by exactly that: the last sentence of --help's
+    output was silently missing), and every future edit to the header
+    risked drifting the same way again with nothing to catch it. Fixed to
+    derive the range from the header's own end (the first non-"#" line)
+    instead of a number that has to be kept in sync by hand."""
+
+    CTL = os.path.join(os.path.dirname(HERE), "bin", "serverjack-ctl")
+
+    def _help_output(self):
+        result = subprocess.run(
+            ["bash", self.CTL, "--help"],
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_help_includes_the_last_line_of_the_header_comment(self):
+        out = self._help_output()
+        self.assertIn("~/.local/share/serverjack/.lock.", out)
+
+    def test_help_stops_before_the_first_line_of_real_code(self):
+        out = self._help_output()
+        self.assertNotIn("set -Eeuo pipefail", out)
+        self.assertNotIn("XDG_RUNTIME_DIR", out)
+
+
+class GuidedInstallDriverTests(unittest.TestCase):
+    """tests/guided-install-driver.py's own core loop, driven against a tiny
+    real child process (not the container) -- fast, and exercises the exact
+    bug that mattered: the child printing its LAST expected text and exiting
+    in the same breath. The driver's while loop broke out to "one last
+    drain" once pump() saw the child had exited, but used to never re-check
+    buf for a match AFTER that drain -- so text delivered only in that final
+    read was still sitting in buf, yet the exchange was reported as a
+    timeout anyway. Found by exactly that happening against the real
+    container (a spurious TIMEOUT on the very last expected line)."""
+
+    DRIVER = os.path.join(HERE, "guided-install-driver.py")
+
+    def _run_driver(self, exchanges, child_argv, timeout=5):
+        exfile = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8")
+        _tmpdirs.append(exfile.name)
+        json.dump(exchanges, exfile)
+        exfile.close()
+        return subprocess.run(
+            [sys.executable, self.DRIVER, str(timeout), exfile.name, "--", *child_argv],
+            capture_output=True, text=True, timeout=timeout + 10)
+
+    def test_text_delivered_in_the_same_read_as_exit_is_not_a_timeout(self):
+        # A plain "print then exit" child is caught by pump()'s own select()
+        # almost every time (data becomes readable the instant it's
+        # written, well before poll() is even consulted), so it can't
+        # reliably force the race. What actually hit this in the real
+        # container was `script`/`docker exec` layering: the tracked
+        # process is gone but a descendant still holds the pty's write end
+        # a beat longer, so output keeps arriving AFTER poll() already
+        # shows the child dead. os.fork() reproduces exactly that
+        # deterministically: the immediate child (the one Popen tracks)
+        # exits right away, so proc.poll() goes non-None almost instantly,
+        # while a forked-off grandchild -- which inherits the same stdout
+        # pipe, keeping it open -- sleeps just past pump()'s own 0.2s
+        # select() window and only then prints and exits. The text is
+        # therefore guaranteed to land in the SECOND pump() call (the "one
+        # last drain" after poll() already said the child was gone), never
+        # the first -- the exact case the old code dropped on the floor.
+        child = [sys.executable, "-c", (
+            "import os, time\n"
+            "if os.fork() == 0:\n"
+            "    time.sleep(0.3)\n"
+            "    print('READY', flush=True)\n"
+            "    os._exit(0)\n"
+            "os._exit(0)\n"
+        )]
+        result = self._run_driver([["READY", None]], child)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("TIMEOUT", result.stderr)
+        self.assertIn("EXIT 0", result.stderr)
+
+    def test_genuine_timeout_still_reported_as_one(self):
+        # The fix must not make a REAL timeout (text that never arrives)
+        # silently pass -- a child that prints nothing for the expected
+        # text at all.
+        child = [sys.executable, "-c", "pass"]
+        result = self._run_driver([["NEVER_PRINTED", None]], child, timeout=2)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("TIMEOUT", result.stderr)
+
+    def test_ordinary_multi_exchange_dialogue_still_works(self):
+        # Not just the edge case: a normal send/expect exchange (the driver's
+        # everyday job) must still behave -- one prompt, one reply, one final
+        # confirmation with nothing to send.
+        child = [sys.executable, "-c",
+                 "name = input('Name? '); print('Hello, ' + name, flush=True)"]
+        result = self._run_driver(
+            [["Name? ", "World"], ["Hello, World", None]], child)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("EXIT 0", result.stderr)
 
 
 if __name__ == "__main__":

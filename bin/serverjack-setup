@@ -375,20 +375,10 @@ check_prerequisites() {
 }
 
 # --------------------------------------------------------- 4/10. existing
-# ss -ltnp shows a listener's process name for our own uid always, and for
-# others' too when this happens to run with enough privilege to see it;
-# either way the port number itself is visible with no privilege at all, so
-# "busy" is always detectable even when we can't name the owner -- same
-# reasoning install.sh's own port_free()/port_holder() rely on.
-# `|| true`: an unprivileged `ss` can't show another account's process info
-# for a socket it doesn't own, so the final `grep -o` legitimately finds no
-# "users:..." to print -- under pipefail that's a real nonzero pipeline exit,
-# and `holder=$(port_holder ...)` (a plain assignment, not inside if/&&)
-# aborts the whole script right there under set -e otherwise. Found by
-# exactly that happening (a foreign-owned socket check killing the script
-# silently, no "port busy" message ever printed).
-port_holder() { ss -ltnp 2>/dev/null | grep ":$1 " | grep -o 'users:.*' | head -1 || true; }
-port_free() { ! ss -ltnp 2>/dev/null | grep -q ":$1 "; }
+# port_free/port_holder/serve_backend_for now come from bin/serverjack-lib.sh
+# (sourced in main(), right after resolve_self()) -- shared with install.sh
+# so a fix to one (the `|| true` guards below, each found the hard way) can't
+# miss the other; they used to be duplicated here and drifted.
 
 check_foreign_port() {
   local port=${OPT_PORT:-7680}
@@ -407,24 +397,6 @@ by hand later: bash install.sh --port N --https-port N --title NAME
 (add --title so the two pages are told apart on a phone). Stopping.
 EOF
   exit 3
-}
-
-# Same awk this parses install.sh's own `tailscale serve status` with --
-# duplicated rather than sourced, since these are two separate processes
-# with no shared module system; keep the two in sync if the output format
-# ever changes.
-serve_backend_for() {  # $1 https port  $2 path
-  command -v tailscale >/dev/null 2>&1 || return 0
-  # `|| true`: `tailscale serve status` can exit nonzero when nothing is
-  # configured yet (the common case for a fresh account), and under pipefail
-  # that would make this whole pipeline "fail" even though awk itself found
-  # nothing to print -- same reasoning as port_holder() above, and callers
-  # (check_serve_clash's `backend=$(serve_backend_for ...)`) assign this
-  # plainly, so an unprotected failure here would abort the whole script.
-  tailscale serve status 2>/dev/null | awk -v wp="$1" -v wpath="$2" '
-    /^https:\/\// { h=$1; sub(/^https:\/\//,"",h); n=split(h,a,":");
-                    cur=(n>1 ? a[n] : "443"); next }
-    /^\|--/ && cur==wp && $2==wpath { print $NF; exit }' || true
 }
 
 env_get() {  # $1 key  $2 fallback -- reads $ENV_FILE the way install.sh's cfg() does
@@ -493,14 +465,8 @@ handle_existing_install() {
     repo=$(<"$install_path")
   fi
   if [[ -n $repo && -d "$repo/.git" ]]; then
-    cat >&2 <<EOF
-serverjack is already installed here as a git checkout ($repo).
-
-This guided setup does not migrate an existing install in this phase (no
-silent takeover). Update it directly instead:
-  cd $repo && git pull --ff-only && bash install.sh
-EOF
-    exit 3
+    rerun_git "$repo"
+    exit 0
   fi
   cat >&2 <<EOF
 serverjack already has a user systemd unit installed here ($unit), but this
@@ -741,7 +707,11 @@ run_privileged() {  # $1 = reason, remaining = argv to run with sudo
   local reason=$1; shift
   say "Needs root once: $reason"
   printf '  sudo'; printf ' %q' "$@"; printf '\n'
-  if ask_yn "Run it now?" y && sudo "$@"; then
+  # Default NO: this runs a real `sudo` command the moment you press Enter
+  # (or answer y), and the two callers below cover a genuinely
+  # machine-global change (tailscale's operator) and boot persistence --
+  # neither should happen on a blank-Enter accident.
+  if ask_yn "Run it now?" n && sudo "$@"; then
     return 0
   fi
   { printf 'Remaining step:\n  sudo'; printf ' %q' "$@"; printf '\n'; } >&2
@@ -887,18 +857,28 @@ step9_install_and_verify() {
 }
 
 verify_and_report() {
-  local active; active=$(systemctl --user is-active serverjack serverjack-ttyd 2>/dev/null | paste -sd' ' -)
+  # `|| true` on the is-active pipeline: it exits non-zero (so, under
+  # pipefail, this whole pipeline does) whenever EITHER unit isn't
+  # active -- without the guard, `set -e` aborted verify_and_report
+  # silently, right before it could ever print the health-check failure
+  # and journalctl hint below (same bug, same fix, as bin/serverjack-ctl's
+  # cmd_status).
+  local active; active=$( { systemctl --user is-active serverjack serverjack-ttyd 2>/dev/null || true; } | paste -sd' ' -)
   say "Units: $active"
   local port; port=$(env_get SERVERJACK_PORT 7680)
   local listen; listen=$(env_get SERVERJACK_LISTEN tcp)
-  local code
+  local -a healthz_args
   if [[ $listen == unix ]]; then
-    code=$(curl -s -o /dev/null --unix-socket "${XDG_RUNTIME_DIR}/serverjack/web.sock" -w '%{http_code}' http://serverjack/healthz 2>/dev/null || echo 000)
+    healthz_args=(--unix-socket "${XDG_RUNTIME_DIR}/serverjack/web.sock" http://serverjack/healthz)
   else
-    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/healthz" 2>/dev/null || echo 000)
+    healthz_args=("http://127.0.0.1:$port/healthz")
   fi
-  if [[ $code != 200 ]]; then
-    echo "Local health check failed (HTTP $code). Check: journalctl --user -u serverjack -n 50" >&2
+  # A single immediate curl right after `systemctl restart` (or install.sh's
+  # own restart, just before this runs) raced the app's own startup time and
+  # could report failure on an install that was actually fine a moment
+  # later -- poll instead, same helper install.sh's own final check uses.
+  if ! wait_local_healthz 30 "${healthz_args[@]}"; then
+    echo "Local health check failed (HTTP $(local_http_code "${healthz_args[@]}")). Check: journalctl --user -u serverjack -n 50" >&2
     exit 1
   fi
   if (( NO_SERVE )); then
@@ -921,9 +901,9 @@ except Exception:
     return 0
   fi
   local url="https://$host"; [[ $HTTPS_PORT != 443 ]] && url="$url:$HTTPS_PORT"; url="$url/"
-  code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$url" 2>/dev/null || echo 000)
+  local code; code=$(local_http_code -m 10 "$url")
   if [[ $code != 200 && -n ${TS_IP:-} ]]; then
-    code=$(curl -s -o /dev/null -m 10 --resolve "$host:$HTTPS_PORT:$TS_IP" -w '%{http_code}' "$url" 2>/dev/null || echo 000)
+    code=$(local_http_code -m 10 --resolve "$host:$HTTPS_PORT:$TS_IP" "$url")
   fi
   if [[ $code == 200 ]]; then
     say "Ready: $url"
@@ -993,6 +973,68 @@ except Exception:
   esac
 }
 
+# The same rerun menu as rerun_managed(), for a git-checkout install -- this
+# used to unconditionally refuse ("does not migrate an existing install"),
+# even though ctl's own usage, this script's header, the README and the
+# CHANGELOG all say setup shows the rerun menu on ANY existing install, git
+# or managed. $INSTALL_SH already resolves to THIS checkout's install.sh
+# (resolve_self() finds it either directly, next to bin/serverjack-setup
+# when run from the checkout, or via $CFG_DIR/install-path when run as the
+# flat `~/.local/bin/serverjack-setup` -- e.g. `serverjack-ctl setup`) --
+# same variable rerun_managed() uses unmodified, no reassignment needed.
+rerun_git() {  # $1 = the checkout's absolute path
+  local repo=$1
+  say "serverjack is already installed here as a git checkout ($repo) -- this is a rerun."
+  local listen port https_port allow serve_state
+  listen=$(env_get SERVERJACK_LISTEN tcp)
+  port=$(env_get SERVERJACK_PORT 7680)
+  https_port=$(env_get SERVERJACK_HTTPS_PORT 443)
+  allow=$(env_get SERVERJACK_ALLOW '')
+  serve_state="not published"
+  if command -v tailscale >/dev/null 2>&1 && [[ -n $(serve_backend_for "$https_port" /) ]]; then
+    serve_state="published on https port $https_port"
+  fi
+  echo "Current state:"
+  echo "  checkout:   $repo"
+  echo "  listen:     $listen (port $port)"
+  echo "  serve:      $serve_state"
+  echo "  allow-list: ${allow:-(none -- anyone on your tailnet)}"
+  echo
+  echo "What would you like to do?"
+  echo "  1) update       git pull --ff-only && bash install.sh"
+  echo "  2) allow-list   change who may reach it"
+  echo "  3) publish      change publish settings (serve on/off, https port)"
+  echo "  4) nothing      leave everything as it is"
+  local choice; choice=$(ask_line "Choice [1-4, default 4]:")
+  case "${choice:-4}" in
+    1) ( cd "$repo" && git pull --ff-only && bash install.sh ) ;;
+    2)
+      if ! command -v tailscale >/dev/null 2>&1; then
+        echo "Tailscale isn't installed -- nothing to base an allow-list on. Run setup fresh to install it first." >&2
+        return 0
+      fi
+      read_tailscale_self
+      if [[ $TS_TAGGED == 1 ]]; then
+        prompt_allow_list_required
+      else
+        prompt_allow_list_optional
+      fi
+      env_setcfg SERVERJACK_ALLOW "$ALLOW_VALUE"
+      systemctl --user restart serverjack serverjack-ttyd
+      say "Updated the allow-list."
+      ;;
+    3)
+      LISTEN=$listen; HTTPS_PORT=$https_port
+      step5_tailscale
+      check_serve_clash
+      build_install_args
+      bash "$INSTALL_SH" "${INSTALL_ARGS[@]}"
+      verify_and_report
+      ;;
+    *) say "Leaving everything as it is." ;;
+  esac
+}
+
 # Same flag set install.sh accepts (a subset: no --ttyd-port, that's gone
 # there too). Each one answers the matching guided-flow question instead of
 # asking it. OPT_LISTEN empty means step 7 still asks.
@@ -1025,6 +1067,8 @@ main() {
   parse_flags "$@"
   refuse_root_or_sudo_user
   resolve_self
+  # shellcheck source=bin/serverjack-lib.sh
+  source "$REPO_ROOT/bin/serverjack-lib.sh"
   check_platform
   check_systemd_user_manager
   check_prerequisites
