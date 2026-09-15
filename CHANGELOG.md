@@ -7,6 +7,111 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.4.0 - 2026-09-15
+
+### Fixed (round 5 review: security blockers, 17 install-flow findings, 7 installer gaps)
+
+- **Security.** The guided install (`bin/serverjack-setup`) used to run
+  `install.sh` (starting the units and publishing the tailscale serve route)
+  BEFORE writing `SERVERJACK_ALLOW`, leaving a fresh install briefly
+  reachable with no per-login restriction. `install.sh` gains an `--allow`
+  flag that persists it to the env file before anything starts; setup
+  resolves the allow-list and passes it through instead of a post-hoc
+  `env_setcfg` + restart.
+- The rerun menu's "publish" option now actually turns publishing off (and
+  changes the https port) instead of leaving the old tailscale serve
+  mapping reachable regardless, and asks the allow-list question on the
+  local-only -> published transition, which it used to skip.
+- `serverjack-ctl update` now requires SHA256SUMS to independently confirm
+  a release archive, not just note a disagreement with the bootstrap's own
+  embedded sha256; `bin/serverjack-ctl`'s `activate_release()` is now the
+  one place update/resume/rollback share backup, the interruption trap, the
+  health wait and restore-on-failure (the resume path used to have none of
+  that); `serverjack-ctl`/`serverjack-setup` back up and restore
+  `~/.local/bin/ttyd` and `fzf` across a failed update, not just the units/
+  env/binaries they already covered.
+- `install.sh` now actually fails (exit 1) when the units or the local
+  health check never come up, instead of always exiting 0; the managed-
+  install finalizer only clears the resumable `"state": "installing"`
+  marker once that health check has actually confirmed success.
+- `bin/serverjack-setup` takes `~/.local/share/serverjack/.lock` narrowly
+  around its own mutations (install.sh, install.json/env writes, serve
+  changes), so a guided install/rerun can no longer interleave with a
+  concurrent `serverjack-ctl update`/`rollback`.
+- `--no-serve` now persists (`SERVERJACK_SERVE` in the env file) for a git-
+  checkout install too, so `serverjack-ctl update`'s git-channel path (and
+  the rerun menu, and the page's Update row) stop silently re-publishing on
+  every later update.
+- The bootstrap validates every flag it's about to forward to
+  `serverjack-setup` (the set it actually accepts, plus install.sh's legacy
+  `--ttyd-port`, accepted with a warning) BEFORE downloading or staging
+  anything -- a typo used to only be discovered after a release was already
+  staged and "current" already swapped to it.
+- One `update_install_json()` read-modify-write helper (`bin/serverjack-lib.sh`)
+  is now shared by the bootstrap, `serverjack-ctl` and `serverjack-setup`,
+  so a caller that only means to change one field (`install_args`) can no
+  longer silently drop another (most importantly an in-progress update's
+  `"state": "activating"`).
+- `bin/serverjack-ctl`'s `units_active()` used to be a single
+  `systemctl is-active unit1 unit2` call -- that's a logical OR per
+  `systemctl(1)`, not AND, so a health check could pass with one of the two
+  units down. Every local health-check `curl` now also carries a
+  per-request timeout, so a listener that accepts a connection and never
+  responds can no longer hang a whole health-check loop.
+- Fixed the systemd-escaped `ExecStart=` comparison (`bin/serverjack-ctl`'s
+  `detect_channel()`, `bin/serverjack-setup`'s rerun detection) for a
+  `$HOME` containing a literal `%`, `\` or `"`.
+- `build-release.sh`'s archive mtime is now pinned to the release commit's
+  own timestamp (`SOURCE_DATE_EPOCH`), not the real build-time clock, so two
+  builds of the same tree are actually byte-identical (its `RELEASE` file's
+  own build timestamp aside, which stays real on purpose).
+- `bin/serverjack-ctl`'s and `bin/serverjack-setup`'s `--help` derive their
+  printed range from the header comment's own end instead of a hardcoded
+  line count that silently truncates as the header grows.
+- Fixed a broken README anchor link (text and href naming two different,
+  real sections) and added `scripts/check-readme-anchors.py` to catch it
+  again.
+- The page's "Update serverjack" row is now gated on
+  `~/.local/bin/serverjack-ctl` actually existing, not just on this process
+  physically living under `~/.local/share/serverjack/releases/` (a tarball
+  extracted there by hand, never run through the bootstrap, used to show
+  the row and then fail to launch it).
+- `serverjack-setup`'s `read_tailscale_self()` used tab as its field
+  separator with `IFS=$'\t' read` -- tab is one of bash's built-in "IFS
+  whitespace" characters regardless of what else is in `$IFS`, so a tagged
+  node with no user login (an empty field between two tabs) silently
+  shifted every field after it. Switched to `|`, an ordinary delimiter.
+- `serverjack-setup` now treats a missing `install-path` with no unit as
+  "nothing installed here" (pointing at the one-liner) instead of
+  "internal error" -- the ordinary state right after `uninstall.sh`, which
+  deliberately removes that file.
+- `bootstrap/launcher.sh` (the canonical source of the website's physical
+  installer, `bootstrap/launcher.sh` here / `serverjack/install.sh` in the
+  website repo, exported by `scripts/export-launcher.sh`) fixed a real bug
+  where its own progress message printed to stdout got pasted into the
+  downloaded bootstrap's path by the caller's own command substitution;
+  refuses a truncated or HTML response before ever running it; and, along
+  with the bootstrap itself, now checks the real prerequisite floor (bash,
+  curl, python3, tar, sha256sum, a working `systemd --user`, flock, CA
+  certificates) before downloading or staging anything, offering the exact
+  distro install command with sudo (default no).
+- The guided flow now completes a `--unix` install's "tailscale serve needs
+  root to proxy to a Unix socket" step interactively too (same consent
+  prompt as the other one-time root steps), instead of only ever printing
+  it for the operator to paste by hand.
+- `.github/workflows/release.yml` now refuses to draft a release unless the
+  tagged commit already has passing "Browser and security tests", "Lint"
+  and "Install suites (managed + guided)" check runs, and verifies the
+  built archive's sha256 against both SHA256SUMS and the bootstrap's own
+  embedded pin (plus the bootstrap's end-of-file marker) before drafting.
+- README: qualified "No Node, no sudo, no root" and the unconditional
+  Tailscale-reachability claim, corrected the VibeTunnel/node-pty
+  comparison, bumped the stated Python floor to 3.10 (3.9 still works),
+  added a "Tested on" platform list, documented the real one-command-
+  install prerequisite floor and the git-checkout-to-managed migration
+  path, and relabeled the guided setup's final tailnet check as confirming
+  the app answers locally -- never as proof unauthorized users are denied.
+
 ### Added
 
 - **One-command managed install.** `scripts/build-release.sh <version>`
