@@ -902,7 +902,19 @@ build_install_args() {
   if (( NO_SERVE )); then
     INSTALL_ARGS+=(--no-serve)
   else
-    INSTALL_ARGS+=(--https-port "$HTTPS_PORT")
+    # A5's own persistence means install.sh no longer treats "neither
+    # --no-serve nor --serve passed" as "serve" by default -- it falls back
+    # to whatever SERVERJACK_SERVE already says in the env file. That used
+    # to be exactly right for a git checkout's plain `bash install.sh`, but
+    # here it silently broke the rerun menu's off-to-on transition (B2):
+    # this call omitted BOTH flags (relying on the old always-serve
+    # default), so a rerun coming from a just-turned-off install (which DID
+    # pass --no-serve, and so DID persist SERVERJACK_SERVE=off) kept
+    # reading that stale "off" and never actually republished, even though
+    # setup itself had already resolved NO_SERVE=0 for this exact run.
+    # --serve is explicit here so it always overrides whatever was
+    # persisted before, matching what this call actually resolved.
+    INSTALL_ARGS+=(--serve --https-port "$HTTPS_PORT")
   fi
   # Resolved by step6_allow_list (fresh install) or a rerun path that
   # explicitly asked -- passed through as --allow so install.sh writes it to
