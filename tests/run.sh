@@ -134,9 +134,10 @@ echo "== launcher (host-side)"
 bash ./launcher.sh
 
 # B4: serverjack-ctl's units_active() (OR vs AND) and the health-check
-# curls' per-request timeout. No Docker needed (a fake systemctl, and a
-# real python3 socket that accepts and never responds) -- host-side.
-echo "== ctl health checks (host-side)"
+# curls' per-request timeout. B5: ttyd/fzf are backed up and restored too.
+# No Docker needed (a fake systemctl, and a real python3 socket that
+# accepts and never responds) -- host-side.
+echo "== ctl health + backup/restore checks (host-side)"
 bash ./ctl-health.sh
 
 # A throwaway HOME, created before anything below reads it: bin/serverjack's

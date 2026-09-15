@@ -13,9 +13,23 @@
 #      responds (not the same as connection-refused, which curl reports
 #      immediately) could hang a single request forever -- a real Python
 #      socket server does exactly that here, against the real curl binary.
+# And for B5:
+#   3. backup_current_state()/restore_from_backup() now also snapshot and
+#      restore ~/.local/bin/ttyd and fzf, which install.sh replaces
+#      whenever a release bumps either pin -- proven directly against the
+#      real functions (bin/serverjack-ctl sourced, HOME pointed at a
+#      private sandbox for the whole file so nothing here can ever touch a
+#      real account's actual serverjack install).
 set -Eeuo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 REPO=$(cd .. && pwd)
+
+# Every section below shares one private HOME -- backup_current_state()/
+# restore_from_backup() (section c) read/write real paths under it
+# (~/.local/share/serverjack, ~/.local/bin/*), so this must never be the
+# real invoking account's actual HOME.
+export HOME
+HOME=$(mktemp -d "${TMPDIR:-/tmp}/serverjack-ctl-health-home.XXXXXX")
 
 failures=0
 result() {  # $1 label  $2 expected  $3 got
@@ -31,7 +45,7 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/serverjack-ctl-health-test.XXXXXX")
 HANG_PID=""
 cleanup() {
   [[ -n $HANG_PID ]] && kill "$HANG_PID" >/dev/null 2>&1 || true
-  rm -rf "$WORK"
+  rm -rf "$WORK" "$HOME"
 }
 trap cleanup EXIT
 
@@ -55,6 +69,11 @@ if [[ "$1 $2 $3" == "--user is-active --quiet" && $# -eq 4 ]]; then
   grep -qxF "$unit" "$active_file" 2>/dev/null
   exit $?
 fi
+# restore_from_backup() (section c, B5) also calls these two -- no-op
+# success, since section (c) only cares about file restoration, not a real
+# unit lifecycle (that's what tests/managed-install.sh exercises for real).
+if [[ "$1 $2" == "--user daemon-reload" && $# -eq 2 ]]; then exit 0; fi
+if [[ "$1 $2" == "--user restart" && $# -ge 3 ]]; then exit 0; fi
 echo "fake systemctl: unexpected invocation: $*" >&2
 exit 99
 SH
@@ -132,6 +151,43 @@ else
   echo "  FAIL (b) wait_local_healthz took ${elapsed}s for a 3s budget -- a hung request blocked the loop"
   failures=$((failures + 1))
 fi
+
+echo "================================================================"
+echo "(c) backup_current_state()/restore_from_backup() cover ttyd/fzf too (B5)"
+
+mkdir -p "$HOME/.local/bin" "$HOME/.config/serverjack" "$HOME/.config/systemd/user"
+printf 'GOOD_TTYD_V1\n' > "$HOME/.local/bin/ttyd"
+printf 'GOOD_FZF_V1\n' > "$HOME/.local/bin/fzf"
+chmod 755 "$HOME/.local/bin/ttyd" "$HOME/.local/bin/fzf"
+printf 'SERVERJACK_PORT=7680\n' > "$HOME/.config/serverjack/env"
+printf '[Service]\nExecStart=/bin/true\n' > "$HOME/.config/systemd/user/serverjack.service"
+printf '[Service]\nExecStart=/bin/true\n' > "$HOME/.config/systemd/user/serverjack-ttyd.service"
+install -m 755 "$REPO/bin/serverjack-ctl" "$HOME/.local/bin/serverjack-ctl"
+install -m 755 "$REPO/bin/serverjack-setup" "$HOME/.local/bin/serverjack-setup"
+
+backup_dir=$(backup_current_state)
+[[ $(cat "$backup_dir/ttyd" 2>/dev/null) == GOOD_TTYD_V1 ]] && echo "  PASS (c) backup_current_state() snapshots ttyd" \
+  || { echo "  FAIL (c) backup_current_state() did not snapshot ttyd"; failures=$((failures + 1)); }
+[[ $(cat "$backup_dir/fzf" 2>/dev/null) == GOOD_FZF_V1 ]] && echo "  PASS (c) backup_current_state() snapshots fzf" \
+  || { echo "  FAIL (c) backup_current_state() did not snapshot fzf"; failures=$((failures + 1)); }
+
+# Simulate install.sh having just replaced both with a new (here: broken)
+# release's copies -- the very thing that can be what caused the update to
+# fail in the first place.
+printf 'BROKEN_TTYD_V2\n' > "$HOME/.local/bin/ttyd"
+printf 'BROKEN_FZF_V2\n' > "$HOME/.local/bin/fzf"
+
+# Not testing wait_healthy() here (sections (a)/(b) already do, and it has
+# nothing to say about file bytes) -- stub it so this doesn't also pay for
+# its real 15s no-op poll against a fake systemctl/no real server.
+wait_healthy() { return 0; }
+mkdir -p "$HOME/.local/share/serverjack/releases/1.0.0"
+restore_from_backup "1.0.0" "releases/1.0.0" "$backup_dir" >/dev/null 2>&1 || true
+
+[[ $(cat "$HOME/.local/bin/ttyd" 2>/dev/null) == GOOD_TTYD_V1 ]] && echo "  PASS (c) restore_from_backup() restores the OLD ttyd bytes, not a new download" \
+  || { echo "  FAIL (c) restore_from_backup() left ttyd as: $(cat "$HOME/.local/bin/ttyd" 2>/dev/null)"; failures=$((failures + 1)); }
+[[ $(cat "$HOME/.local/bin/fzf" 2>/dev/null) == GOOD_FZF_V1 ]] && echo "  PASS (c) restore_from_backup() restores the OLD fzf bytes, not a new download" \
+  || { echo "  FAIL (c) restore_from_backup() left fzf as: $(cat "$HOME/.local/bin/fzf" 2>/dev/null)"; failures=$((failures + 1)); }
 
 echo
 if (( failures > 0 )); then
