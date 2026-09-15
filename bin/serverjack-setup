@@ -658,7 +658,17 @@ prompt_allow_list_required() {  # sets ALLOW_VALUE (never empty)
 }
 
 step6_allow_list() {
-  (( NO_SERVE )) && { ALLOW_VALUE=""; return 0; }
+  # ALLOW_VALUE_SET tells build_install_args() this run actually resolved an
+  # allow-list answer (even an explicit empty one), so it's safe to persist
+  # via --allow. Not set on the NO_SERVE early return: there is nothing to
+  # ask (no publishing means no identity headers to restrict), and leaving
+  # it unset here means a later "publish" rerun step that DOES ask will be
+  # the one that actually persists it -- see B2's local-only -> published
+  # transition, which must not skip this question.
+  if (( NO_SERVE )); then
+    ALLOW_VALUE=""
+    return 0
+  fi
   if [[ $TS_TAGGED == 1 ]]; then
     say "This node is tagged: Tailscale does not set identity headers for tagged devices."
     prompt_allow_list_required
@@ -672,6 +682,7 @@ step6_allow_list() {
   else
     prompt_allow_list_optional
   fi
+  ALLOW_VALUE_SET=1
 }
 
 # --------------------------------------------------------- 7. shared machine
@@ -779,6 +790,17 @@ build_install_args() {
   else
     INSTALL_ARGS+=(--https-port "$HTTPS_PORT")
   fi
+  # Resolved by step6_allow_list (fresh install) or a rerun path that
+  # explicitly asked -- passed through as --allow so install.sh writes it to
+  # the env file BEFORE it starts anything (see install.sh's own comment on
+  # that flag). Not simply `[[ -n $ALLOW_VALUE ]]`: an explicit, confirmed
+  # empty list (SERVERJACK_ALLOW="") is a real, deliberate answer too, not
+  # "unset" -- ALLOW_VALUE_SET is what distinguishes "this run resolved an
+  # allow-list answer" from "this call site never asked" (e.g. rerun's
+  # options 1/4, which must never touch an already-configured allow-list).
+  if (( ${ALLOW_VALUE_SET:-0} )); then
+    INSTALL_ARGS+=(--allow "$ALLOW_VALUE")
+  fi
   # Explicit if, not a bare `[[ cond ]] && ...`: as the LAST statement of a
   # function called as a plain top-level statement (`build_install_args`,
   # unconditional, in step9/rerun below), that idiom's own exit status
@@ -844,15 +866,15 @@ PY
 
 step9_install_and_verify() {
   build_install_args
+  # The allow-list, when this run resolved one, is passed via --allow above
+  # (build_install_args) so install.sh itself writes it to the env file
+  # before it starts or publishes anything -- there is deliberately no
+  # separate env_setcfg + restart here any more (see install.sh's own
+  # comment on --allow for why a post-hoc write was a real, if narrow,
+  # security gap: B1).
   say "Running: bash install.sh ${INSTALL_ARGS[*]}"
   bash "$INSTALL_SH" "${INSTALL_ARGS[@]}"
   record_install_args
-  if (( ! NO_SERVE )) && [[ -n ${ALLOW_VALUE:-} ]]; then
-    env_setcfg SERVERJACK_ALLOW "$ALLOW_VALUE"
-    say "Applying the allow-list (restarting the units)"
-    systemctl --user restart serverjack serverjack-ttyd
-    sleep 1
-  fi
   verify_and_report
 }
 

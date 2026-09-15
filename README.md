@@ -556,6 +556,7 @@ Flags (all optional):
 | `--port N` | serverjack's port (default `7680`); implies `--tcp` |
 | `--https-port N` | HTTPS port `tailscale serve` publishes on: `443`, `8443` or `10000` (default `443`) |
 | `--title NAME` | page / tab / PWA name (default the hostname) |
+| `--allow LIST` | set `SERVERJACK_ALLOW` (comma-separated tailnet logins), written to the env file *before* anything is started or published — mainly for `serverjack-setup`, which resolves this from its own prompts |
 
 **Scrolling.** A finger swipe or a mouse wheel over the terminal scrolls the
 tmux pane's history: the page asks serverjack, which puts the pane into
