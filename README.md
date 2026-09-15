@@ -181,17 +181,34 @@ now except the things that need a password, a device, or a human at the
 machine. When one stops and says "run this yourself", you are usually away
 from the server with a phone in your hand.
 
-Pick **Shell** or an installed agent, a directory (defaults to `~`), and tap
-**Start**:
+Pick **Shell** or an installed agent, a directory (defaults to your chosen
+default directory, `~` until you set one), and tap **Start**:
 
 The directory field is a combobox, not a dropdown: start typing part of a
 folder's name (anywhere it's nested, not just top-level) and a matching list
-drops in below. Arrow keys move the highlight, Enter picks the highlighted
-suggestion, and **Tab** fills it in with a trailing `/` and shows *its*
-children too, so you can drill down the same way shell completion works.
-Typing (or pasting) a full path works exactly as before — any path can be
-typed, DIR_ROOTS or not, and one that doesn't exist yet is created when the
-session starts.
+drops in below, ranked **least nested first** — a shallow match always beats
+a deeper one, however exact the deeper one is; only at the same depth does
+exact beat prefix beat substring. Children of a matching folder (found only
+because the query is in their *parent's* name) always sort after every
+direct name match, however shallow those children are, so drilling into a
+folder never buries a real match under its own contents. Arrow keys move the
+highlight, Enter picks the highlighted suggestion, and **Tab** fills it in
+with a trailing `/` and shows *its* children too, so you can drill down the
+same way shell completion works. Typing (or pasting) a full path works
+exactly as before — any path can be typed, DIR_ROOTS or not, and one that
+doesn't exist yet is created when the session starts.
+
+Leave the field empty and a session starts in your **default directory**
+(shown right in the placeholder, e.g. "`~/projects` — type a folder name or
+path"). It starts out as `~`, but the muted line under the field — "Starts
+in `~` · change" — expands an inline picker of its own to set a different
+one; save it there and every picker on the page (every tool card, Add a
+shortcut, the terminal's own new-session panel) picks it up immediately, a
+relative path you type resolves against it instead of `~`, and the
+empty-query suggestion list leads with it and its own children before
+falling into `~` and the rest. It's stored in `prefs.json`, and `SERVERJACK_DEFAULT_DIR` — see
+[Configure](#configure) below — sets a fallback for when nobody's chosen one
+yet.
 
 - **Shell** opens a plain login shell, or — type a command first — runs it
   **in front of** that login shell: an interactive `sudo` prompt works,
@@ -827,6 +844,7 @@ Works, with four things to know first:
 | `SERVERJACK_TITLE` | hostname | page title, tab title, PWA name |
 | `SERVERJACK_DIRS` | `~/projects:~/src:~/code:~` | directories offered when starting a session |
 | `SERVERJACK_DIR_DEPTH` | `5` | how many levels deep the directory picker's search index walks under each `SERVERJACK_DIRS` root |
+| `SERVERJACK_DEFAULT_DIR` | unset (`HOME`) | fallback for the picker's empty-value default when `prefs.json` has no `default_dir` of its own (set from the Start card's "change" link) |
 | `SERVERJACK_TOOLS` | unset (all) | optional comma-separated tool ids: restricts and orders the agent choices, both the Start a session radios and the Agent servers rows, e.g. `claude,codex` |
 | `SERVERJACK_TERM` | `/term/` | URL path serverjack serves the terminal on (proxying it to ttyd's socket) |
 | `TTYD_EXTRA_ARGS` | unset | optional ttyd client options, shell-parsed as data with no expansion. Allowed flags: `-t`/`--client-option`, `-T`/`--terminal-type`, `-m`/`--max-clients`, and `-P`/`--ping-interval`. Listener, auth, command, base-path, origin and write-access flags are refused. A JSON value (e.g. `-t theme={"background":"#123456"}`) needs its inner `"` escaped as `\"` -- the shell-style parsing that keeps this safe also treats a bare `"..."` as quoting syntax and strips it, corrupting the JSON otherwise |

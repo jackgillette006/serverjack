@@ -31,6 +31,18 @@ and this project uses [Semantic Versioning](https://semver.org/).
   doesn't exist yet is still created when the session starts; a picked
   suggestion always exists already. New `SERVERJACK_DIR_DEPTH` (default 5)
   caps how deep the search index walks under each `SERVERJACK_DIRS` root.
+  Results rank **least nested first**: a shallower match always beats a
+  deeper one regardless of exact/prefix/substring, which only breaks ties
+  at the same depth; a folder's children (matched only through its own
+  name) always sort after every direct match, however shallow, so drilling
+  in never buries a real match under its own contents. You can also set a
+  **default directory** from the page itself — the muted "Starts in
+  `~/projects` · change" line under the Start card's picker reveals an
+  inline form, saved to `prefs.json` — which an empty picker, a relative
+  typed path, and every other picker's placeholder on the page (Add a
+  shortcut, every tool card, the terminal's new-session panel) all use
+  instead of `~`. New `SERVERJACK_DEFAULT_DIR` env sets the fallback for
+  before one is ever chosen.
 
 ## 1.4.0 - 2026-09-15
 
