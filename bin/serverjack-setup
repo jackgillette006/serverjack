@@ -558,9 +558,30 @@ except Exception:
     print("")' 2>/dev/null || true
 }
 
+# C2 (Codex): used to print all four fields tab-separated on ONE line and
+# split it with `IFS=$'\t' read`. Tab is one of bash's three built-in "IFS
+# whitespace" characters (space/tab/newline) REGARDLESS of what else is in
+# $IFS -- setting IFS to "just a tab" does not opt out of that; consecutive
+# delimiters still collapse and leading/trailing ones still get stripped,
+# exactly like the default space/tab/newline IFS does with spaces. A tagged
+# node with no User login (its own Tags-only entry, common for a headless/
+# server node) prints "1\t\t<dns>\t<ip>" -- the double-tab collapses to one
+# delimiter, so `read` silently shifts every field after the empty one:
+# TS_LOGIN got the DNS name, TS_DNS got the IP, TS_IP ended up empty.
+#
+# Fixed with "|" as the delimiter instead -- an ordinary character, not one
+# of IFS's three special "blank" ones, so `read` neither collapses
+# consecutive delimiters nor strips leading/trailing empty fields (none of
+# a tailnet login/DNS name/IP ever legitimately contains one). An earlier
+# attempt printed each field on its own line and read each with a separate
+# `IFS= read -r` instead -- also wrong, a DIFFERENT way: bash's `$(...)`
+# strips EVERY trailing newline, not just one, so however many of the
+# LAST fields were empty (their trailing blank lines) vanished from the
+# capture entirely, and the read for a now-missing line failed at EOF.
+# One line, one delimiter that is never special, is what actually works.
 read_tailscale_self() {  # sets TS_TAGGED TS_LOGIN TS_DNS TS_IP
-  local line
-  line=$(tailscale status --json 2>/dev/null | python3 -c 'import json, sys
+  local out
+  out=$(tailscale status --json 2>/dev/null | python3 -c 'import json, sys
 try:
     d = json.load(sys.stdin)
     self = d.get("Self") or {}
@@ -571,10 +592,10 @@ try:
     dns = (self.get("DNSName") or "").rstrip(".")
     ips = self.get("TailscaleIPs") or []
     ip = ips[0] if ips else ""
-    print(f"{1 if tags else 0}\t{login}\t{dns}\t{ip}")
+    print(f"{1 if tags else 0}|{login}|{dns}|{ip}")
 except Exception:
-    print("0\t\t\t")' 2>/dev/null) || line=$'0\t\t\t'
-  IFS=$'\t' read -r TS_TAGGED TS_LOGIN TS_DNS TS_IP <<<"$line"
+    print("0|||")' 2>/dev/null) || out="0|||"
+  IFS='|' read -r TS_TAGGED TS_LOGIN TS_DNS TS_IP <<<"$out"
 }
 
 install_tailscale() {
@@ -1243,4 +1264,11 @@ main() {
   step9_install_and_verify
 }
 
-main "$@"
+# Guarded (not a bare `main "$@"`) so a test can `source` this file to call
+# a function directly (e.g. read_tailscale_self()) without running the full
+# guided flow -- same pattern, same reasoning, as bin/serverjack-ctl's own
+# guard. Ordinary invocation (`bash serverjack-setup ...`, or the installed
+# `serverjack-setup ...`) is unaffected: $0 IS this file then.
+if [[ ${BASH_SOURCE[0]} == "${0}" ]]; then
+  main "$@"
+fi
