@@ -721,6 +721,70 @@ _activation_interrupted() {
   exit "$rc"
 }
 
+# A9: activates a specific staged release as "current" -- backup, the
+# interruption trap, the health wait, and restore-on-failure, ALL in one
+# place. cmd_update's normal path, its resume-an-interrupted-update path,
+# and cmd_rollback all go through this now, instead of each hand-copying
+# the sequence (the resume path used to have NONE of backup/restore/trap
+# at all -- a resume whose own retry failed had no units/env/ttyd/fzf
+# snapshot to fall back on, only a second bare install.sh + wait_healthy).
+#
+# $1 = version to activate (its release dir must already exist under
+#      $RELEASES)  $2 = the version to record as "previous" once $1 is
+#      current  $3.. = install_args to run its install.sh with (and to
+#      persist in install.json)
+#
+# Returns 0 once $1 is confirmed healthy, with install.json recording it
+# and no "state" left set. Returns 1 after a NORMAL failure (install.sh or
+# the health check -- not an interrupt, which is handled separately, by
+# exiting via the trap below) has been FULLY handled: the previously
+# backed-up units/env/serverjack-ctl/serverjack-setup/ttyd/fzf are
+# restored, "current" points back at whatever it was before this call, and
+# install.json is back to exactly what it said before -- never exits
+# directly, so a caller with a further fallback to try (cmd_update's resume
+# path, which tries completing the interrupted version and then falls back
+# to its previous one) can decide what to do next.
+activate_release() {
+  local version=$1 previous=$2
+  shift 2
+  local -a args=("$@")
+  local prior_target; prior_target=$(readlink "$CURRENT" 2>/dev/null || true)
+  local backup_dir; backup_dir=$(backup_current_state)
+  # Captured BEFORE the pre-swap write below overwrites install.json:
+  # exactly what a NORMAL (handled) failure restores it to -- see the
+  # matching reasoning this replaces in cmd_update/cmd_rollback's own prior
+  # comments. An INTERRUPT never reaches this restore path at all (the trap
+  # below exits instead), so it never needs these.
+  local orig_version orig_previous
+  orig_version=$(installed_version)
+  orig_previous=$(previous_version)
+
+  # Record the activation BEFORE the swap: an interrupt between here and
+  # the finalize/restore below must not leave install.json still saying
+  # $orig_version while "current" already points at $version.
+  write_install_json "$version" "$previous" "activating" "${args[@]}"
+  ACTIVATING_NEW_VERSION=$version
+  ACTIVATING_OLD_VERSION=$previous
+  ACTIVATING_FINISHED=0
+  trap _activation_interrupted EXIT INT TERM HUP
+
+  swap_current "releases/$version"
+  if bash "$CURRENT/install.sh" ${args[@]+"${args[@]}"} && wait_healthy 30; then
+    ACTIVATING_FINISHED=1
+    trap - EXIT INT TERM HUP
+    unset ACTIVATING_FINISHED ACTIVATING_NEW_VERSION ACTIVATING_OLD_VERSION
+    write_install_json "$version" "$previous" "" "${args[@]}"
+    return 0
+  fi
+  ACTIVATING_FINISHED=1
+  trap - EXIT INT TERM HUP
+  unset ACTIVATING_FINISHED ACTIVATING_NEW_VERSION ACTIVATING_OLD_VERSION
+  echo "activating $version failed (install.sh or the health check) -- restoring $orig_version" >&2
+  restore_from_backup "$orig_version" "${prior_target:-releases/$orig_version}" "$backup_dir"
+  write_install_json "$orig_version" "$orig_previous" "" "${args[@]}"
+  return 1
+}
+
 cmd_update() {
   OPT_VERSION=
   while (( $# )); do
@@ -780,16 +844,13 @@ cmd_update() {
     echo "note: a previous update to $resume_version was interrupted before it finished (\"current\" already points at it) -- resuming it." >&2
     local -a resume_args=()
     mapfile -t resume_args < <(installed_args)
-    if bash "$CURRENT/install.sh" ${resume_args[@]+"${resume_args[@]}"} && wait_healthy 30; then
-      write_install_json "$resume_version" "$resume_previous" "" ${resume_args[@]+"${resume_args[@]}"}
+    if activate_release "$resume_version" "$resume_previous" ${resume_args[@]+"${resume_args[@]}"}; then
       say "Resumed and activated serverjack $resume_version"
       return
     fi
-    echo "resuming $resume_version failed (install.sh or the health check) -- rolling back to $resume_previous" >&2
+    echo "resuming $resume_version failed -- rolling back to $resume_previous" >&2
     if [[ -n $resume_previous && -d "$RELEASES/$resume_previous" ]]; then
-      swap_current "releases/$resume_previous"
-      if bash "$CURRENT/install.sh" ${resume_args[@]+"${resume_args[@]}"} && wait_healthy 30; then
-        write_install_json "$resume_previous" "$resume_version" "" ${resume_args[@]+"${resume_args[@]}"}
+      if activate_release "$resume_previous" "$resume_version" ${resume_args[@]+"${resume_args[@]}"}; then
         say "Rolled back to $resume_previous"
         return
       fi
@@ -820,48 +881,10 @@ cmd_update() {
   stage_release
   say "Staged serverjack $new_version -> $STAGED_DIR"
 
-  local prev_target; prev_target=$(readlink "$CURRENT" 2>/dev/null || true)
-  local backup_dir; backup_dir=$(backup_current_state)
-  # Captured BEFORE the pre-swap write below overwrites install.json's
-  # "previous" field: a NORMAL failure (install.sh/health, not an
-  # interrupt) restores install.json to exactly what it said before this
-  # attempt, and this is the one piece restore_from_backup() itself doesn't
-  # know (it restores units/env/serverjack-ctl, never install.json).
-  local orig_previous; orig_previous=$(previous_version)
-
-  # Record the activation BEFORE the swap: from here to the finalize/
-  # rollback below, an interrupt must not leave install.json still saying
-  # $current_version while "current" already points at $new_version -- that
-  # desync is exactly what made `status` misreport and `rollback` refuse
-  # after an interrupted update. Writing "previous" here (not only on
-  # success) is what makes `rollback` correct even if this process never
-  # gets back here to finish; "state": "activating" is what tells a later
-  # `update`/`status` that this record isn't confirmed yet.
-  write_install_json "$new_version" "$current_version" "activating" ${persisted_args[@]+"${persisted_args[@]}"}
-  ACTIVATING_NEW_VERSION=$new_version
-  ACTIVATING_OLD_VERSION=$current_version
-  ACTIVATING_FINISHED=0
-  trap _activation_interrupted EXIT INT TERM HUP
-
-  swap_current "releases/$new_version"
-  if bash "$CURRENT/install.sh" ${persisted_args[@]+"${persisted_args[@]}"} && wait_healthy 30; then
-    ACTIVATING_FINISHED=1
-    trap - EXIT INT TERM HUP
-    unset ACTIVATING_FINISHED ACTIVATING_NEW_VERSION ACTIVATING_OLD_VERSION
-    write_install_json "$new_version" "$current_version" "" ${persisted_args[@]+"${persisted_args[@]}"}
+  if activate_release "$new_version" "$current_version" ${persisted_args[@]+"${persisted_args[@]}"}; then
     say "Activated serverjack $new_version"
     return
   fi
-  ACTIVATING_FINISHED=1
-  trap - EXIT INT TERM HUP
-  unset ACTIVATING_FINISHED ACTIVATING_NEW_VERSION ACTIVATING_OLD_VERSION
-  echo "update to $new_version failed (install.sh or the health check) -- rolling back to $current_version" >&2
-  restore_from_backup "$current_version" "${prev_target:-releases/$current_version}" "$backup_dir"
-  # This is a handled failure, not an interrupt: install.json must go back
-  # to exactly what it said before this attempt (still "activating" would
-  # be stale/wrong, and "version" must NOT be left naming the release that
-  # just failed and was rolled back away from).
-  write_install_json "$current_version" "$orig_previous" "" ${persisted_args[@]+"${persisted_args[@]}"}
   exit 1
 }
 
@@ -885,34 +908,13 @@ cmd_rollback() {
   local -a persisted_args=()
   mapfile -t persisted_args < <(installed_args)
 
-  local backup_dir; backup_dir=$(backup_current_state)
-
-  # Same reasoning as cmd_update: record the swap BEFORE it happens, so an
-  # interrupt here can't leave install.json out of sync with "current".
-  write_install_json "$prev" "$cur" "activating" ${persisted_args[@]+"${persisted_args[@]}"}
-  ACTIVATING_NEW_VERSION=$prev
-  ACTIVATING_OLD_VERSION=$cur
-  ACTIVATING_FINISHED=0
-  trap _activation_interrupted EXIT INT TERM HUP
-
-  swap_current "releases/$prev"
-  if bash "$CURRENT/install.sh" ${persisted_args[@]+"${persisted_args[@]}"} && wait_healthy 30; then
-    ACTIVATING_FINISHED=1
-    trap - EXIT INT TERM HUP
-    unset ACTIVATING_FINISHED ACTIVATING_NEW_VERSION ACTIVATING_OLD_VERSION
-    write_install_json "$prev" "$cur" "" ${persisted_args[@]+"${persisted_args[@]}"}
+  # A9: same activate_release() cmd_update uses (backup, the interruption
+  # trap, the health wait, restore-on-failure) -- was its own third
+  # hand-copied sequence before.
+  if activate_release "$prev" "$cur" ${persisted_args[@]+"${persisted_args[@]}"}; then
     say "Rolled back to $prev"
     return
   fi
-  ACTIVATING_FINISHED=1
-  trap - EXIT INT TERM HUP
-  unset ACTIVATING_FINISHED ACTIVATING_NEW_VERSION ACTIVATING_OLD_VERSION
-  echo "rollback to $prev failed (install.sh or the health check) -- restoring $cur" >&2
-  restore_from_backup "$cur" "releases/$cur" "$backup_dir"
-  # Handled failure, not an interrupt: install.json goes back to exactly
-  # what it said before this attempt (version=$cur, previous=$prev is
-  # literally the pre-attempt state here, no separate capture needed).
-  write_install_json "$cur" "$prev" "" ${persisted_args[@]+"${persisted_args[@]}"}
   exit 1
 }
 
