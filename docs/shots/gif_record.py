@@ -43,16 +43,19 @@ OUT = os.environ["SHOTS_OUT"]
 NAME_FILE = os.path.join(OUT, "session_name.txt")
 DONE_FILE = os.path.join(OUT, "typed_done")
 
-# The app's --accent token (bin/serverjack's TOKENS block) -- kept in sync by
-# hand, not imported, since this runs in a container with no access to the
-# repo beyond this one file.
-ACCENT = "#39ff88"
-
 TAP_RING_SCRIPT = """
 (() => {
-  const ACCENT = "__ACCENT__";
   const install = () => {
     if (document.getElementById('sj-tap-style')) return;
+    // The app's own --accent custom property (bin/serverjack's TOKENS
+    // block), read live off the real page instead of a hex copied here by
+    // hand. Read inside install(), which only runs after DOMContentLoaded
+    // (or, on the rare page that's already past it, right away) -- by then
+    // the app's own <style> block in <head> has been parsed and the
+    // property is real; on the initial about:blank document there is no
+    // such property and this falls back to the shipped color.
+    const ACCENT = getComputedStyle(document.documentElement)
+      .getPropertyValue('--accent').trim() || '#39ff88';
     const style = document.createElement('style');
     style.id = 'sj-tap-style';
     style.textContent = `
@@ -89,7 +92,7 @@ TAP_RING_SCRIPT = """
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install);
   else install();
 })();
-""".replace("__ACCENT__", ACCENT)
+"""
 
 
 def wait_for_file(path, timeout=8.0):
@@ -104,9 +107,19 @@ def wait_for_file(path, timeout=8.0):
 with sync_playwright() as p:
     b = p.webkit.launch()
     device = dict(p.devices["iPhone 14"])
-    device["device_scale_factor"] = 2   # 390x844 CSS -> 780x1688 video
-    ctx = b.new_context(**device, record_video_dir=OUT,
-                        record_video_size={"width": 780, "height": 1688})
+    device["device_scale_factor"] = 2   # CSS px -> video px multiplier
+    # record_video_size must be exactly the viewport in CSS px times the
+    # scale factor above, or Playwright pads the recording out to it with a
+    # flat grey band -- computed from the device dict itself (390x664 CSS at
+    # the time of writing, not the 390x844 once hardcoded here, which is what
+    # produced that band) so it can never drift out of sync with `device`
+    # again. make-gif.sh re-checks this after conversion by sampling the
+    # frame itself, in case a future Playwright device update changes the
+    # viewport under us.
+    vp = device["viewport"]
+    video_size = {"width": vp["width"] * device["device_scale_factor"],
+                  "height": vp["height"] * device["device_scale_factor"]}
+    ctx = b.new_context(**device, record_video_dir=OUT, record_video_size=video_size)
     ctx.add_init_script(TAP_RING_SCRIPT)
     page = ctx.new_page()
 

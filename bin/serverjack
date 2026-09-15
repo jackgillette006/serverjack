@@ -204,6 +204,7 @@ doesn't already leak.
 """
 
 import concurrent.futures
+import hashlib
 import html
 import json
 import os
@@ -1069,12 +1070,29 @@ def command_args(cmd):
     script, so there are no quoting games. The login shell afterwards is the
     point of the whole thing: a sudo prompt can ask for a password, and
     whatever the command printed last -- an error, a login URL, a QR code --
-    is still on screen when it exits, instead of the session vanishing."""
+    is still on screen when it exits, instead of the session vanishing.
+
+    Debian's /etc/profile resets PATH for every login shell, which is exactly
+    what `bash -lc` below starts -- so a tool that's only reachable via
+    TOOL_PATH (nvm's bin dir, a tool's private "paths" entry) would report
+    "installed" from tool_kinds() and then fail to start with "command not
+    found". Fixed two ways: the first word of `cmd` is resolved to an
+    absolute path with TOOL_PATH up front, so *this* invocation doesn't
+    depend on PATH at all; and TOOL_PATH is also exported inside the login
+    shell before the command runs, so anything the tool itself shells out to
+    (a subprocess that looks up a sibling binary by name) sees it too."""
     cmd = cmd.strip()
+    parts = cmd.split(None, 1)
+    win_name = parts[0] if parts else "cmd"
+    resolved = parts and shutil.which(parts[0], path=TOOL_PATH)
+    if resolved:
+        cmd = resolved + (" " + parts[1] if len(parts) > 1 else "")
+    inner = f'export PATH={shlex.quote(TOOL_PATH)}:"$PATH"; eval "$SERVERJACK_CMD"'
     # set -m: the command gets its own process group, so tmux reports it (not
     # this wrapper) as the pane's command, and a ^C reaches only the command.
-    return ["-n", (cmd.split() or ["cmd"])[0], "-e", "SERVERJACK_CMD=" + cmd,
-            'set -m; printf "\\$ %s\\n" "$SERVERJACK_CMD"; bash -lc "$SERVERJACK_CMD"; '
+    return ["-n", win_name, "-e", "SERVERJACK_CMD=" + cmd,
+            'set -m; printf "\\$ %s\\n" "$SERVERJACK_CMD"; bash -lc '
+            + shlex.quote(inner) + '; '
             'rc=$?; echo; echo "[exited with status $rc]"; exec bash -l']
 
 
@@ -1628,8 +1646,11 @@ def logo_svg(size=32):
 
 
 I_LOGO = logo_svg()
-# The old icons were cached for a day. A new URL refreshes existing browsers.
-ICON_REV = "prompt-jack"
+# Icons are cached for a day with no ETag, so the URL itself is the cache
+# buster. Derived from the artwork and VERSION rather than hand-maintained,
+# so any change to either changes the URL and a new URL refreshes existing
+# browsers -- nobody has to remember to bump this by hand.
+ICON_REV = hashlib.sha1((PROMPT_JACK_SVG + VERSION).encode()).hexdigest()[:8]
 PWA_LINKS = (f'<link rel="manifest" href="/manifest.webmanifest?v={ICON_REV}">\n'
              f'<link rel="apple-touch-icon" href="/icon-180.png?v={ICON_REV}">\n'
              f'<link rel="icon" href="/icon.svg?v={ICON_REV}" type="image/svg+xml">')
@@ -3019,7 +3040,6 @@ TERM_DOWN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Terminal unavailable &middot; {title}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#080f0e">
-{pwa_links}
 <style>{css}</style></head><body><main>
 <h1>{glyph}serverjack <small>{title}</small></h1>
 <div class="err">The terminal isn’t answering.</div>
@@ -3034,15 +3054,15 @@ Your tmux sessions are untouched — nothing here can kill them.</p>
 
 
 def render_term_down(why):
-    return TERM_DOWN_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_LOGO,
-                                 pwa_links=PWA_LINKS, why=esc(why))
+    # No {pwa_links}: this is an error interstitial, not a page to install as
+    # a PWA -- and PWA_LINKS' manifest/icon sub-requests would only add noise.
+    return TERM_DOWN_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_LOGO, why=esc(why))
 
 
 DENY_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>{title}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#080f0e">
-{pwa_links}
 <style>{css}</style></head><body><main>
 <h1>{glyph}serverjack <small>{title}</small></h1>
 <div class="err">Not your serverjack.</div>
@@ -3057,9 +3077,13 @@ Your own account on this machine can run its own serverjack on its own HTTPS por
 
 def render_deny(login):
     # Deliberately does NOT name the logins in SERVERJACK_ALLOW: a stranger who
-    # gets this page should learn nothing about who the owner is.
-    return DENY_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_LOGO, pwa_links=PWA_LINKS,
-                            you=esc(login or "nobody"))
+    # gets this page should learn nothing about who the owner is. No
+    # {pwa_links} either: gate() rejects this same client's Host- and
+    # identity-checked requests for /manifest.webmanifest, /icon.svg and
+    # /icon-180.png before path dispatch, so those links would just 403 on
+    # every load, and "Add to Home Screen" makes no sense for a page whose
+    # whole point is that this user can't use it.
+    return DENY_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_LOGO, you=esc(login or "nobody"))
 
 
 # --- PWA bits: manifest + icons (so "Add to Home Screen" on iOS / "Install"
@@ -3232,11 +3256,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def send_bytes(self, data, ctype, status=200, cache=True):
+    def send_bytes(self, data, ctype, status=200, cache=True, etag=None):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "public, max-age=86400" if cache else "no-store")
+        if etag:
+            self.send_header("ETag", f'"{etag}"')
         self.end_headers()
         self.wfile.write(data)
 
@@ -3270,11 +3296,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/app.js":
             return self.send_bytes(APP_JS.encode(), "application/javascript; charset=utf-8", cache=False)
         if path == "/manifest.webmanifest":
-            return self.send_bytes(json.dumps(MANIFEST).encode(), "application/manifest+json")
+            return self.send_bytes(json.dumps(MANIFEST).encode(), "application/manifest+json",
+                                   etag=ICON_REV)
         if path == "/icon.svg":
-            return self.send_bytes(ICON_SVG.encode(), "image/svg+xml")
+            return self.send_bytes(ICON_SVG.encode(), "image/svg+xml", etag=ICON_REV)
         if path == "/icon-180.png":
-            return self.send_bytes(ICON_PNG, "image/png")
+            return self.send_bytes(ICON_PNG, "image/png", etag=ICON_REV)
         if path == "/api/sessions":
             return self.send_json(sessions())
         if path == "/api/windows":

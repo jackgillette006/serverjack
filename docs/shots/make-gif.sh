@@ -5,14 +5,14 @@
 #
 #   bash docs/shots/make-gif.sh
 #
-# The fixture setup below (neutral repo copy, fake $HOME with example
-# project dirs and a tiny git history, scratch SERVERJACK_CONFIG, isolated
-# tmux server, three seeded sessions, serverjack + ttyd startup and health
-# checks) is copied verbatim from make.sh -- read that file first if this
-# needs changing, and keep the two in sync rather than letting them drift.
-# This script does not depend on anything under tests/ at runtime, and it
-# never touches the real serverjack units, the real tmux server, or
-# ~/.config/serverjack.
+# The fixture setup (neutral repo copy, fake $HOME with example project dirs
+# and a tiny git history, a fixture "claude" binary, scratch
+# SERVERJACK_CONFIG, isolated tmux server, three seeded sessions,
+# serverjack + ttyd startup and health checks) lives in fixture.sh, shared
+# with make.sh so the README stills and this GIF always come from the same
+# data -- read that file first if this needs changing. This script does not
+# depend on anything under tests/ at runtime, and it never touches the real
+# serverjack units, the real tmux server, or ~/.config/serverjack.
 #
 # What's different from make.sh: instead of three static screenshots, this
 # drives gif_record.py to record a Playwright video (WebKit, iPhone 14
@@ -29,215 +29,18 @@ set -Eeuo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 IMG=mcr.microsoft.com/playwright/python:v1.62.0-noble@sha256:aa81288e738725378becba5b3e06cb0f3a7f012a610e87e8d767a090ea3f740d
 FFIMG=jrottenberg/ffmpeg:6-alpine
-REAL_REPO=$(cd ../.. && pwd)                # docs/shots -> repo root, read-only
 
-TEST_TMP_BASE=${TMPDIR:-/tmp}
-TEST_TMP_BASE=${TEST_TMP_BASE%/}
-RUN_ROOT=$(mktemp -d "$TEST_TMP_BASE/serverjack-gif.XXXXXX")
-chmod 700 "$RUN_ROOT"
+RUN_ROOT_PREFIX=serverjack-gif
+source ./fixture.sh
 
-pids=()
 CID=""
+FIXTURE_CLEAN_DIRS=()
 cleanup() {
   [[ -n $CID ]] && docker rm -f "$CID" >/dev/null 2>&1 || true
-  for p in "${pids[@]:-}"; do [[ -n $p ]] && kill "$p" 2>/dev/null || true; done
-  for p in "${pids[@]:-}"; do [[ -n $p ]] && wait "$p" 2>/dev/null || true; done
-  [[ -n ${TMUX_SOCK:-} ]] && tmux -S "$TMUX_SOCK" kill-server 2>/dev/null || true
-  # The Playwright and ffmpeg containers run as root, so anything they wrote
-  # under RUN_ROOT/out or RUN_ROOT/ff may be root-owned. Clear it from a
-  # throwaway root container instead of needing sudo.
-  for d in "$RUN_ROOT/out" "$RUN_ROOT/ff"; do
-    if [[ -d "$d" ]]; then
-      docker run --rm -v "$d":/t alpine:latest sh -c 'rm -rf /t/* /t/.[!.]* 2>/dev/null' \
-        >/dev/null 2>&1 || true
-    fi
-  done
-  case $RUN_ROOT in
-    "$TEST_TMP_BASE"/serverjack-gif.*) rm -rf -- "$RUN_ROOT" ;;
-  esac
+  FIXTURE_CLEAN_DIRS=("$RUN_ROOT/out" "$RUN_ROOT/ff")
+  fixture_cleanup
 }
 trap cleanup EXIT
-
-# -------------------------------------------------------------- neutral repo
-# A copy of just the three files serverjack needs to run, with no .git next
-# to them -- update_available() then sees no repo to pull, so the built-in
-# "Update serverjack" shortcut (which would otherwise print this checkout's
-# real, non-neutral path) never appears.
-NEUTRAL_REPO="$RUN_ROOT/repo"
-mkdir -p "$NEUTRAL_REPO/bin"
-cp "$REAL_REPO/bin/serverjack" "$REAL_REPO/bin/serverjack-ttyd" "$REAL_REPO/bin/tmux-attach.sh" \
-  "$NEUTRAL_REPO/bin/"
-chmod +x "$NEUTRAL_REPO"/bin/*
-
-# ------------------------------------------------------------------ fake HOME
-FAKE_HOME="$RUN_ROOT/home"
-mkdir -p "$FAKE_HOME"/projects/3d-lab/{models,renders} "$FAKE_HOME"/projects/game/{src,assets} \
-  "$FAKE_HOME"/projects/media-stack "$FAKE_HOME"/src
-: > "$FAKE_HOME/projects/game/Cargo.toml"
-: > "$FAKE_HOME/projects/game/src/main.rs"
-: > "$FAKE_HOME/projects/media-stack/docker-compose.yml"
-# A tiny git history in "game", so the terminal shot can show a real
-# `git log`. Identity is passed per command: this HOME has no global config,
-# and none of this touches the real user's git configuration.
-G=(git -C "$FAKE_HOME/projects/game" -c user.name=dev -c user.email=dev@example.com
-   -c commit.gpgsign=false)
-"${G[@]}" init -q
-"${G[@]}" add -A && "${G[@]}" commit -q -m "Initial commit"
-: > "$FAKE_HOME/projects/game/src/input.rs"
-"${G[@]}" add -A && "${G[@]}" commit -q -m "Wire up controller input"
-: > "$FAKE_HOME/projects/game/src/terrain.rs"
-"${G[@]}" add -A && "${G[@]}" commit -q -m "Procedural terrain: first pass"
-
-# A handful of plausible-looking files in "3d-lab" too, and its own tiny git
-# history, so the recorded terminal has something real (if fake) to `ls` and
-# `git status` -- neutral content, no real names or paths.
-cat > "$FAKE_HOME/projects/3d-lab/render.py" <<'PY'
-#!/usr/bin/env python3
-"""Batch-render every scene in models/ to renders/, one PNG per frame."""
-import pathlib
-
-SCENES = sorted(pathlib.Path("models").glob("*.blend"))
-
-def render(scene):
-    print(f"rendering {scene}")
-
-if __name__ == "__main__":
-    for scene in SCENES:
-        render(scene)
-PY
-cat > "$FAKE_HOME/projects/3d-lab/README.md" <<'MD'
-# 3d-lab
-
-Scratch space for render experiments. `models/` holds scene files,
-`renders/` holds output frames. Run `render.py` to batch-render everything
-in `models/`.
-MD
-cat > "$FAKE_HOME/projects/3d-lab/requirements.txt" <<'TXT'
-numpy==2.1.1
-pillow==11.0.0
-TXT
-: > "$FAKE_HOME/projects/3d-lab/models/scene-01.blend"
-GL=(git -C "$FAKE_HOME/projects/3d-lab" -c user.name=dev -c user.email=dev@example.com
-    -c commit.gpgsign=false)
-"${GL[@]}" init -q
-"${GL[@]}" add -A && "${GL[@]}" commit -q -m "Initial commit"
-: > "$FAKE_HOME/projects/3d-lab/models/scene-02.blend"
-"${GL[@]}" add -A && "${GL[@]}" commit -q -m "Add second scene"
-cat >> "$FAKE_HOME/projects/3d-lab/requirements.txt" <<'TXT'
-tqdm==4.66.5
-TXT
-"${GL[@]}" add -A && "${GL[@]}" commit -q -m "Track render progress with tqdm"
-# One untracked file left sitting around, so a `git status` in the recording
-# shows something rather than a flat "nothing to commit".
-: > "$FAKE_HOME/projects/3d-lab/renders/frame-001.png"
-
-# A fixture "claude" on PATH -- an honest stand-in, not a fake product UI.
-# It just execs a plain interactive bash (reading the fake HOME's rcfiles
-# set up below), so the recorded terminal shows a real, if scripted, shell
-# session. Having a real `claude` executable resolvable via TOOL_PATH is
-# also what makes tool_kinds() offer the "Claude Code" pill at all, and
-# what the Start card's hint text ("Runs <code>") names.
-FIXTURE_BIN="$RUN_ROOT/bin"
-mkdir -m 700 "$FIXTURE_BIN"
-cat > "$FIXTURE_BIN/claude" <<'SH'
-#!/usr/bin/env bash
-# Fixture stand-in for the real Claude Code CLI, used only by this
-# throwaway demo instance. Honest: it just hands you a plain shell.
-exec bash "$@"
-SH
-chmod +x "$FIXTURE_BIN/claude"
-# Ahead of the real PATH so this fixture wins over any real `claude` CLI
-# installed on the host running this script. This export reaches the
-# server and ttyd processes (started below via `env`, which inherits the
-# rest of the calling shell's environment), but NOT the tmux session
-# started through the browser's Start button, below -- see the PATH line
-# added to .bash_profile/.bashrc next.
-export PATH="$FIXTURE_BIN:$PATH"
-
-# A generic prompt -- no real username or hostname. \w expands relative to
-# $HOME, and HOME below is this fake one, so it renders as "~" / "~/projects/game".
-printf '%s\n' "PS1='dev@homeserver:\\w\$ '" "unset HISTFILE" > "$FAKE_HOME/bashrc"
-printf -v session_shell 'exec env HOME=%q bash --noprofile --rcfile %q -i' \
-  "$FAKE_HOME" "$FAKE_HOME/bashrc"
-# Unlike the sessions started directly below (which pick their rcfile with
-# --rcfile), a session started through the browser's Start button runs
-# `bash -lc "<the tool's run command>"` (see command_args() in
-# bin/serverjack) -- an outer *login* bash (reads ~/.bash_profile) that then
-# runs the fake "Claude Code" tool's run command, which is the fixture
-# `claude` wrapper above (see cfg/tools.json below), itself a nested,
-# *interactive non-login* bash (reads ~/.bashrc, via Debian's patched bash
-# which sources /etc/bash.bashrc first and ~/.bashrc after -- that system
-# file is what was setting the real \u@\h:\w prompt here despite HOME
-# already being this fake one). PS1 is a plain, unexported shell variable,
-# so the outer shell's doesn't reach the inner one either way -- both files
-# need it. And because it's a *login* shell, Debian's /etc/profile resets
-# PATH outright before ~/.bash_profile ever runs -- wiping the PATH this
-# script exported above -- so the fixture bin dir has to be re-added here
-# too, or the login shell can't find the fixture `claude` on PATH at all.
-# Without any of this, this session's prompt shows this machine's real
-# username, hostname and /tmp checkout path, and "claude: command not
-# found" instead of the fixture wrapper running.
-printf '%s\n' "PS1='dev@homeserver:\\w\$ '" "unset HISTFILE" \
-  "export PATH=\"$FIXTURE_BIN:\$PATH\"" \
-  > "$FAKE_HOME/.bash_profile"
-cp "$FAKE_HOME/.bash_profile" "$FAKE_HOME/.bashrc"
-
-# --------------------------------------------------------------- scratch cfg
-CFG="$RUN_ROOT/cfg"
-mkdir -m 700 "$CFG"
-cat > "$CFG/tools.json" <<'JSON'
-[{"id": "claude", "label": "Claude Code", "bin": "claude", "login": "true",
-  "login_check": "true", "run": "claude"}]
-JSON
-cat > "$CFG/shortcuts.json" <<'JSON'
-[{"id": "sc-media", "label": "Rebuild media stack",
-  "cmd": "cd ~/projects/media-stack && docker compose pull && docker compose up -d"},
- {"id": "sc-snapshot", "label": "Snapshot to NAS",
-  "cmd": "restic -r sftp:nas:/backups backup ~/projects"}]
-JSON
-chmod 600 "$CFG"/*.json
-
-# ------------------------------------------------------------ isolated tmux
-unset TMUX
-export TMUX_TMPDIR="$RUN_ROOT/tmux"
-mkdir -m 700 "$TMUX_TMPDIR"
-# Passing -S ourselves (rather than letting a plain `tmux` build its default
-# path from $TMUX_TMPDIR) means tmux won't auto-create the tmux-<uid> parent.
-mkdir -m 700 "$TMUX_TMPDIR/tmux-$(id -u)"
-TMUX_SOCK="$TMUX_TMPDIR/tmux-$(id -u)/default"
-T=(tmux -S "$TMUX_SOCK")
-
-# A session started through the browser's Start button (create_session() in
-# bin/serverjack) doesn't set HOME on its `tmux new-session` call, so that
-# pane inherits it from the tmux SERVER's own global environment, not from
-# serverjack's process env -- the fake HOME passed to serverjack below has no
-# effect on it. Export it here, before the first new-session spawns the
-# server, so that baseline is this fake HOME instead of the real one (which
-# would otherwise leak this machine's real username, hostname and /tmp
-# checkout path into the recording's prompt). The sessions created directly
-# below already set HOME explicitly in their own command line and are
-# unaffected either way.
-export HOME="$FAKE_HOME"
-
-"${T[@]}" new-session -d -s game -x 100 -y 30 -c "$FAKE_HOME/projects/game" "$session_shell"
-"${T[@]}" new-session -d -s media-stack -x 100 -y 30 -c "$FAKE_HOME/projects/media-stack" "$session_shell"
-# Looks like Claude Code is working in 3d-lab, without running anything real:
-# rename this pane's own process via exec -a so tmux reports its command as
-# "claude". "exec -a" is a bash-ism (dash lacks it), so force bash explicitly
-# rather than trust tmux's default-shell.
-"${T[@]}" new-session -d -s 3d-lab -x 100 -y 30 -c "$FAKE_HOME/projects/3d-lab" \
-  'bash -c "exec -a claude sleep infinity"'
-
-# Feed the "game" pane its transcript now, over tmux itself -- not by typing
-# into the live xterm later. Typing through the browser raced against
-# ttyd's WebSocket under load (a concurrent tests/run.sh once left the
-# capture showing a blank pane): send-keys is synchronous and leaves a fixed,
-# already-rendered buffer for Playwright to simply attach to and screenshot.
-sleep 0.5   # let the login shell print its first prompt before send-keys
-"${T[@]}" send-keys -t game "ls" Enter
-sleep 0.4
-"${T[@]}" send-keys -t game "git log --oneline -3" Enter
-sleep 0.6
 
 # --------------------------------------------------------------- serverjack
 RT="$RUN_ROOT/rt"
@@ -303,16 +106,21 @@ for _ in $(seq 1 100); do
   sleep 0.2
 done
 
-if [[ -n $name ]]; then
-  "${T[@]}" send-keys -t "$name" "ls --color=always" Enter
-  sleep 0.3
-  "${T[@]}" send-keys -t "$name" "git status" Enter
-  sleep 0.4
-  "${T[@]}" send-keys -t "$name" "ls" Enter
-  : > "$OUT/typed_done"
-else
-  echo "warning: never got a session name from the recorder -- demo.gif will be missing the fed transcript" >&2
+# Fail hard rather than silently writing a blank-capture demo.gif over the
+# real one: a missing session name means Start never actually landed on the
+# terminal, so nothing below would show anything worth recording.
+if [[ -z $name ]]; then
+  echo "error: never got a session name from the recorder -- demo.gif would be a blank capture" >&2
+  echo "-- recorder container log --" >&2
+  docker logs "$CID" 2>&1 | grep -v 'GL Driver\|maybe unknown option' >&2 || true
+  exit 1
 fi
+"${T[@]}" send-keys -t "$name" "ls --color=always" Enter
+sleep 0.3
+"${T[@]}" send-keys -t "$name" "git status" Enter
+sleep 0.4
+"${T[@]}" send-keys -t "$name" "ls" Enter
+: > "$OUT/typed_done"
 
 docker wait "$CID" >/dev/null
 docker logs "$CID" 2>&1 | grep -v 'GL Driver\|maybe unknown option' || true
@@ -327,33 +135,110 @@ FF="$RUN_ROOT/ff"
 mkdir -p "$FF"
 cp "$WEBM" "$FF/demo.webm"
 
+# ------------------------------------------------------- letterbox check --
+# gif_record.py's record_video_size must exactly match the emulated
+# viewport in CSS px times its device_scale_factor, or Playwright pads the
+# recording out to it with a flat grey band (this happened for real: the
+# size was hardcoded against a stale assumption about the iPhone 14
+# viewport). Don't just trust the math by eye -- sample the last frame's
+# bottom 10% of rows against its top 10%: the app's own background is
+# near-black everywhere (landing page and terminal alike), so a materially
+# lighter bottom band means letterboxing got through.
+read -r VIDEO_W VIDEO_H < <(
+  docker run --rm -v "$FF:/w" "$FFIMG" -i /w/demo.webm >"$RUN_ROOT/ffprobe.log" 2>&1 || true
+  grep -oP 'Video:.*?\K\d+x\d+' "$RUN_ROOT/ffprobe.log" | head -n1 | tr x ' '
+)
+if [[ -z ${VIDEO_W:-} || -z ${VIDEO_H:-} ]]; then
+  echo "couldn't read demo.webm's resolution -- see $RUN_ROOT/ffprobe.log" >&2
+  exit 1
+fi
+
+check_letterbox() {   # sets LETTERBOXED=yes/no from the current demo.webm
+  docker run --rm -v "$FF:/w" "$FFIMG" -y -sseof -0.3 -i /w/demo.webm \
+    -frames:v 1 -f rawvideo -pix_fmt gray /w/lastframe.gray \
+    >"$RUN_ROOT/ffmpeg-frame.log" 2>&1 || {
+    echo "couldn't grab the last frame for the letterbox check -- see $RUN_ROOT/ffmpeg-frame.log" >&2
+    exit 1
+  }
+  LETTERBOXED=$(python3 - "$FF/lastframe.gray" "$VIDEO_W" "$VIDEO_H" <<'PY'
+import sys
+path, w, h = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+with open(path, "rb") as f:
+    data = f.read()
+band = max(1, h // 10)
+def mean(r0, r1):
+    chunk = data[r0 * w:r1 * w]
+    return sum(chunk) / len(chunk) if chunk else 0.0
+top, bottom = mean(0, band), mean(h - band, h)
+# A flat grey pad reads dramatically brighter than this app's near-black
+# background; 40 (of 255) is well above any real UI content down there.
+print(f"yes {top:.1f} {bottom:.1f}" if bottom - top > 40 else f"no {top:.1f} {bottom:.1f}")
+PY
+)
+}
+
+check_letterbox
+read -r verdict top_mean bottom_mean <<<"$LETTERBOXED"
+if [[ $verdict == yes ]]; then
+  echo "demo.webm is letterboxed (top rows avg ${top_mean}, bottom rows avg ${bottom_mean}) -- detecting a crop" >&2
+  docker run --rm -v "$FF:/w" "$FFIMG" -i /w/demo.webm -vf cropdetect=24:2:0 -frames:v 60 -f null - \
+    >"$RUN_ROOT/ffmpeg-cropdetect.log" 2>&1 || true
+  CROP=$(grep -oP 'crop=\K\S+' "$RUN_ROOT/ffmpeg-cropdetect.log" | tail -n1)
+  [[ -n $CROP ]] || {
+    echo "letterboxing detected but cropdetect found nothing to crop -- see $RUN_ROOT/ffmpeg-cropdetect.log" >&2
+    exit 1
+  }
+  docker run --rm -v "$FF:/w" "$FFIMG" -y -i /w/demo.webm -vf "crop=$CROP" -c:v libvpx-vp9 -an \
+    /w/demo-cropped.webm >"$RUN_ROOT/ffmpeg-crop.log" 2>&1 || {
+    echo "ffmpeg crop re-encode ($CROP) failed -- see $RUN_ROOT/ffmpeg-crop.log" >&2
+    exit 1
+  }
+  mv "$FF/demo-cropped.webm" "$FF/demo.webm"
+  check_letterbox
+  read -r verdict top_mean bottom_mean <<<"$LETTERBOXED"
+  if [[ $verdict == yes ]]; then
+    echo "still letterboxed after cropping to $CROP (top ${top_mean}, bottom ${bottom_mean}) -- giving up" >&2
+    exit 1
+  fi
+  echo "cropped to $CROP -- top ${top_mean}, bottom ${bottom_mean}" >&2
+fi
+
 # Two-pass palette (palettegen/paletteuse) gets a much cleaner GIF out of
-# screen-capture-style content than a single-pass convert. Starts at
-# 20fps/520px wide; if that's over the 4 MB budget, retries at 16fps, then
-# 16fps/480px, before giving up.
+# screen-capture-style content than a single-pass convert. gif_pass() only
+# runs ffmpeg and reports success/failure; the size check and the
+# 20fps/520px -> 16fps/520px -> 16fps/480px retry ladder both live in the
+# loop below, in plain sight rather than folded into the function's return
+# value.
 gif_pass() {
   local fps=$1 width=$2
   docker run --rm -v "$FF:/w" "$FFIMG" -y -i /w/demo.webm \
     -vf "fps=${fps},scale=${width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" \
-    /w/demo.gif >"$RUN_ROOT/ffmpeg-gif.log" 2>&1 || {
+    /w/demo.gif >"$RUN_ROOT/ffmpeg-gif.log" 2>&1
+}
+
+FPS_RUNGS=(20 16 16)
+WIDTH_RUNGS=(520 520 480)
+gif_kb=0
+fit=0
+for i in "${!FPS_RUNGS[@]}"; do
+  fps=${FPS_RUNGS[$i]}
+  width=${WIDTH_RUNGS[$i]}
+  if (( i > 0 )); then
+    echo "demo.gif was ${gif_kb} KB -- retrying at ${fps}fps/${width}px" >&2
+  fi
+  if ! gif_pass "$fps" "$width"; then
     echo "ffmpeg gif conversion (${fps}fps, ${width}px) failed -- see $RUN_ROOT/ffmpeg-gif.log" >&2
     tail -n 40 "$RUN_ROOT/ffmpeg-gif.log" >&2
     exit 1
-  }
-  echo $(( $(stat -c%s "$FF/demo.gif") / 1024 ))
-}
-
-gif_kb=$(gif_pass 20 520)
-if (( gif_kb > 4096 )); then
-  echo "demo.gif at 20fps/520px was ${gif_kb} KB -- retrying at 16fps/520px" >&2
-  gif_kb=$(gif_pass 16 520)
-fi
-if (( gif_kb > 4096 )); then
-  echo "demo.gif at 16fps/520px was ${gif_kb} KB -- retrying at 16fps/480px" >&2
-  gif_kb=$(gif_pass 16 480)
-fi
-if (( gif_kb > 4096 )); then
-  echo "demo.gif is still ${gif_kb} KB after dropping to 16fps/480px, over the 4 MB budget -- shorten the recording and re-run" >&2
+  fi
+  gif_kb=$(( $(stat -c%s "$FF/demo.gif") / 1024 ))
+  if (( gif_kb <= 4096 )); then
+    fit=1
+    break
+  fi
+done
+if (( ! fit )); then
+  echo "demo.gif is still ${gif_kb} KB after dropping to ${fps}fps/${width}px, over the 4 MB budget -- shorten the recording and re-run" >&2
   exit 1
 fi
 

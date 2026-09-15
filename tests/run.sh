@@ -96,17 +96,34 @@ python3 ./test_unit.py
 # deterministic and never touch a real coding CLI or the user's shortcuts.
 CFG=$RUN_ROOT/cfg
 mkdir -m 700 "$CFG"
-cat > "$CFG/tools.json" <<'JSON'
+
+# A directory that is NOT on PATH, standing in for a coding CLI's private
+# install dir (nvm's versioned bin, ~/.local/bin) that only tools.json's
+# "paths" globs know about. Regression test for the bug where a tool only
+# reachable via TOOL_PATH showed as installed but failed to start with
+# "command not found", because bash -lc's login shell resets PATH before
+# running the command -- see command_args() in bin/serverjack.
+TOOLPATH_DIR=$RUN_ROOT/toolpath
+mkdir -m 700 "$TOOLPATH_DIR"
+cat > "$TOOLPATH_DIR/pathfake" <<'SH'
+#!/bin/sh
+echo TOOL_RAN
+SH
+chmod +x "$TOOLPATH_DIR/pathfake"
+
+cat > "$CFG/tools.json" <<JSON
 [{"id": "fake", "label": "Fake tool", "bin": "true", "login": "echo LOGIN_RAN",
   "login_check": "true", "run": "bash",
   "actions": [{"label": "hello", "cmd": "echo ACTION_RAN"}]},
- {"id": "fake2", "label": "Fake two", "bin": "true", "run": "bash"}]
+ {"id": "fake2", "label": "Fake two", "bin": "true", "run": "bash"},
+ {"id": "pathfake", "label": "Path fixture", "bin": "pathfake", "run": "pathfake",
+  "paths": ["$TOOLPATH_DIR"]}]
 JSON
 # SERVERJACK_TRUST_UIDS=101 is not needed to reach anything here any more (no
 # proxy in front), but the peer-uid check below still proves it works.
 # shellcheck disable=SC2054  # the comma is inside SERVERJACK_TOOLS's value, not an array separator
 common=(SERVERJACK_LISTEN=tcp SERVERJACK_TITLE=test SERVERJACK_CONFIG="$CFG"
-        SERVERJACK_TOOLS=fake,fake2 SERVERJACK_TRUST_UIDS=101)
+        SERVERJACK_TOOLS=fake,fake2,pathfake SERVERJACK_TRUST_UIDS=101)
 env "${common[@]}" XDG_RUNTIME_DIR="$RT" SERVERJACK_PORT="$PORT" \
     python3 ../bin/serverjack >shots/web.log 2>&1 & pids+=($!)
 env "${common[@]}" XDG_RUNTIME_DIR="$RT" \
