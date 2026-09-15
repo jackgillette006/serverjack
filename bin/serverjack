@@ -1539,7 +1539,11 @@ def dir_index():
 def _dir_rank(path, root, q):
     """None (no match) or a rank: 0 exact basename, 1 basename prefix,
     2 basename substring, 3 substring of the path relative to its root --
-    the fallback that lets an ancestor's name surface a deep result too."""
+    the fallback that lets an ancestor's name surface a deep result too.
+    Ranks 0-2 are "name matches"; _dir_search_name() sorts those ahead of
+    every rank-3 "path match" and, within each group, by nesting depth
+    first (least nested first) with this rank only breaking ties at the
+    same depth -- see its docstring."""
     base = os.path.basename(path).lower()
     q = q.lower()
     if base == q:
@@ -1553,21 +1557,52 @@ def _dir_rank(path, root, q):
     return None
 
 
+def _path_depth(path):
+    """How many components an absolute path has below the filesystem root
+    -- "/" -> 0, "/home" -> 1, "/home/plongriss/projects" -> 3. Deliberately
+    NOT the (path, depth, root) tuples dir_index() itself hands back: those
+    depths are relative to whichever SERVERJACK_DIRS root indexed a path
+    (and stay that way -- see DIR_DEPTH capping in _dir_walk()), so the same
+    real directory could otherwise sort differently depending on which root
+    happened to reach it first. Ranking needs an absolute, root-independent
+    depth instead: "~ is shallower than ~/projects" has to hold regardless
+    of which configured root a match came from."""
+    return len([p for p in path.rstrip(os.sep).split(os.sep) if p])
+
+
 def _dir_search_name(q):
-    """A path can be indexed more than once -- two SERVERJACK_DIRS roots
-    where one is nested under the other both walk it -- so keep each path's
-    best (rank, depth) rather than letting it appear twice in the results."""
+    """Least-nested-first: every match is a shallower-depth-wins comparison
+    first, and only a rank (exact/prefix/substring/name-vs-path) breaks a
+    tie at the same depth. Concretely, two buckets:
+      - "name" matches (rank 0-2, the query is in the basename itself),
+        sorted by (depth, rank, path) -- so a shallow prefix match like
+        ~/foo-bar always outranks a deeper exact match like
+        ~/a/b/foo, and exact only beats prefix beats substring among
+        matches at the very same depth.
+      - "path" matches (rank 3, the query is only in an ancestor's name --
+        i.e. this is some matching folder's child), sorted by (depth, path)
+        and placed AFTER every name match regardless of depth, so drilling
+        into a matching folder's children never pushes a real name match
+        down the list.
+    A path can be indexed more than once (two SERVERJACK_DIRS roots where
+    one is nested under the other both walk it), so keep each path's best
+    (lowest) rank rather than letting it appear twice -- depth is a
+    property of the path itself (_path_depth()), not of which root found
+    it, so there is nothing to pick between there."""
     entries, truncated = dir_index()
     best = {}
-    for path, depth, root in entries:
+    for path, _depth, root in entries:
         rank = _dir_rank(path, root, q)
         if rank is None:
             continue
         cur = best.get(path)
-        if cur is None or (rank, depth) < cur:
-            best[path] = (rank, depth)
-    scored = [(rank, depth, path.lower(), path) for path, (rank, depth) in best.items()]
-    scored.sort(key=lambda t: t[:3])
+        if cur is None or rank < cur:
+            best[path] = rank
+    scored = []
+    for path, rank in best.items():
+        bucket = 1 if rank == 3 else 0     # 0: name match, 1: path-only match
+        scored.append((bucket, _path_depth(path), rank, path.lower(), path))
+    scored.sort(key=lambda t: t[:4])
     return [p for *_, p in scored[:15]], truncated
 
 

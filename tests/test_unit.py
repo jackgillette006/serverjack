@@ -406,6 +406,25 @@ class DirSearchTests(unittest.TestCase):
     def test_ranking_is_exact_then_prefix_then_substring(self):
         self.assertEqual(self.names("alpha"), ["alpha", "alphabet", "my-alpha-thing"])
 
+    def test_least_nested_wins_even_over_a_better_rank(self):
+        # A depth-2 prefix match ("gamma-extra") must sort ahead of a
+        # depth-3 exact match ("gamma") -- nesting depth is the primary key,
+        # exact-vs-prefix only breaks ties within the very same depth.
+        os.makedirs(os.path.join(self.root, "x", "gamma-extra"))   # depth 2, prefix
+        os.makedirs(os.path.join(self.root, "y", "z", "gamma"))    # depth 3, exact
+        mod._DIR_INDEX_CACHE = None
+        self.assertEqual(self.names("gamma"), ["gamma-extra", "gamma"])
+
+    def test_path_only_matches_come_after_every_name_match(self):
+        # "host-thing" is a rank-1 (prefix) name match at depth 1; its child
+        # "leaf" matches only via the relative path ("host-thing/leaf" ->
+        # rank 3), and must sort after every name match -- including one
+        # much deeper, like "a/b/c/host" -- not just after shallower ones.
+        os.makedirs(os.path.join(self.root, "host-thing", "leaf"))
+        os.makedirs(os.path.join(self.root, "a", "b", "c", "host"))
+        mod._DIR_INDEX_CACHE = None
+        self.assertEqual(self.names("host"), ["host-thing", "host", "leaf"])
+
     def test_nested_match_at_depth_3(self):
         status, obj = mod.dir_search("3d-lab")
         self.assertEqual(status, 200)
