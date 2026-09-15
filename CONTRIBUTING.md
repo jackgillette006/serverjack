@@ -61,14 +61,15 @@ Out of scope, on purpose:
    [CHANGELOG.md](CHANGELOG.md) for anything user-facing.
 3. Run `bash tests/run.sh` (needs Docker; it starts its own serverjack and
    ttyd, nothing else has to be running — this also runs
-   `tests/managed-install.sh` unless `CI` is set in the environment, in
-   which case it's skipped by default (that test needs `--privileged`
-   docker-in-docker with real systemd, which CI runners can't reliably
-   provide). Run it explicitly with `bash tests/run.sh managed-install`, or
-   force it into the full run with `SERVERJACK_TEST_MANAGED=1`; either way
-   it skips itself with a message if Docker here can't run `--privileged`
-   containers. If Docker is unavailable, say which checks you could run and
-   which remain unverified.
+   `tests/managed-install.sh` and `tests/guided-install.sh` unless `CI` is
+   set in the environment, in which case both are skipped by default (they
+   need `--privileged` docker-in-docker with real systemd, which CI runners
+   can't reliably provide). Run either explicitly with
+   `bash tests/run.sh managed-install` / `bash tests/run.sh guided-install`,
+   or force them into the full run with `SERVERJACK_TEST_MANAGED=1`; either
+   way each skips itself with a message if Docker here can't run
+   `--privileged` containers. If Docker is unavailable, say which checks you
+   could run and which remain unverified.
 4. Check screenshots and logs before attaching them. Remove usernames, home
    directories, hostnames, tailnet names, login identities, tokens, session
    links, and unrelated terminal history.
@@ -94,8 +95,9 @@ labels them but never checks out or executes their code with a write token.
      `README.md`, `CHANGELOG.md`, `docs/FAQ.md` and `RELEASE` are all there.
    - Skim `serverjack-bootstrap.sh` for the embedded version, URL and sha256
      matching this release.
-   - Optionally run `tests/managed-install.sh` (or the relevant parts of it
-     by hand) against the draft's assets before publishing.
+   - Optionally run `tests/managed-install.sh` and `tests/guided-install.sh`
+     (or the relevant parts of either by hand) against the draft's assets
+     before publishing.
 6. Publish the draft release on GitHub. `serverjack-bootstrap.sh`'s stable
    `.../releases/latest/download/...` URL and the GitHub API's "latest
    release" (what `serverjack-ctl update` resolves against with no

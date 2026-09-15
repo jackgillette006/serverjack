@@ -21,25 +21,31 @@
 #   3. Extracts it to ~/.local/share/serverjack/releases/<version>/, points
 #      ~/.local/share/serverjack/current at it (atomic symlink swap), and
 #      writes ~/.local/share/serverjack/install.json recording the channel.
-#   4. Execs that release's install.sh with your arguments and terminal
-#      intact -- from here on it is the ordinary serverjack installer: ttyd/
-#      fzf downloads, the env file, the systemd user units, tailscale serve.
+#   4. Execs that release's bin/serverjack-setup with your arguments and
+#      terminal intact. That is the guided part -- prerequisites, Tailscale
+#      install/sign-in, who may reach it, one-time root steps, all asked on
+#      /dev/tty -- and it finishes by running install.sh itself: ttyd/fzf
+#      downloads, the env file, the systemd user units, tailscale serve.
 #
 # Flags:
 #   --version X.Y.Z   install this exact released version instead of the one
 #                      this bootstrap was built for (downloads that tag's
 #                      archive and SHA256SUMS and verifies against them)
-# Any other flag (--no-serve, --tcp, --unix, --port, ...) is passed straight
-# through to install.sh; see `bash install.sh --help` after install, or the
-# README, for what those do.
+# Any other flag (--no-serve, --tcp, --unix, --port, --https-port, --title,
+# ...) is passed straight through to serverjack-setup, which answers the
+# matching guided question with it instead of asking (see `bash
+# bin/serverjack-setup --help` after install, or the README, for the full
+# list) and forwards it on to install.sh in turn.
 #
-# No confirmation prompt: like install.sh itself ("it never prompts for a
-# password: any root step is printed for you to paste"), a fresh install here
-# only ever ADDS new, not-yet-existing files -- refuse_if_existing_install()
-# below is what stands between this and silently replacing something, and it
-# fails closed with no prompt to bypass. Read the script first (the
-# "download and inspect" instructions above) if you want to review it before
-# it runs; there's no [y/N] to click through instead.
+# No confirmation prompt of ITS OWN: refuse_if_existing_install() below is
+# what stands between this stage and silently replacing something, and it
+# fails closed with no prompt to bypass -- a fresh install here only ever
+# ADDS new, not-yet-existing files. serverjack-setup, which runs right
+# after, is the interactive part: it prompts on /dev/tty for what install.sh
+# itself never asks (Tailscale, who may reach it, the one-time root steps),
+# unless flags above already answered a given question -- see its own
+# header for exactly what and why. Read this script first (the "download
+# and inspect" instructions above) if you want to review it before it runs.
 #
 # Everything below is inside a function; main() is the LAST line of this
 # file, called only after every function is fully defined. That is
@@ -65,9 +71,11 @@ serverjack-bootstrap.sh [--version X.Y.Z] [install.sh flags...]
   --version X.Y.Z   install this exact released version (default: the one
                      this bootstrap was built for)
 
-Any other flag is passed through to the installed release's install.sh
-(--no-serve, --tcp, --unix, --port N, --https-port N, --title NAME, ...).
-See the top of this file, or the README, for what those do.
+Any other flag is passed through to the installed release's serverjack-setup,
+which answers the matching guided question with it instead of asking
+(--no-serve, --tcp, --unix, --port N, --https-port N, --title NAME, ...),
+then forwards it on to install.sh in turn. See the top of this file, or the
+README, for what those do.
 EOF
   exit "${1:-0}"
 }
@@ -301,7 +309,13 @@ main() {
     exit 1
   fi
 
-  for c in curl sha256sum tar python3 systemctl tmux flock; do
+  # Only what THIS stage itself uses: fetching/verifying/staging the release
+  # and its own lock. Deliberately NOT tmux (or anything else install.sh
+  # needs) -- finding and offering to install actual missing prerequisites,
+  # tmux included, is exactly what bin/serverjack-setup does next; a hard
+  # requirement here would make phase C's whole guided-prerequisites step
+  # unreachable on a fresh machine that doesn't have tmux yet.
+  for c in curl sha256sum tar python3 systemctl flock; do
     command -v "$c" >/dev/null 2>&1 || { echo "missing required command: $c" >&2; exit 1; }
   done
 
@@ -334,13 +348,18 @@ main() {
   rm -rf "$DOWNLOAD_TMPDIR"
 
   say "Installed serverjack $TARGET_VERSION -> $RELEASE_DIR (current -> releases/$TARGET_VERSION)"
-  say "Handing off to install.sh"
-  # Release the lock and exec: from here on this IS install.sh, with the
-  # user's own arguments and terminal (stdin/stdout/stderr, job control for a
-  # sudo prompt it might need to print for later) preserved exactly as if
-  # they had run it themselves.
+  say "Handing off to the guided setup"
+  # Release the lock and exec: from here on this IS bin/serverjack-setup,
+  # with the user's own arguments and terminal (stdin/stdout/stderr, job
+  # control for a sudo prompt, /dev/tty for its own questions) preserved
+  # exactly as if they had run it themselves -- it runs install.sh itself at
+  # the end. Any flag already answering a question serverjack-setup would
+  # otherwise ask means it never needs to touch /dev/tty for that one (see
+  # its own header comment), so this exec works the same whether install_args
+  # settles everything (`curl | bash -s -- --no-serve`, fully unattended) or
+  # settles nothing (a bare `curl | bash`, fully guided).
   exec 9>&-
-  exec bash "$share/current/install.sh" ${install_args[@]+"${install_args[@]}"}
+  exec bash "$share/current/bin/serverjack-setup" ${install_args[@]+"${install_args[@]}"}
 }
 
 main "$@"
