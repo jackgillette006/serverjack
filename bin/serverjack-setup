@@ -155,7 +155,25 @@ resolve_self() {
     INSTALL_SH="$REPO_ROOT/install.sh"
     return 0
   fi
-  echo "internal error: could not find install.sh (checked next to this script, $SHARE/current, and $install_path)" >&2
+  # A17: uninstall.sh deliberately removes install-path ("not part of your
+  # data" -- see its own comment), so this point is reached on every
+  # perfectly ordinary post-uninstall `serverjack-ctl setup` too, not just a
+  # genuinely broken install. If there's ALSO no unit here, that's exactly
+  # what "nothing installed" looks like -- say so plainly and point at the
+  # one-liner, rather than "internal error", which used to fire here
+  # regardless and reads like this tool itself is broken.
+  if [[ ! -f "$UNIT_DIR/serverjack.service" ]]; then
+    cat >&2 <<EOF
+serverjack is not installed here (no managed release, no recorded git
+checkout, and no systemd unit) -- \`serverjack-ctl setup\` has nothing to
+re-run. Install it fresh:
+  curl -fsSL https://github.com/jackgillette006/serverjack/releases/latest/download/serverjack-bootstrap.sh | bash
+Or, from an existing checkout:
+  bash bin/serverjack-setup
+EOF
+    exit 1
+  fi
+  echo "internal error: a serverjack unit exists ($UNIT_DIR/serverjack.service) but its install.sh could not be found (checked next to this script, $SHARE/current, and $install_path) -- the install looks broken or was moved; remove the stale unit (systemctl --user disable --now serverjack serverjack-ttyd; rm $UNIT_DIR/serverjack*.service) and reinstall" >&2
   exit 1
 }
 
