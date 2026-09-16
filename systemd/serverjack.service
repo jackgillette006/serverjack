@@ -26,6 +26,14 @@ RestartSec=3
 # tmux server is spawned inside this unit's cgroup. Only ever kill our own
 # process on stop/restart, never the tmux server and every session in it.
 KillMode=process
+# The page process shares this cgroup with every tmux session and coding
+# agent started through it (KillMode=process keeps them alive on restart).
+# Those agents can be memory-hungry; the systemd default OOMPolicy=stop would
+# tear down this whole unit -- cleanly, so Restart=on-failure would NOT bring
+# it back -- the moment the kernel OOM-killed any one of them. Keep the front
+# door up when a child is OOM-killed; if this unit's own main process is the
+# one killed, that is still a failure and Restart handles it.
+OOMPolicy=continue
 
 [Install]
 WantedBy=default.target

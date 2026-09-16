@@ -7,6 +7,14 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+- **Reliability**: the systemd units set `OOMPolicy=continue`. Before, a
+  kernel OOM kill of any process in a unit's cgroup -- including the tmux
+  sessions and coding agents started through serverjack, which share it --
+  stopped the whole unit under systemd's default `OOMPolicy=stop`, and
+  because that stop is "clean" `Restart=on-failure` did not bring the page
+  back. Now an OOM-killed child leaves the front door up; only an OOM kill
+  of the unit's own main process counts as a failure (and still restarts).
+
 - **WSL**: `bin/serverjack-setup` now detects WSL and, while the port is
   still the untouched default (7680), offers to install on `--port 7690`
   instead — Windows Delivery Optimization already listens on 7680 on the
