@@ -7,6 +7,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+- Directory picker: picking or Tab-completing a suggestion now keeps the
+  `~/...` form in the box instead of swapping in the expanded absolute home
+  path (it looked jarring to watch `~/projects` turn into `/home/you/...`).
+  Submits are unchanged -- the server expands `~` either way.
+
 - **Reliability**: the systemd units set `OOMPolicy=continue`. Before, a
   kernel OOM kill of any process in a unit's cgroup -- including the tmux
   sessions and coding agents started through serverjack, which share it --
