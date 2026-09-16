@@ -2220,6 +2220,7 @@ DIRPICK_JS = r"""
     li.setAttribute('role', 'option');
     li.dataset.path = d.path;
     var show = d.show || d.path, slash = show.lastIndexOf('/');
+    li.dataset.show = show;
     if (slash >= 0) {
       var rest = document.createElement('span');
       rest.className = 'rest';
@@ -2281,14 +2282,14 @@ DIRPICK_JS = r"""
       } else if (e.key === 'Enter') {
         if (!list.hidden && active >= 0 && items[active]) {
           e.preventDefault();
-          input.value = items[active].dataset.path;
+          input.value = items[active].dataset.show;
           close();
         }   // else: let the form submit normally
       } else if (e.key === 'Tab') {
         if (list.hidden || !items.length) return;
         e.preventDefault();
         var pick = items[active >= 0 ? active : 0];
-        input.value = pick.dataset.path.replace(/\/+$/, '') + '/';
+        input.value = pick.dataset.show.replace(/\/+$/, '') + '/';
         query();
       } else if (e.key === 'Escape') {
         if (!list.hidden) { e.stopPropagation(); close(); }
@@ -2299,7 +2300,7 @@ DIRPICK_JS = r"""
       if (!li) return;
       e.preventDefault();   // keep focus on input -- no blur before this runs
       clearTimeout(blurT);
-      input.value = li.dataset.path;
+      input.value = li.dataset.show;
       close();
     });
     input.addEventListener('blur', function () { blurT = setTimeout(close, 150); });

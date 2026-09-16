@@ -223,6 +223,8 @@ with sync_playwright() as p:
     ok("Tab fills the picked path with a trailing slash and keeps focus",
        dirbox.input_value().endswith("/3d-lab/")
        and page.evaluate("document.activeElement.id") == "dir", dirbox.input_value())
+    ok("Tab keeps the ~ display form, not the expanded home path",
+       dirbox.input_value().startswith("~/"), dirbox.input_value())
     # "scenes" may already be showing at this point -- the *previous* "3d"
     # search already matched it too (a path ranks via a substring of an
     # ancestor's name, not just its own basename, and "ai/3d-lab/scenes"
@@ -564,10 +566,10 @@ with sync_playwright() as p:
     idirbox.fill("3d")
     ipage.wait_for_selector('.dirpick .dirlist li:has-text("3d-lab")')
     item = ipage.locator('#startform .dirpick .dirlist li').first
-    target = item.get_attribute("data-path")
+    target = item.get_attribute("data-show")
     item.tap()
-    ok("tapping a suggestion on iPhone fills the input",
-       bool(target) and idirbox.input_value() == target,
+    ok("tapping a suggestion on iPhone fills the input with the ~ form",
+       bool(target) and target.startswith("~/") and idirbox.input_value() == target,
        f"target={target!r} value={idirbox.input_value()!r}")
     ictx.close()
     ib.close()
