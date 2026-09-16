@@ -96,11 +96,11 @@ serverjack-ctl rollback               # back to the previous version
 serverjack-ctl uninstall              # remove the managed install; config and tmux stay
 ```
 
-> The command above only works once a release with these assets has been
-> published (v1.4.0 will be the first — earlier tags predate this). Until
-> then, or if you're developing serverjack itself, clone the repository
-> instead: see [Install (no sudo)](#install-no-sudo) below, which covers both
-> paths side by side.
+> The command above installs the latest published release (v1.4.0 and later
+> ship the bootstrap asset; earlier tags predate it). If you're developing
+> serverjack itself, clone the repository instead: see
+> [Install (no sudo)](#install-no-sudo) below, which covers both paths side
+> by side.
 
 serverjack has no password of its own. Anyone who can reach it gets a shell as
 the account running it. Keep it behind `tailscale serve` (what `install.sh`

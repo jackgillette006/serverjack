@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## 1.5.0 - 2026-09-16
+
 - Directory picker: picking or Tab-completing a suggestion now keeps the
   `~/...` form in the box instead of swapping in the expanded absolute home
   path (it looked jarring to watch `~/projects` turn into `/home/you/...`).

@@ -239,7 +239,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 # Bump with every release; the git tag for that release must read "v" + this
 # (v1.0.0, v1.1.0, ...) -- install.sh --version and `--check`'s output both
 # come from here, and it's what /api/status reports for a dashboard tile.
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 HOME = os.path.expanduser("~")
 # The checkout this file lives in: <repo>/bin/serverjack. Used for the built-in
 # "Update serverjack" shortcut, which only appears when <repo>/.git exists (a
