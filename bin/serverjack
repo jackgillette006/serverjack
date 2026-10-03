@@ -66,6 +66,8 @@ Routes
     GET  /healthz              "ok"
     GET  /api/sessions         [{name, windows, attached, ...}]
     GET  /api/windows?name=    [{index, name, active, cmd}]
+    GET  /api/scroll?name=     {mouse, scrolled}: the terminal page's view of
+                               the active pane
     GET  /api/tools            one state object per agent
     GET  /api/screen?name=     the session's pane as plain text
     GET  /api/status           counts + agent + machine summary, for a dashboard
@@ -78,6 +80,8 @@ Routes
     POST /kill, /api/kill      kill one
     POST /rename, /api/rename  rename one
     POST /api/window           select a tmux window
+    POST /api/scroll           scroll the pane's history (lines=), or leave
+                               the copy mode that scrolling entered (cancel=1)
     POST /run                  legacy alias for /start's "shell + command"
                                case, kept working for anything still using it
     POST /shortcuts/add (with id=: save an edit), /shortcuts/del, /shortcuts/run
@@ -1194,14 +1198,47 @@ def windows(name):
     return out
 
 
-def session_mouse(name):
-    """Whether tmux mouse mode is on for the session (then xterm's own wheel
-    reports reach tmux and the page must not scroll it a second time)."""
-    r = tmux("show-options", "-A", "-v", "-t", f"={name}:", "mouse")
-    return r.returncode == 0 and r.stdout.strip() == "on"
-
-
 _SCROLL_ACC = {}      # session -> rows not yet turned into a page (alternate-screen panes)
+
+# A pane option marking copy mode that serverjack itself entered (a swipe or a
+# wheel on the page), as opposed to copy mode the user entered on purpose
+# (prefix-[ in any client). Only the first kind is left again when someone
+# types on a page: see pane_scroll_state() and leave_scroll(). A pane option,
+# not a dict in this process, so it follows the pane through a rename or a
+# restart of serverjack. Needs tmux 3.0 (pane options); on older tmux the
+# set fails quietly and typing behaves as it always did.
+SCROLL_MARK = "@serverjack_scrolled"
+_STATE_FMT = "\t".join(["#{pane_in_mode}", "#{pane_mode}", "#{" + SCROLL_MARK + "}", "#{mouse}"])
+
+
+def pane_scroll_state(name):
+    """What the terminal page needs to know about the session's active pane,
+    in one tmux call: whether it sits in copy mode that serverjack entered
+    ("scrolled") and tmux mouse mode. A mark left over from copy mode that
+    has since ended (scrolled to the bottom, Esc or q) is cleared here."""
+    r = tmux("display-message", "-p", "-t", f"={name}:", _STATE_FMT)
+    parts = (r.stdout.rstrip("\n").split("\t") + [""] * 4)[:4] if r.returncode == 0 else [""] * 4
+    in_mode, mode, mark, mouse = parts
+    if mark and in_mode != "1":
+        tmux("set-option", "-p", "-u", "-t", f"={name}:", SCROLL_MARK)
+    return {
+        "scrolled": bool(mark) and in_mode == "1" and mode == "copy-mode",
+        "mouse": mouse in ("1", "on"),
+    }
+
+
+def leave_scroll(name):
+    """Leave copy mode serverjack entered, so the next thing typed on a page
+    reaches the program instead of tmux's copy-mode keys (which ate the start
+    of a line and ran the rest). Copy mode the user entered with prefix-[,
+    any other pane mode, and a pane already back at its prompt are left
+    alone. True when it cancelled something."""
+    st = pane_scroll_state(name)
+    if not st["scrolled"]:
+        return False
+    tmux("send-keys", "-t", f"={name}:", "-X", "cancel")
+    tmux("set-option", "-p", "-u", "-t", f"={name}:", SCROLL_MARK)
+    return True
 
 
 def scroll_session(name, lines):
@@ -1211,16 +1248,19 @@ def scroll_session(name, lines):
     tmux history, so copy mode would show nothing and just trap the keys:
     those get PageUp/PageDown, which such apps understand, one page per half
     a screen of travel. Everything else enters copy mode (leaving it again at
-    the bottom, like a mouse wheel would) and moves by that many lines."""
+    the bottom, like a mouse wheel would) and moves by that many lines.
+
+    Returns whether the pane is now in copy mode that serverjack entered:
+    the page holds the next keystroke until it has left it again."""
     n = max(-200, min(200, lines))
     if not n:
-        return
-    r = tmux("display-message", "-p", "-t", f"={name}:", "#{alternate_on} #{pane_height}")
-    alt, height = "0", 24
+        return pane_scroll_state(name)["scrolled"]
+    r = tmux("display-message", "-p", "-t", f"={name}:", "#{alternate_on} #{pane_height} #{pane_in_mode}")
+    alt, height, in_mode = "0", 24, "0"
     if r.returncode == 0:
         parts = r.stdout.split()
-        if len(parts) == 2 and parts[1].isdigit():
-            alt, height = parts[0], max(int(parts[1]), 4)
+        if len(parts) == 3 and parts[1].isdigit():
+            alt, height, in_mode = parts[0], max(int(parts[1]), 4), parts[2]
     if alt == "1":
         acc = _SCROLL_ACC.get(name, 0) + n
         page = max(height // 2, 2)
@@ -1228,11 +1268,15 @@ def scroll_session(name, lines):
         _SCROLL_ACC[name] = acc - pages * page
         if pages:
             tmux("send-keys", "-t", f"={name}:", "-N", str(abs(pages)), "PageUp" if pages > 0 else "PageDown")
-        return
+        return False
     _SCROLL_ACC.pop(name, None)
-    if n > 0:
-        tmux("copy-mode", "-e", "-t", f"={name}:")
+    if n > 0 and in_mode != "1":
+        # Only copy mode entered here gets the mark: scrolling inside copy
+        # mode the user opened themselves leaves it theirs.
+        if tmux("copy-mode", "-e", "-t", f"={name}:").returncode == 0:
+            tmux("set-option", "-p", "-t", f"={name}:", SCROLL_MARK, "1")
     tmux("send-keys", "-t", f"={name}:", "-X", "-N", str(abs(n)), "scroll-up" if n > 0 else "scroll-down")
+    return pane_scroll_state(name)["scrolled"]   # back at the bottom, copy mode -e has ended (and the mark goes)
 
 
 def screen_text(name, lines=300):
@@ -4823,10 +4867,14 @@ APP_JS = r"""
     return ev;
   }
   function sendKey(key, mods) {
-    var ta = textarea(); if (!ta) return;
+    if (hold(function () { sendKey(key, mods); })) return;
     mods = mods || {};
-    var code = KEYS[key] || key.toUpperCase().charCodeAt(0);
-    ta.dispatchEvent(keyEvent('keydown', { key: key, ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift, altKey: !!mods.alt }, code));
+    fireKey({ key: key, ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift, altKey: !!mods.alt },
+            KEYS[key] || key.toUpperCase().charCodeAt(0));
+  }
+  function fireKey(init, code) {
+    var ta = textarea(); if (!ta) return;
+    ta.dispatchEvent(keyEvent('keydown', init, code));
     // ...and a release. Until xterm sees a keyup it thinks a key is still
     // down and drops dictated, predicted or emoji text, so the next dictation
     // after any soft key used to vanish. A Shift keyup, because on any other
@@ -4851,6 +4899,7 @@ APP_JS = r"""
     var low = ch.toLowerCase(), b = ctrlByte(ch), w = frame.contentWindow;
     if (low >= 'a' && low <= 'z') { sendKey(low, { ctrl: true }); return true; }
     if (b === null) return false;
+    if (hold(function () { ctrlSend(ch); })) return true;
     try { if (w.term && typeof w.term.input === 'function') { w.term.input(b, true); return true; } } catch (e) {}
     sendKey(ch, { ctrl: true }); return true;
   }
@@ -4899,11 +4948,24 @@ APP_JS = r"""
       }
       if (ctrlArmed && e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
         disarm();
-        if (!ctrlSend(e.key)) return;
+        if (!ctrlSend(e.key)) return holdKey(e);
         e.preventDefault(); e.stopPropagation();
         // a cancelled keydown already cancels its own input event; this only
         // guards the same keystroke, never a later dictation or emoji
         swallowInput = true; setTimeout(function () { swallowInput = false; }, 0);
+        return;
+      }
+      // ...and a key that is no character (Return, Backspace, an arrow, Esc,
+      // Tab, Home) takes the latch as well, as the soft keys do: it used to
+      // go plain and leave Ctrl armed, so the next letter became a control
+      // character (Return, then x, sent ^X).
+      if (ctrlArmed && e.key && e.key.length > 1 && !MOD_ONLY.test(e.key) && !e.ctrlKey && !e.metaKey &&
+          !e.isComposing && e.keyCode !== 229) {
+        disarm();
+        e.preventDefault(); e.stopPropagation();
+        var cinit = { key: e.key, code: e.code, ctrlKey: true, shiftKey: e.shiftKey, altKey: e.altKey };
+        var ckc = e.keyCode, cagain = function () { fireKey(cinit, ckc); };
+        if (!(e.key === 'Escape' ? holdEsc(cagain) : hold(cagain))) cagain();
         return;
       }
       // Windows/Linux. xterm.js has no copy or paste keys of its own (Ctrl+Shift+V
@@ -4921,6 +4983,7 @@ APP_JS = r"""
         if (!e.shiftKey && k === 'v') { e.stopPropagation(); return; }
         if (!e.shiftKey && k === 'c' && copySelection(d)) { e.preventDefault(); e.stopPropagation(); return; }
       }
+      holdKey(e);
     }, true);
     // WebKit also fires keypress for Ctrl+V; xterm would turn it into ^V.
     d.addEventListener('keypress', function (e) {
@@ -4932,12 +4995,25 @@ APP_JS = r"""
         disarm();
         if (ctrlSend(e.data)) e.preventDefault();
       }
+      // text with no key press of its own (a phone's predictions, dictation,
+      // an IME word): held like a key while copy mode is being left
+      if (!e.defaultPrevented && e.inputType === 'insertText' && e.data && e.cancelable && holding()) {
+        e.preventDefault(); var s = e.data; hold(function () { typeText(s); });
+      }
     }, true);
+    d.addEventListener('paste', function (e) {
+      var s = e.isTrusted && holding() && e.clipboardData && e.clipboardData.getData('text/plain');
+      if (!s) return;
+      e.preventDefault(); e.stopPropagation(); hold(function () { sendText(s); });
+    }, true);
+    // an IME composition delivers its text when it ends: start leaving now
+    d.addEventListener('compositionstart', function () { if (holding()) hold(function () {}); }, true);
   }
   // Feed text to the terminal exactly as a paste (xterm applies bracketed
   // paste when the app asked for it, so multi-line text is safe).
   function sendText(text) {
     if (!text) return false;
+    if (hold(function () { sendText(text); })) return true;
     var ta = textarea(), w = frame.contentWindow, t = xterm(); if (!ta) return false;
     // xterm's own paste(): brackets and newline handling included. The event
     // route below is for a ttyd without window.term.
@@ -4967,32 +5043,139 @@ APP_JS = r"""
     st.textContent = '.xterm-helper-textarea{position:fixed!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;opacity:0!important;z-index:20!important;-webkit-user-select:text!important;user-select:text!important;caret-color:transparent}';
     root.appendChild(st);
   }
-  // Finger swipe -> wheel events. xterm.js answers touch by scrolling its
-  // own viewport, which is empty under tmux (tmux keeps the history), so a
-  // swipe did nothing. Wheel events, though, reach tmux as mouse scroll when
-  // `set -g mouse on`, and tmux opens its history. One wheel per row of
-  // finger travel; a tap or a long-press (no travel) is left alone so the
-  // native Paste callout still works.
   // Scrolling. xterm.js answers a swipe or a wheel by scrolling its own
   // viewport, which is empty under tmux (tmux keeps the history). So the page
   // scrolls tmux itself: rows go to POST /api/scroll, which enters copy mode
   // and moves by that many lines (and leaves copy mode at the bottom). That
   // needs no `mouse on`, so a mouse drag still selects text for copying. If
   // the session does have mouse mode on, xterm's own wheel reports already
-  // reach tmux, so wheels pass through and swipes become wheel events.
-  var MOUSE = false, scrollQ = 0, scrollT = null, wheelAcc = 0;
+  // reach tmux, so wheels pass through and swipes become wheel events. Which
+  // of the two is decided per event, from xterm's live mouse-tracking state
+  // (mouseOn()): tmux can be told `mouse on` or off while the page is open.
+  // A tap or a long-press (no travel) is left alone so the native Paste
+  // callout still works.
+  var MOUSE = false, scrollQ = 0, scrollT = null, wheelAcc = 0, scrollBusy = null, scrollGen = 0;
   function flushScroll() {
-    scrollT = null; var n = scrollQ; scrollQ = 0; if (!n || !cur) return;
-    fetch('/api/scroll', { method: 'POST', body: new URLSearchParams({ name: cur, lines: n }) }).catch(function () {});
+    scrollT = null;
+    if (scrollBusy) return;                 // sent once the request in flight is answered
+    var n = scrollQ, name = cur; scrollQ = 0; if (!n || !name) return;
+    scrollGen++;
+    scrollBusy = fetch('/api/scroll', { method: 'POST', body: new URLSearchParams({ name: name, lines: n }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (name === cur && j && typeof j.scrolled === 'boolean') sjScrolled = j.scrolled; })
+      .catch(function () {})
+      .then(function () { scrollBusy = null; if (scrollQ && !scrollT) scrollT = setTimeout(flushScroll, 0); });
   }
-  function queueScroll(rows) { scrollQ += rows; if (!scrollT) scrollT = setTimeout(flushScroll, 40); }
-  function pollMouse() {
-    fetch('/api/scroll?name=' + encodeURIComponent(cur), { cache: 'no-store' })
-      .then(function (r) { return r.json(); }).then(function (j) { MOUSE = !!j.mouse; }).catch(function () {});
+  // The content moves under xterm's selection when tmux scrolls (xterm never
+  // sees it scroll), so the highlight would sit on other text: drop it.
+  function queueScroll(rows) { clearSel(); scrollQ += rows; if (!scrollT) scrollT = setTimeout(flushScroll, 40); }
+  // every queued row sent and answered (sjScrolled is then up to date)
+  function settleScroll() {
+    if (scrollT) { clearTimeout(scrollT); scrollT = null; }
+    if (!scrollBusy && scrollQ) flushScroll();
+    return scrollBusy ? scrollBusy.then(settleScroll) : Promise.resolve();
   }
-  function rowH() { var d = tdoc(), r = d && d.querySelector('.xterm-rows > div'); return (r && r.offsetHeight) || 18; }
+
+  // ---- typing after a scroll goes to the program, not to tmux's copy mode.
+  // While scrolled back the pane is in copy mode, where most keys are copy
+  // mode's: they were eaten, and the first Space or q left copy mode, so the
+  // rest of the line ran as a different command (`echo hello world` ran
+  // `world`). The pane is shared, so this is just as true after a scroll on
+  // another device. serverjack marks the copy mode it entered (never copy
+  // mode you entered with prefix-[); while it is marked, the page holds what
+  // is typed, has it left (POST cancel=1), then sends what it held, in
+  // order. The cancel is HTTP and keys go over ttyd's WebSocket, so a key
+  // let through at once could still overtake it. Esc is let through: it
+  // leaves copy mode by itself.
+  var sjScrolled = false, leaving = null, heldInput = [], draining = false;
+  function holding() { return !draining && (!!leaving || sjScrolled || scrollQ !== 0 || !!scrollBusy); }
+  // Run fn once copy mode is left; true when it was held for that.
+  function hold(fn) {
+    if (!holding()) return false;
+    heldInput.push(fn);
+    if (!leaving) leaving = leaveScroll();
+    return true;
+  }
+  function leaveScroll() {
+    var name = cur, done = false;
+    function release() {
+      if (done) return; done = true; leaving = null;
+      var q = heldInput; heldInput = []; draining = true;
+      try { q.forEach(function (fn) { try { fn(); } catch (e) {} }); } finally { draining = false; }
+    }
+    setTimeout(release, 3000);              // never hold input for good (serverjack unreachable)
+    return settleScroll().then(function () {
+      if (!sjScrolled || name !== cur) return;
+      return fetch('/api/scroll', { method: 'POST', body: new URLSearchParams({ name: name, cancel: '1' }) });
+    }).then(function () { if (name === cur) sjScrolled = false; }, function () {}).then(release);
+  }
+  var MOD_ONLY = /^(Shift|Control|Alt|AltGraph|Meta|OS|Super|Hyper|CapsLock|NumLock|ScrollLock|Fn|FnLock|Dead|Unidentified|Process|Compose)$/;
+  function holdKey(e) {
+    if (!holding() || e.isComposing || e.keyCode === 229 || e.metaKey || MOD_ONLY.test(e.key || 'Unidentified')) return;
+    if ((e.ctrlKey && (e.key || '').toLowerCase() === 'v') || (e.shiftKey && e.key === 'Insert')) return;   // a paste: held as one
+    // Esc only leaves copy mode (it would interrupt an agent if it were sent on)
+    if (e.key === 'Escape' && !leaving) return;
+    e.preventDefault(); e.stopPropagation();
+    // A character goes as typed text (Option's composed character on a Mac,
+    // AltGr's elsewhere); anything else is pressed again for xterm to translate.
+    var altGr = !!(e.getModifierState && e.getModifierState('AltGraph'));
+    var ch = e.key.length === 1 && (altGr || (!e.ctrlKey && (!e.altKey || isMac))) ? e.key : null;
+    var init = { key: e.key, code: e.code, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey }, code = e.keyCode;
+    hold(function () { if (ch !== null) typeText(ch); else fireKey(init, code); });
+  }
+  // text as if typed (no paste brackets around it)
+  function typeText(s) {
+    var t = xterm();
+    try { if (t && typeof t.input === 'function') { t.input(s, true); return; } } catch (e) {}
+    sendText(s);
+  }
+
+  // ---- what the server says about the pane: copy mode serverjack entered
+  // (above) and tmux mouse mode (the fallback for mouseOn()). Read on load,
+  // on coming back to the page, and every 2s while it has focus (so a
+  // scroll on the phone is known to the desktop before you type there).
+  function pollState() {
+    var name = cur, gen = scrollGen;
+    if (!name) return;
+    fetch('/api/scroll?name=' + encodeURIComponent(name), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (name !== cur || !j || j.error) return;
+        MOUSE = !!j.mouse;
+        if (gen === scrollGen && !scrollBusy && !scrollQ && !leaving) sjScrolled = !!j.scrolled;
+      }).catch(function () {});
+  }
+  var pollTick = 0;
+  setInterval(function () {
+    if (document.hidden) return;
+    pollTick++;
+    if (document.hasFocus() || pollTick % 5 === 0) pollState();   // 10s while only visible
+  }, 2000);
+  window.addEventListener('focus', function () { pollState(); });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) pollState(); });
+
+  // Wheels and swipes. One row per measured row height of travel: ttyd draws
+  // with WebGL or canvas, which have no DOM rows to measure, so this used to
+  // assume 18px rows and scroll about a sixth too little.
+  function rowH() {
+    var d = tdoc(), t = xterm(), s = d && d.querySelector('.xterm-screen'), h = 0;
+    try { if (t && t.rows && s) h = s.getBoundingClientRect().height / t.rows; } catch (e) {}
+    if (h > 0) return h;
+    var r = d && d.querySelector('.xterm-rows > div');
+    return (r && r.offsetHeight) || 18;
+  }
+  function mouseOn() {
+    var t = xterm();
+    try { if (t && t.modes && typeof t.modes.mouseTrackingMode === 'string') return t.modes.mouseTrackingMode !== 'none'; } catch (e) {}
+    return MOUSE;
+  }
   function onWheel(e) {
-    if (MOUSE || e.ctrlKey) return;                       // mouse mode: xterm reports it; ctrl+wheel: browser zoom
+    // Ctrl+wheel, and a trackpad pinch (which arrives as one), zoom the page.
+    // Stopping it here hides it from xterm, which would turn it into arrow
+    // keys for the program (recalling shell history) and cancel the zoom;
+    // not preventing it leaves the zoom to the browser.
+    if (e.ctrlKey) { e.stopPropagation(); return; }
+    if (mouseOn()) return;                                // mouse mode: xterm reports the wheel to tmux
     e.preventDefault(); e.stopPropagation();
     wheelAcc += e.deltaMode === 1 ? e.deltaY : e.deltaY / rowH();
     var n = Math.trunc(wheelAcc); if (n) { wheelAcc -= n; queueScroll(-n); }   // wheel down => newer
@@ -5014,16 +5197,16 @@ APP_JS = r"""
       var y = e.touches[0].clientY; acc += y - lastY; lastY = y;
       if (!moved && Math.abs(acc) < 8) return;            // a wobble during a long-press is not a swipe
       moved = true; e.preventDefault();
-      var h = rowH(), target = d.querySelector('.xterm-screen') || d.querySelector('.xterm');
+      var h = rowH(), m = mouseOn(), target = d.querySelector('.xterm-screen') || d.querySelector('.xterm');
       while (Math.abs(acc) >= h) {
         var older = acc > 0; acc += older ? -h : h;       // finger down => older lines
-        if (MOUSE && target) target.dispatchEvent(new w.WheelEvent('wheel', { deltaY: older ? -h : h, deltaMode: 0, bubbles: true, cancelable: true }));
+        if (m && target) target.dispatchEvent(new w.WheelEvent('wheel', { deltaY: older ? -h : h, deltaMode: 0, bubbles: true, cancelable: true }));
         else queueScroll(older ? 1 : -1);
       }
     }, { capture: true, passive: false });
     d.addEventListener('touchend', function () { lastY = null; }, { capture: true, passive: true });
   }
-  frame.addEventListener('load', function () { hook(); touchCss(); scrollHooks(); pollMouse(); focusTerm(); });
+  frame.addEventListener('load', function () { hook(); touchCss(); scrollHooks(); pollState(); focusTerm(); });
 
   // ---- soft key row
   var keysRow = document.getElementById('keys'), ctrlBtn = document.getElementById('ctrl');
@@ -5239,7 +5422,11 @@ APP_JS = r"""
   });
   // A session switch starts clean: no armed Ctrl carried over, no key still
   // repeating, no screen text of the previous session left open.
-  function resetInput() { disarm(); swallowInput = false; endPress(); closeScreen(false); }
+  function resetInput() {
+    disarm(); swallowInput = false; endPress(); closeScreen(false);
+    // nothing typed for the old session, or about its copy mode, carries over
+    heldInput = []; sjScrolled = false; scrollQ = 0; wheelAcc = 0;
+  }
 
   // ---- iOS: the soft keyboard doesn't shrink the layout viewport, so track
   // the visual viewport and size the page to it (keeps the key row visible).
@@ -5883,7 +6070,7 @@ APP_JS = r"""
   }
   setInterval(function () { refresh().catch(noop); checkConn(); }, 15000);
   body.classList.add('conn');
-  [function () { refresh().catch(noop); }, hook, touchCss, scrollHooks, pollMouse, focusTerm, frameLoaded].forEach(safe);
+  [function () { refresh().catch(noop); }, hook, touchCss, scrollHooks, pollState, focusTerm, frameLoaded].forEach(safe);
 })();
 """
 
@@ -6900,7 +7087,10 @@ class Handler(BaseHTTPRequestHandler):
             name = (q.get("name") or [""])[0]
             if not session_exists(name):
                 return self.send_json({"error": "no such session"}, 404)
-            return self.send_json({"mouse": session_mouse(name)})
+            # mouse: tmux mouse mode (then xterm's own wheel reports reach
+            # tmux and the page must not scroll it a second time); scrolled,
+            # cols, rows, status, latest, clients: see pane_scroll_state()
+            return self.send_json(pane_scroll_state(name))
         if path == "/api/status":
             return self.send_json(status())
         if path == "/api/tools":
@@ -7275,8 +7465,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "lines must be an integer"}, 400)
             if not session_exists(name):
                 return self.send_json({"error": "no such session"}, 404)
-            scroll_session(name, lines)
-            return self.send_json({"ok": True})
+            if f.get("cancel") == "1":           # leave serverjack's copy mode before typing
+                return self.send_json({"ok": True, "cancelled": leave_scroll(name), "scrolled": False})
+            return self.send_json({"ok": True, "scrolled": scroll_session(name, lines)})
 
         if path == "/shortcuts/add":             # also saves an edit: id names the shortcut
             cmd = clean_cmd(f.get("cmd"))

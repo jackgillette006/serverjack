@@ -2811,5 +2811,68 @@ class TermPageKeyRowTests(unittest.TestCase):
         self.assertLess(self.page.index('id="hint"'), self.page.index('<div id="keys">'))
 
 
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+class ScrollMarkTests(unittest.TestCase):
+    """The copy mode serverjack enters to scroll a pane is marked, and left
+    again (POST /api/scroll cancel=1 -> leave_scroll()) before a page sends
+    what was typed; copy mode the user entered themselves is never marked
+    nor left. Runs against a private tmux server (TMUX_TMPDIR in a temp
+    dir), never the user's."""
+
+    def setUp(self):
+        self._env = {k: os.environ.get(k) for k in ("TMUX_TMPDIR", "TMUX")}
+        self._tmp = tempfile.mkdtemp(prefix="sj-unit-tmux-")
+        os.environ["TMUX_TMPDIR"] = self._tmp
+        os.environ.pop("TMUX", None)
+        self.name = "scrolltest"
+        r = mod.tmux("new-session", "-d", "-s", self.name, "-x", "80", "-y", "24",
+                     "bash --noprofile --norc -c 'seq 1 300; exec sleep 600'")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for _ in range(50):              # the history is there
+            if mod.tmux("display", "-p", "-t", f"={self.name}:", "#{history_size}").stdout.strip() not in ("", "0"):
+                break
+            time.sleep(0.05)
+
+    def tearDown(self):
+        mod.tmux("kill-server")
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def fmt(self, f):
+        return mod.tmux("display", "-p", "-t", f"={self.name}:", f).stdout.strip()
+
+    def test_scrolling_up_marks_the_copy_mode_and_leaving_clears_it(self):
+        self.assertTrue(mod.scroll_session(self.name, 10))
+        self.assertEqual(self.fmt("#{pane_in_mode} #{scroll_position}"), "1 10")
+        self.assertTrue(mod.pane_scroll_state(self.name)["scrolled"])
+        self.assertTrue(mod.leave_scroll(self.name))
+        self.assertEqual(self.fmt("#{pane_in_mode}"), "0")
+        self.assertEqual(self.fmt("#{" + mod.SCROLL_MARK + "}"), "")
+        self.assertFalse(mod.leave_scroll(self.name))       # nothing left to leave
+
+    def test_scrolling_back_to_the_bottom_ends_it_and_the_mark(self):
+        mod.scroll_session(self.name, 5)
+        self.assertFalse(mod.scroll_session(self.name, -5))  # copy-mode -e exits at the bottom
+        self.assertEqual(self.fmt("#{pane_in_mode}"), "0")
+        self.assertEqual(self.fmt("#{" + mod.SCROLL_MARK + "}"), "")
+
+    def test_a_mark_outliving_its_copy_mode_is_cleared_on_the_next_read(self):
+        mod.scroll_session(self.name, 5)
+        mod.tmux("send-keys", "-t", f"={self.name}:", "-X", "cancel")   # q or Esc, say
+        self.assertFalse(mod.pane_scroll_state(self.name)["scrolled"])
+        self.assertEqual(self.fmt("#{" + mod.SCROLL_MARK + "}"), "")
+
+    def test_copy_mode_the_user_entered_is_never_marked_or_left(self):
+        mod.tmux("copy-mode", "-t", f"={self.name}:")     # prefix-[ in any client
+        self.assertFalse(mod.scroll_session(self.name, 3))   # scrolling inside it still works...
+        self.assertEqual(self.fmt("#{pane_in_mode} #{scroll_position}"), "1 3")
+        self.assertFalse(mod.leave_scroll(self.name))         # ...but it stays the user's
+        self.assertEqual(self.fmt("#{pane_in_mode}"), "1")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
