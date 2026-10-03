@@ -169,10 +169,14 @@ def autostart_entries(cfg):
         return []
 
 
+GONE_PARENT = "/proc/sj-pwagents-gone/proj"      # a directory that cannot be created
 BASE, HOME, CFG, LOG = start_instance(
     "main", main_tools, "srv,solo,pair,slow",
     autostart=lambda home: [{"tool": "srv", "kind": "server",
-                             "dir": os.path.join(home, "projects/synth-ios")}])
+                             "dir": os.path.join(home, "projects/synth-ios")},
+                            {"tool": "srv", "kind": "server",
+                             "dir": os.path.join(home, "projects/deleted-proj")},
+                            {"tool": "srv", "kind": "server", "dir": GONE_PARENT}])
 SAME = {"Sec-Fetch-Site": "same-origin"}
 
 try:
@@ -301,6 +305,22 @@ try:
         card(page, "srv")
         ok("...and the row is gone",
            page.locator('#tool-srv code:text-is("~/projects/synth-ios")').count() == 0)
+
+        # A boot directory that has gone: deleted, or (the realistic one) on a
+        # drive that is not mounted, where it cannot even be created.
+        for gone, shown in ((os.path.join(HOME, "projects/deleted-proj"), "~/projects/deleted-proj"),
+                            (GONE_PARENT, GONE_PARENT)):
+            card(page, "srv")
+            grow = page.locator(f'#tool-srv .orow:has(code:text-is("{shown}"))')
+            ok(f"a boot directory that is gone gets a row saying so, with no Start ({shown})",
+               grow.count() == 1 and "directory is gone" in grow.inner_text()
+               and grow.locator('button:text-is("Start")').count() == 0,
+               page.locator("#tool-srv .opts").inner_text())
+            with page.expect_navigation():
+                grow.locator("input.autostart").uncheck()
+            ok("...unticking it forgets the entry",
+               not any(e.get("dir") == gone for e in autostart_entries(CFG)), autostart_entries(CFG))
+            ok("...and does not re-create the directory", not os.path.exists(gone))
 
         card(page, "solo")
         page.fill("#dp-solo", "~/projects/web-app")

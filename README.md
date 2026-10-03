@@ -379,8 +379,10 @@ unless you tick the box, and ticking one does not start anything now.
 
 A saved directory with nothing running in it keeps a row of its own on the
 card, "Starts at boot; not running now", with the box ticked — untick it there
-to forget the entry, or press Start. A server that only runs once (OpenCode's)
-has one entry at most, and its row says which directory it starts in.
+to forget the entry, or press Start. If the directory has gone (deleted, a
+drive not mounted) the row says so and offers only the box; unticking never
+re-creates the directory. A server that only runs once (OpenCode's) has one
+entry at most, and its row says which directory it starts in, running or not.
 
 ## Why this and not X
 

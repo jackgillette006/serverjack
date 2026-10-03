@@ -57,7 +57,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
   nothing running now has a row of its own ("Starts at boot; not running
   now") with the box ticked and a Start button; the per-directory Start row
   no longer has a box (tick it on the server's own row); and a single
-  server's box shows its one entry and says which directory it starts in.
+  server's box shows its one entry and says which directory it starts in,
+  running or not. A directory that has since gone (deleted, a drive not
+  mounted) gets a row saying so, and unticking it just forgets the entry: it
+  neither re-creates the directory nor fails because it can't.
 - **The directory picker on an agent card is where it is used.** Every
   ready card used to start with an unlabelled picker that most of its
   buttons ignored (Codex has nothing that reads a directory), far above the
