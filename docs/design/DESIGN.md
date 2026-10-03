@@ -35,9 +35,13 @@ Use semantic tokens rather than scattering literal colors through components.
 }
 ```
 
-The UI is dark-only, so the token block also declares `color-scheme: dark`:
+The UI is dark-only, so the landing page's CSS declares `color-scheme: dark`:
 native scrollbars, checkboxes and other form chrome then draw dark too
-instead of the browser's light defaults.
+instead of the browser's light defaults. It is deliberately not in the token
+block, which the terminal page shares: ttyd's page inside the terminal's
+iframe declares no color-scheme, and when the page around an iframe is dark
+but the framed document is not, browsers give the frame an opaque white
+canvas, so the terminal would flash white every time it loads.
 
 The accent green is precious. Use it for current/active state, primary actions, focus, success/online state, and small pieces of branding. Do not turn whole screens green.
 

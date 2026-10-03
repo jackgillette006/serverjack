@@ -2533,8 +2533,6 @@ def self_check():
 
 TOKENS = """
 :root{
-  /* dark-only UI: native scrollbars, checkboxes and form chrome follow it */
-  color-scheme:dark;
   --bg-primary:#080f0e; --bg-secondary:#111815; --surface:#1a2420; --surface-alt:#232e28;
   --border:#2f3f36; --border-soft:#1f2a25;
   --text-primary:#e6f7e9; --text-secondary:#9fb3a8; --text-muted:#93a79d;
@@ -3150,7 +3148,11 @@ I_DOTS = ('<svg class="i" viewBox="0 0 24 24" width="18" height="18" fill="curre
 
 CSS = TOKENS + FX_CSS + FX_CSS_LAND + DIRPICK_CSS + """
 *{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
+/* Dark-only UI: native scrollbars, checkboxes and form chrome draw dark too.
+   Here, not in TOKENS: the terminal page shares TOKENS, and an iframe whose
+   embedder is dark but whose document (ttyd's) is not gets an opaque WHITE
+   canvas -- a white terminal every time a session loads or reconnects. */
+html{-webkit-text-size-adjust:100%;color-scheme:dark}
 body{margin:0;background:var(--bg-primary);color:var(--text-primary);
   font:14px/1.5 var(--font-ui);overflow-x:hidden;
   background-image:repeating-linear-gradient(180deg,rgb(57 255 136 / .012) 0 1px,transparent 1px 3px)}
@@ -4388,6 +4390,10 @@ body{{display:flex;flex-direction:column;height:100vh;height:100dvh;position:rel
 @media (pointer:coarse){{#winmenu button{{min-height:44px}}}}
 #frame-wrap{{flex:1 1 auto;position:relative;min-height:0}}
 #frame{{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000}}
+/* Dark scrollbars and form chrome on this page's own panels (a folder list
+   that overflows, the Copy view), but only there: a page-wide color-scheme
+   would give the frame around ttyd's document an opaque white canvas. */
+#pop,#screen,#winmenu{{color-scheme:dark}}
 /* ---- touch key row (phones/tablets): Esc, Tab, arrows, Ctrl... */
 #keys{{flex:none;display:none;background:var(--bg-secondary);border-top:1px solid var(--border-soft);
   padding:6px 6px calc(6px + env(safe-area-inset-bottom));gap:6px;overflow-x:auto;scrollbar-width:none}}

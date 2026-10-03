@@ -220,7 +220,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 - **Dark scrollbars and checkboxes.** The page never said it was dark-only, so
   Chrome, Edge and Firefox drew light-grey scrollbars (on the page, the folder
   suggestions and a long command box) and white unchecked checkboxes next to
-  the dark UI. Every page now declares `color-scheme: dark`.
+  the dark UI. The landing page (and the refused and session-ended pages)
+  now declares `color-scheme: dark`. The terminal page deliberately does not:
+  ttyd's page inside it declares none, and a dark page around it would make
+  the browser paint the terminal white while it loads.
 - **Home-screen app: nothing scrolls under the status bar any more.** The
   iPhone app draws under a transparent status bar, and once the list was
   scrolled, cards and the bright Start button passed right under the clock.
