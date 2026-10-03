@@ -204,12 +204,22 @@ tmux server) is no longer reachable through the web app at all — it's kept
 only for running by hand.
 
 Server-side, every operation goes through the `tmux()` wrapper and a
-machine-parseable `-F` format: `sessions()`/`windows()` list state;
-`session_mouse()`/`scroll_session()` drive tmux's mouse and copy modes from
-outside it — `scroll_session()` branches on `#{alternate_on}` (full-screen
-apps like an agent CLI's TUI have no scrollback, so they get
-`PageUp`/`PageDown` instead, accumulated in `_SCROLL_ACC` so small scroll
-deltas don't each flip a page); `screen_text()` backs `/api/screen` and the
+machine-parseable `-F` format: `sessions()`/`windows()` list state (with a
+`clients` count per session); `scroll_session()` drives tmux's copy mode
+from outside it — it branches on `#{alternate_on}` (full-screen apps like an
+agent CLI's TUI have no scrollback, so they get `PageUp`/`PageDown` instead,
+accumulated in `_SCROLL_ACC` so small scroll deltas don't each flip a page),
+and marks the copy mode it enters with the pane option
+`@serverjack_scrolled`. `pane_scroll_state()` (GET `/api/scroll`) reports
+that mark, tmux mouse mode, the window size and `window-size` policy and the
+client count in one `display-message`; `leave_scroll()` (POST `/api/scroll`
+`cancel=1`) cancels only marked copy mode, which the terminal page does
+before sending anything typed while scrolled back (it holds the input until
+the cancel is answered, since keys travel over ttyd's WebSocket and could
+overtake it). The same state lets the page nudge its terminal one row
+smaller and back when you engage with it on a session another screen has
+sized, which tmux's `window-size latest` counts as this client's resize;
+`screen_text()` backs `/api/screen` and the
 phone "Copy" view; `create_session()`/`command_args()` pass the command in
 through an environment variable (`SERVERJACK_CMD`), never interpolated
 into a shell string, run in front of a login shell so `sudo` can prompt and
@@ -406,7 +416,16 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   activation; the Ctrl latch's control bytes; text arriving after a soft
   key; Paste firing once; the Copy view's focus, Esc, errors and copied
   text; where the keyboard focus lands after bar and overlay clicks in all
-  three engines; and which keys fit on screen at 320 and 390px.
+  three engines; and which keys fit on screen at 320 and 390px. Then
+  scrolling and the clipboard: typing (or a predicted word) after a wheel or
+  a real swipe runs as typed, Ctrl+wheel never reaches the program, wheel
+  travel per measured row, tmux mouse mode toggled under an open page, the
+  selection dropped by a scroll, trimmed copies, Ctrl+Shift+C, the Paste
+  key's bracketed paste in all three engines, and the leave prompt. And two
+  screens on one session (Chromium desktop plus WebKit iPhone): the other
+  device's scroll left before the desktop's typing, the screens cue and
+  landing count, and the engaged screen taking the size back without a
+  key.
 - `pwpop.py` — pop-out-to-window behavior and that reopening the same
   session refocuses rather than duplicates.
 - `pwwin.py` — the window-count badge and picker, verified against
