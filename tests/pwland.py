@@ -487,7 +487,11 @@ with sync_playwright() as p:
 
     page.click("details.ddchange summary")
     page.fill("#dd_dir", "~/projects")
-    page.click('form[action="/prefs"] button[type=submit]')
+    # Submit the form itself: the picker's suggestion list (opened by the
+    # fill, its reply racing this line) can sit over Save and swallow a
+    # click -- a picker behaviour of its own, not what this check is about.
+    with page.expect_navigation():
+        page.eval_on_selector('form[action="/prefs"]', "f => f.requestSubmit()")
     page.wait_for_load_state()
     ok("saving redirects back with a confirmation note",
        page.locator(".flash").count() == 1
