@@ -38,8 +38,8 @@ check_dir() {
 
 refuse() {
   printf '\n  %s\n\n' "$1"
-  # Long pause: ttyd auto-reconnects (re-running this) when we exit, and the
-  # web page moves you to another session within ~15s on its own.
+  # Long pause: ttyd auto-reconnects (re-running this) when we exit. The web
+  # page notices a session that is gone and takes you to the session list.
   sleep 20
   exit 1
 }

@@ -185,14 +185,17 @@ with sync_playwright() as p:
     page.screenshot(path="shots/desktop-keys.png")
 
     # switching tabs swaps the frame
+    # (the frame is moved with location.replace(), not by setting its src --
+    # see pwchrome.py's Back check -- so read where it actually is)
     other = page.locator("#tabs .tab:not(.on)").first
-    oname = other.inner_text(); other.click(); time.sleep(0.5)
-    ok("tab switch changes frame src", oname in page.get_attribute("#frame", "src"), page.get_attribute("#frame", "src"))
+    oname = other.get_attribute("data-name"); other.click(); time.sleep(0.5)
+    where = page.evaluate("document.getElementById('frame').contentWindow.location.href")
+    ok("tab switch moves the frame", "arg=" + oname in where, where)
     ok("url updated", page.url.endswith("/s/" + oname), page.url)
-    page.click(f"#tabs .tab:text-is('{SESS}')"); time.sleep(0.5)
+    page.click(f"#tabs .tab[data-name='{SESS}']"); time.sleep(0.5)
 
     # + popover validation error
-    page.click("#add"); page.fill("#pop [name=name]", SESS); page.click("#pop .btn"); time.sleep(0.5)
+    page.click("#add"); page.fill("#pop [name=name]", SESS); page.click("#pop .btn[type=submit]"); time.sleep(0.5)
     ok("duplicate name error shown inline", page.locator("#err").is_visible() and "already exists" in page.locator("#err").inner_text())
     page.keyboard.press("Escape")
 

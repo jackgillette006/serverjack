@@ -332,7 +332,7 @@ def desktop_layout(p):
         btn = page.locator("#pop button[type=submit]").bounding_box()
         hit = page.evaluate(f"(() => {{ const e = document.elementFromPoint({btn['x'] + btn['width'] / 2},"
                             f" {btn['y'] + btn['height'] / 2}); return e && (e.closest('button') || e).textContent; }})()")
-        ok("the open list doesn't cover the panel's Start & open", "Start" in (hit or ""), repr(hit))
+        ok("the open list doesn't cover the panel's Start", "Start" in (hit or ""), repr(hit))
         page.fill("#pop_dir", f"{ROOT_SHOW}/{LONGP}/")
         fit = leaf_fits(page, "#pop")
         ok("in the 360px panel the folder name shows whole, the parent is what's cut",
@@ -582,7 +582,7 @@ def phone(p, name):
         ok("a long parent path is cut, the folder name shows whole",
            fit["inside"] and fit["whole"] and fit["cut"], str(fit))
 
-        # The terminal's new-session sheet: the list fits, Start & open stays reachable.
+        # The terminal's new-session sheet: the list fits, its Start stays reachable.
         page.goto(f"{BASE}/s/{TAKEN}")
         page.wait_for_selector("#tabs .tab.on")
         page.tap("#add")
@@ -599,7 +599,7 @@ def phone(p, name):
             const b = pop.querySelector('button[type=submit]'), r = b.getBoundingClientRect();
             const h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
             return h === b || b.contains(h); })()""")
-        ok("...and Start & open is never under the list", hit)
+        ok("...and its Start is never under the list", hit)
         kb = page.evaluate("""(() => { document.body.style.height = '300px';   // what fit() does with the keyboard up
             const pop = document.querySelector('#pop'); pop.scrollTop = 0;
             const r = pop.getBoundingClientRect(), n = pop.querySelector('input[name=name]').getBoundingClientRect();

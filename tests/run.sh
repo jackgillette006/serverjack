@@ -72,7 +72,8 @@ RT=$RUN_ROOT/rt
 RT_AUTH=$RUN_ROOT/rt-auth
 RT_AUTO=$RUN_ROOT/rt-auto
 RT_THEME=$RUN_ROOT/rt-theme
-for d in "$RT" "$RT_AUTH" "$RT_AUTO" "$RT_THEME"; do mkdir -m 700 "$d"; done
+RT_RS=$RUN_ROOT/rt-rs
+for d in "$RT" "$RT_AUTH" "$RT_AUTO" "$RT_THEME" "$RT_RS"; do mkdir -m 700 "$d"; done
 pids=()
 BROWSER_CID=$RUN_ROOT/browser.cid
 cleanup() {
@@ -92,12 +93,12 @@ cleanup() {
 trap cleanup EXIT
 
 # Dynamic ports avoid interacting with an existing serverjack or concurrent
-# test run. Keep all four sockets open while selecting so they are distinct.
-read -r PORT PORT_AUTH PORT_AUTO PORT_THEME < <(python3 - <<'PY'
+# test run. Keep all five sockets open while selecting so they are distinct.
+read -r PORT PORT_AUTH PORT_AUTO PORT_THEME PORT_RS < <(python3 - <<'PY'
 import socket
 
 sockets = []
-for _ in range(4):
+for _ in range(5):
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     sockets.append(sock)
@@ -107,6 +108,7 @@ PY
 BASE="http://127.0.0.1:$PORT"
 AUTH_BASE="http://127.0.0.1:$PORT_AUTH"
 THEME_BASE="http://127.0.0.1:$PORT_THEME"
+RS_BASE="http://127.0.0.1:$PORT_RS"
 failures=0
 result() {
   local label=$1 expected=$2 got=$3
@@ -251,6 +253,14 @@ env "${common[@]}" XDG_RUNTIME_DIR="$RT_THEME" SERVERJACK_PORT="$PORT_THEME" \
 env "${common[@]}" XDG_RUNTIME_DIR="$RT_THEME" \
     TTYD_EXTRA_ARGS='-t theme={\"background\":\"#123456\"}' \
     bash ../bin/serverjack-ttyd >shots/ttyd-theme.log 2>&1 & pids+=($!)
+# Fourth instance: one that pwchrome.py restarts (serverjack, ttyd or both) to
+# prove the terminal reconnects on its own. The browser container cannot
+# signal host processes, so tests/restartable.sh takes requests as files in
+# RS_CTL (see the top of that script). Same tmux server as the others.
+RS_CTL=$RUN_ROOT/ctl
+mkdir -m 700 "$RS_CTL"
+env "${common[@]}" XDG_RUNTIME_DIR="$RT_RS" SERVERJACK_PORT="$PORT_RS" \
+    bash ./restartable.sh "$RS_CTL" "$RS_BASE" >shots/restartable.log 2>&1 & pids+=($!)
 tmux new-session -d -s pwtest -x 120 -y 30 -c "$TEST_HOME" "$session_shell"
 tmux new-session -d -s pwother -x 120 -y 30 -c "$TEST_HOME" "$session_shell"
 for _ in $(seq 1 30); do curl -sf -o /dev/null "$BASE/" && break; sleep 0.2; done
@@ -258,6 +268,8 @@ curl -sf -o /dev/null "$BASE/" || { echo "landing not up (see shots/web.log)" >&
 curl -sf -o /dev/null "$BASE/term/" || { echo "terminal not reachable through serverjack (see shots/ttyd.log)" >&2; exit 1; }
 curl -sf -o /dev/null "$AUTH_BASE/healthz" || { echo "restricted instance not up (see shots/web-auth.log)" >&2; exit 1; }
 curl -sf -o /dev/null "$THEME_BASE/healthz" || { echo "custom-theme instance not up (see shots/web-theme.log)" >&2; exit 1; }
+for _ in $(seq 1 30); do [[ -f $RS_CTL/state ]] && break; sleep 0.2; done
+[[ -f $RS_CTL/state ]] || { echo "restartable instance not up (see shots/restartable.log, shots/web-rs.log)" >&2; exit 1; }
 
 echo "== HTTP parser and identity security (host-side)"
 SERVERJACK_TEST_BASE="$BASE" SERVERJACK_TEST_AUTH_BASE="$AUTH_BASE" \
@@ -390,7 +402,7 @@ for a in "${explicit_args[@]}"; do
   esac
 done
 [[ ${#suites[@]} -eq 0 && ${#explicit_args[@]} -eq 0 ]] \
-  && suites=(pwtest pwclip pwmobile pwpop pwland pwlayout pwauth pwwin pwagents pwdirpick pwflows)
+  && suites=(pwtest pwclip pwmobile pwpop pwland pwlayout pwauth pwwin pwagents pwdirpick pwflows pwchrome)
 for suite in "${suites[@]}"; do
   [[ $suite =~ ^[a-zA-Z0-9_-]+$ && -f $suite.py ]] \
     || { echo "unknown test suite: $suite" >&2; exit 2; }
@@ -402,6 +414,7 @@ if (( ${#suites[@]} )); then
     -v "$PWD:/w" -w /w -v "$RUN_ROOT:$RUN_ROOT" -v "$PWD/../bin:/repo-bin:ro" \
     -e TMUX_SOCK="$TMUX_SOCK" -e SERVERJACK_TEST_BASE="$BASE" \
     -e SERVERJACK_TEST_AUTH_BASE="$AUTH_BASE" -e SERVERJACK_TEST_THEME_BASE="$THEME_BASE" \
+    -e SERVERJACK_TEST_RS_BASE="$RS_BASE" -e SERVERJACK_TEST_RS_CTL="$RS_CTL" \
     "$IMG" bash -c '
     set -euo pipefail
     # Pillow: pwtest.py decodes a screenshot clip to prove a terminal glyph is
