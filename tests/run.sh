@@ -373,7 +373,7 @@ for a in "${explicit_args[@]}"; do
   esac
 done
 [[ ${#suites[@]} -eq 0 && ${#explicit_args[@]} -eq 0 ]] \
-  && suites=(pwtest pwclip pwmobile pwpop pwland pwauth pwwin)
+  && suites=(pwtest pwclip pwmobile pwpop pwland pwauth pwwin pwagents)
 for suite in "${suites[@]}"; do
   [[ $suite =~ ^[a-zA-Z0-9_-]+$ && -f $suite.py ]] \
     || { echo "unknown test suite: $suite" >&2; exit 2; }
