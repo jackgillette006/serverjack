@@ -1030,6 +1030,33 @@ class ValidateNameTests(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(name, "a-plain-name")
 
+    def test_rejects_a_leading_dollar(self):
+        # tmux reads "=$x" as session id $x: such a session could be created
+        # and then never opened, killed or renamed. It must be refused before
+        # session_exists() is asked at all (it misreads the name the same way).
+        asked = []
+        with mock.patch.object(mod, "session_exists", lambda n: asked.append(n) or False):
+            name, err = mod.validate_name("$x")
+            self.assertIsNone(name)
+            self.assertIn("$", err)
+            name, err = mod.validate_name("  $3  ")
+            self.assertIsNone(name)
+        self.assertEqual(asked, [])
+
+    def test_dollar_elsewhere_is_fine(self):
+        with mock.patch.object(mod, "session_exists", lambda n: False):
+            self.assertEqual(mod.validate_name("a$b"), ("a$b", None))
+
+    def test_duplicate_message_is_context_free(self):
+        # "Open it instead." made no sense for a rename; the landing page adds
+        # an Open button of its own next to it.
+        with mock.patch.object(mod, "session_exists", lambda n: n == "main"):
+            name, err = mod.validate_name("main")
+        self.assertIsNone(name)
+        self.assertEqual(err, mod.taken_msg("main"))
+        self.assertIn("already exists", err)
+        self.assertNotIn("instead", err)
+
 
 class CommandArgsTests(unittest.TestCase):
     """command_args(): a tool only reachable via TOOL_PATH (nvm's bin dir, a
@@ -1134,6 +1161,23 @@ class DefaultSessionNameTests(unittest.TestCase):
         self._existing.add("apt-src")
         self.assertEqual(
             mod.default_session_name("shell", "/home/x/src", "sudo apt install ffmpeg"), "apt-src-2")
+
+    def test_a_wrappers_options_and_their_values_are_skipped(self):
+        name = mod.default_session_name
+        self.assertEqual(name("shell", "/home/x", "sudo -u nobody true; echo after"), "true")
+        self.assertEqual(name("shell", "/home/x", "sudo -E apt update"), "apt")
+        self.assertEqual(name("shell", "/home/x", "nice -n 10 make"), "make")
+        self.assertEqual(name("shell", "/home/x", "sudo -u postgres psql"), "psql")
+        self.assertEqual(name("shell", "/home/x", "sudo -- ls"), "ls")
+
+    def test_variable_assignments_are_skipped(self):
+        name = mod.default_session_name
+        self.assertEqual(name("shell", "/home/x", "env FOO=1 printenv FOO"), "printenv")
+        self.assertEqual(name("shell", "/home/x", "FOO=1 make"), "make")
+        self.assertEqual(name("shell", "/home/x", "sudo env A=1 B=2 nohup ./run.sh"), "run-sh")
+
+    def test_an_unbalanced_quote_never_raises(self):
+        self.assertEqual(mod.default_session_name("shell", "/home/x", "echo 'oops"), "echo")
 
 
 class InstallChannelTests(unittest.TestCase):

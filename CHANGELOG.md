@@ -154,6 +154,18 @@ and this project uses [Semantic Versioning](https://semver.org/).
   terminal + panel's Name and Directory labels belong to their fields, so
   clicking a label focuses it and voice control can find them.
 
+- Renaming a session to a name starting with `-` failed with tmux's raw
+  "unknown flag" error, although creating one worked.
+- A session name starting with `$` was accepted, and the session then
+  couldn't be opened, killed or renamed (tmux reads `$x` as a session id, and
+  `$3` would have hit someone else's session). It's refused up front now.
+- Unnamed sessions are named after the command that actually runs, past a
+  wrapper's options: `sudo -u nobody true` is `true` (was `u`), `env FOO=1
+  printenv` is `printenv` (was `foo-1`).
+- Renaming onto a taken name said "Open it instead.", which was written for
+  starting a session; a rename now says "Another session is already called
+  “main”. Pick a different name."
+
 ### Added
 
 - Directory picker: a **›** at the end of each suggestion shows that

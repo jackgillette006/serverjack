@@ -292,7 +292,7 @@ with sync_playwright() as p:
     page.wait_for_load_state()
     errtext = page.locator(".err").first.inner_text() if page.locator(".err").count() else ""
     ok("renaming onto an existing name is refused",
-       "already exists" in errtext and exists(newname), errtext or "no error shown")
+       "already called" in errtext and exists(newname), errtext or "no error shown")
     # and a name tmux can't have
     # Sec-Fetch-Site: a browser sets it; Playwright's API client does not, and
     # a POST with neither it nor an Origin is refused as cross-site.
