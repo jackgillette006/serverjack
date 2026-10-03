@@ -888,7 +888,81 @@ class DefaultDirTests(unittest.TestCase):
         d, err = mod.resolve_dir("newproj", None)
         self.assertIsNone(err)
         self.assertEqual(d, os.path.realpath(os.path.join(target, "newproj")))
-        self.assertTrue(os.path.isdir(d))   # a typed path that doesn't exist yet is created
+        # Resolving never creates it: that waits for a session to really
+        # start there (ensure_dir(), from create_session()).
+        self.assertFalse(os.path.exists(d))
+        self.assertIsNone(mod.ensure_dir(d))
+        self.assertTrue(os.path.isdir(d))
+
+    # ------------------------------------- creating a typed new folder
+    def test_resolve_dir_must_exist_refuses_a_missing_folder_in_tilde_form(self):
+        d, err = mod.resolve_dir("~/projects/gmae", must_exist=True)
+        self.assertIsNone(d)
+        self.assertEqual(err, "Not a directory: ~/projects/gmae")
+        self.assertFalse(os.path.exists(os.path.join(self.fake_home, "projects")))
+
+    def test_resolve_dir_names_an_existing_file_in_tilde_form(self):
+        with open(os.path.join(self.fake_home, "notes.txt"), "w"):
+            pass
+        d, err = mod.resolve_dir("~/notes.txt")
+        self.assertIsNone(d)
+        self.assertEqual(err, "Not a directory: ~/notes.txt")
+
+    def test_resolve_dir_with_a_nul_byte_is_an_error_not_an_exception(self):
+        d, err = mod.resolve_dir("bad\x00name")
+        self.assertIsNone(d)
+        self.assertTrue(err)
+
+    def test_validate_default_dir_names_the_path_in_tilde_form(self):
+        _d, err = mod.validate_default_dir("~/nope")
+        self.assertEqual(err, "Not a directory: ~/nope")
+
+    def test_ensure_dir_reports_a_failure_in_tilde_form(self):
+        with open(os.path.join(self.fake_home, "afile"), "w"):
+            pass
+        err = mod.ensure_dir(os.path.join(self.fake_home, "afile", "sub"))
+        self.assertTrue(err.startswith("Couldn't create ~/afile/sub:"), err)
+
+    def _fake_tmux(self, calls):
+        def tmux(*args, **_kw):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return tmux
+
+    def test_create_session_creates_a_new_folder_right_before_tmux(self):
+        calls, where = [], os.path.join(self.fake_home, "brand", "new")
+        def tmux(*args, **_kw):
+            calls.append(os.path.isdir(where))      # does it exist when tmux runs?
+            return subprocess.CompletedProcess(args, 0, "", "")
+        with mock.patch.object(mod, "tmux", tmux), \
+                mock.patch.object(mod, "tool_kinds", return_value={"shell": (None, "Shell")}):
+            self.assertIsNone(mod.create_session("shell", "s", where))
+        self.assertEqual(calls, [True])
+
+    def test_create_session_with_an_unknown_kind_creates_nothing(self):
+        calls, where = [], os.path.join(self.fake_home, "never")
+        with mock.patch.object(mod, "tmux", self._fake_tmux(calls)), \
+                mock.patch.object(mod, "tool_kinds", return_value={"shell": (None, "Shell")}):
+            self.assertEqual(mod.create_session("nope", "s", where), "Unknown session type.")
+        self.assertEqual(calls, [])
+        self.assertFalse(os.path.exists(where))
+
+    def test_create_session_that_cannot_make_the_folder_never_runs_tmux(self):
+        with open(os.path.join(self.fake_home, "afile"), "w"):
+            pass
+        calls = []
+        with mock.patch.object(mod, "tmux", self._fake_tmux(calls)), \
+                mock.patch.object(mod, "tool_kinds", return_value={"shell": (None, "Shell")}):
+            err = mod.create_session("shell", "s", os.path.join(self.fake_home, "afile", "x"))
+        self.assertTrue(err.startswith("Couldn't create ~/afile/x"), err)
+        self.assertEqual(calls, [])
+
+    def test_create_command_session_creates_its_folder_too(self):
+        calls, where = [], os.path.join(self.fake_home, "srv")
+        with mock.patch.object(mod, "tmux", self._fake_tmux(calls)):
+            self.assertIsNone(mod.create_command_session("s", where, "true"))
+        self.assertTrue(os.path.isdir(where))
+        self.assertEqual(len(calls), 1)
 
 
 class ValidateNameTests(unittest.TestCase):

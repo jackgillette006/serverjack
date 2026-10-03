@@ -1508,7 +1508,7 @@ def default_dir():
 
 def validate_default_dir(raw):
     """(realpath, None) or (None, error) for saving a new default_dir.
-    Unlike resolve_dir(), this never creates the directory: silently
+    Unlike a new session's directory, this is never created: silently
     creating one just because someone fat-fingered the default-dir field
     would be a much worse surprise here than the same typo in an ordinary
     new-session directory, where "start a shell in a new project dir" is
@@ -1517,39 +1517,54 @@ def validate_default_dir(raw):
     d = (raw or "").strip()
     if not d:
         return None, "Give a directory."
-    d = os.path.expanduser(d)
-    if not os.path.isabs(d):
-        d = os.path.join(default_dir(), d)
-    d = os.path.realpath(d)
-    if not os.path.isdir(d):
-        return None, f"Not a directory: {d}"
-    return d, None
+    return resolve_dir(d, must_exist=True)
 
 
-def resolve_dir(dir_value, dir_custom=None):
-    """The directory a session starts in. The .dirpick combobox posts one
-    "dir" field, typed or picked from its suggestions -- a suggestion always
-    exists already, and typed text that doesn't exist yet is created (the
-    user typed it on purpose: "start a shell/agent in a new project dir").
-    dir_custom is accepted only for backward compatibility (old API callers,
-    a hand-built form): when present it takes priority over dir_value, same
-    as the picker's old select+typed-override pair did. An empty picker, and
-    a relative typed path, both resolve against default_dir() -- the owner's
-    chosen default, not always HOME."""
+def resolve_dir(dir_value, dir_custom=None, must_exist=False):
+    """(realpath, None) or (None, error): the directory a session starts in.
+    The .dirpick combobox posts one "dir" field, typed or picked from its
+    suggestions. dir_custom is accepted only for backward compatibility (old
+    API callers, a hand-built form): when present it takes priority over
+    dir_value, same as the picker's old select+typed-override pair did. An
+    empty picker, and a relative typed path, both resolve against
+    default_dir() -- the owner's chosen default, not always HOME.
+
+    This only resolves; it never touches the disk. A path that doesn't exist
+    yet is returned as-is and created by ensure_dir(), which
+    create_session() and create_command_session() call right before tmux
+    starts -- so a start that fails on its name (or anything else) leaves no
+    stray folder behind, and the folder appears only when a session really
+    starts in it. must_exist=True is for things saved for later (a shortcut,
+    a boot entry): there a missing directory is a typo to report, not a
+    folder to invent. Errors name the path in its ~ form, the way the picker
+    shows it."""
     base = default_dir()
     d = (dir_custom or "").strip() or (dir_value or "").strip() or base
     d = os.path.expanduser(d)
     if not os.path.isabs(d):
         d = os.path.join(base, d)
-    d = os.path.realpath(d)
-    if not os.path.isdir(d):
-        if os.path.exists(d):
-            return None, f"Not a directory: {d}"
-        try:
-            os.makedirs(d)
-        except OSError as e:
-            return None, f"Couldn't create {d}: {e.strerror or e}"
+    try:
+        d = os.path.realpath(d)
+    except (OSError, ValueError):       # e.g. an embedded NUL byte
+        return None, "Not a directory."
+    if os.path.isdir(d):
+        return d, None
+    if must_exist or os.path.lexists(d):
+        return None, f"Not a directory: {_dir_show(d)}"
     return d, None
+
+
+def ensure_dir(d):
+    """None, or an error: create d (and any missing parents) if it isn't
+    there yet. The one place a typed new folder becomes real -- see
+    resolve_dir()."""
+    if os.path.isdir(d):
+        return None
+    try:
+        os.makedirs(d)
+    except OSError as e:
+        return f"Couldn't create {_dir_show(d)}: {e.strerror or e}"
+    return None
 
 
 def command_args(cmd):
@@ -1596,7 +1611,11 @@ def create_command_session(name, cwd, cmd, marks=None, pane_mark=None):
     """A session that runs one command in front of a login shell. marks:
     tmux user options to set on it in the same tmux call, so no listing
     ever sees the session without them (see start_server()). pane_mark: a
-    user option set to the new pane's id, the pane the command runs in."""
+    user option set to the new pane's id, the pane the command runs in.
+    Creates cwd first if it is a new folder (see resolve_dir())."""
+    err = ensure_dir(cwd)
+    if err:
+        return err
     extra = []
     for key, value in (marks or {}).items():
         extra += [";", "set-option", "-t", f"={name}:", key, value]
@@ -1615,6 +1634,9 @@ def create_session(kind, name, cwd, command=None):
     kinds = tool_kinds()
     if kind not in kinds:
         return "Unknown session type."
+    err = ensure_dir(cwd)               # a new folder, typed on purpose: see resolve_dir()
+    if err:
+        return err
     cmd, _label = kinds[kind]
     args = ["new-session", "-d", "-s", name, "-c", cwd, "-e", f"PATH={TOOL_PATH}"]
     if cmd or (command and command.strip()):
@@ -4799,7 +4821,7 @@ class Handler(BaseHTTPRequestHandler):
             cmd = f.get("cmd", "").strip()
             if not cmd:
                 return self.send_html(render("A shortcut needs a command.", sc_label=f.get("label", ""), addsc_open=True), 400)
-            cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
+            cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"), must_exist=True)
             if err:
                 return self.send_html(render(err, sc_label=f.get("label", ""), sc_cmd=cmd, addsc_open=True), 400)
             add_shortcut(f.get("label", ""), cmd, cwd)
@@ -4831,7 +4853,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_html(render("That shortcut no longer exists."), 404)
             cwd = sc.get("dir") or HOME
             if not os.path.isdir(cwd):
-                return self.send_html(render(f"Shortcut directory is gone: {cwd}"), 400)
+                return self.send_html(render(f"Shortcut directory is gone: {_dir_show(cwd)}"), 400)
             name = default_session_name("shell", cwd, sc["cmd"])
             err = create_session("shell", name, cwd, command=sc["cmd"])
             if err:
@@ -4932,7 +4954,7 @@ class Handler(BaseHTTPRequestHandler):
                 return fail(f"No daemon is configured for {t['label']}.")
             cwd = HOME
             if kind == "server" and f.get("on"):
-                cwd, err = resolve_dir(f.get("dir"), "")
+                cwd, err = resolve_dir(f.get("dir"), "", must_exist=True)
                 if err:
                     return fail(err)
             elif kind == "server":
