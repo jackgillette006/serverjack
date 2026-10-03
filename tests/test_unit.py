@@ -1505,6 +1505,55 @@ class ServerSessionTests(unittest.TestCase):
         env = mod.tmux("show-environment", "-t", "=semi", "SERVERJACK_CMD").stdout.strip()
         self.assertEqual(env, "SERVERJACK_CMD=" + cmd)
 
+    def _running(self, tool, name):
+        return _wait(lambda: [i for i in mod.server_instances(tool, mod.server_panes())
+                              if i["session"] == name and i["state"] == "on"])
+
+    def test_a_window_opened_beside_a_server_does_not_make_it_exited(self):
+        # prefix+c or the window tabs: a plain shell becomes the session's
+        # active pane. Judged by that, the live server read "exited", and
+        # Start / Remove / autostart killed it.
+        name, _, _ = mod.start_server(self.per_dir, self.d("a/app"))
+        self.assertTrue(self._running(self.per_dir, name))
+        mod.tmux("new-window", "-t", f"={name}:", "-c", self.home, "exec bash")
+        self.assertTrue(_wait(lambda: self.pane(name, "#{pane_current_command}") == "bash"))
+        time.sleep(0.3)
+        self.assertEqual([i["state"] for i in mod.server_instances(self.per_dir, mod.server_panes())],
+                         ["on"])
+        created = self.pane(name, "#{session_created}")
+        self.assertEqual(mod.start_server(self.per_dir, self.d("a/app"))[1], "already running")
+        self.assertEqual((self.pane(name, "#{session_created}"), self.pane(name, "#{session_windows}")),
+                         (created, "2"))
+
+    def test_a_split_beside_a_server_does_not_make_it_exited(self):
+        name, _, _ = mod.start_server(self.single, self.d("a/app"))
+        self.assertTrue(self._running(self.single, name))
+        mod.tmux("split-window", "-t", f"={name}:", "-c", self.home, "exec bash")
+        self.assertTrue(_wait(lambda: self.pane(name, "#{pane_current_command}") == "bash"))
+        time.sleep(0.3)
+        self.assertEqual([i["state"] for i in mod.server_instances(self.single, mod.server_panes())],
+                         ["on"])
+
+    def test_a_server_whose_own_pane_is_gone_reads_exited(self):
+        # ...even when what is left in the session is not a shell.
+        name, _, _ = mod.start_server(self.per_dir, self.d("a/app"))
+        self.assertTrue(self._running(self.per_dir, name))
+        pane = mod.tmux("show-options", "-v", "-t", f"={name}:", mod.SERVER_PANE_MARK).stdout.strip()
+        self.assertRegex(pane, r"^%[0-9]+$")
+        mod.tmux("new-window", "-t", f"={name}:", "-c", self.home, "sleep 300")
+        mod.tmux("kill-pane", "-t", pane)
+        self.assertTrue(_wait(lambda: [i for i in mod.server_instances(self.per_dir, mod.server_panes())
+                                       if i["state"] == "exited"]))
+
+    def test_an_unmarked_server_is_judged_by_its_first_pane(self):
+        mod.create_command_session("pd-remote-app", self.d("a/app"), "sleep 300")
+        self.assertTrue(self._running(self.per_dir, "pd-remote-app"))
+        mod.tmux("new-window", "-t", "=pd-remote-app:", "-c", self.home, "exec bash")
+        self.assertTrue(_wait(lambda: self.pane("pd-remote-app", "#{pane_current_command}") == "bash"))
+        time.sleep(0.3)
+        self.assertEqual([i["state"] for i in mod.server_instances(self.per_dir, mod.server_panes())],
+                         ["on"])
+
 
 class TmuxArgTests(unittest.TestCase):
     def test_trailing_semicolons_are_escaped_and_separators_are_not(self):

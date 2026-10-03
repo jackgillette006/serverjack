@@ -216,6 +216,24 @@ try:
         srv = next(a for a in js["agents"] if a["id"] == "srv")
         ok("/api/status counts it as running", srv["servers_running"] == 1, json.dumps(srv))
 
+        # A window opened beside the server (prefix+c, the window tabs) is a
+        # plain shell, and it becomes the session's active pane.
+        wid = tm("new-window", "-P", "-F", "#{window_id}", "-t", "=srv-remote-web-app:", "exec bash")
+        wait_for(lambda: tm("display", "-p", "-t", "=srv-remote-web-app:",
+                            "#{pane_current_command}") == "bash")
+        page.wait_for_timeout(300)
+        st = summary_text(page, "srv")
+        ok("a second window in the server's session leaves it reading running",
+           "1 running" in st and "exited" not in st, st)
+        before = tm("display", "-p", "-t", "=srv-remote-web-app:", "#{session_created} #{session_windows}")
+        start_from_card(page, "srv", "~/projects/web-app")
+        err = page.locator(".err").inner_text() if page.locator(".err").count() else ""
+        ok("...and Start still says already running, leaving both windows",
+           "already running" in err
+           and tm("display", "-p", "-t", "=srv-remote-web-app:",
+                  "#{session_created} #{session_windows}") == before, f"{before} {err!r}")
+        tm("kill-window", "-t", wid)
+
         # --------------------------- F17: identity by mark, not by name ----
         start_from_card(page, "srv", "~/projects/3d-lab")
         start_from_card(page, "srv", "~/projects/ai/3d-lab")
