@@ -317,6 +317,12 @@ and this project uses [Semantic Versioning](https://semver.org/).
   history, so Back from the list no longer re-opens the session you just
   left. The docs now use "kill" for ending a session and "leave" for coming
   back to the list.
+- **iPhone Larger Text.** Every landing-page size was fixed px, which iOS
+  never scales, and the home-screen app has no aA menu, so the Text Size
+  setting did nothing. On iOS the landing page's text now follows it (at the
+  default setting nothing changes; inputs never drop under 16px, so focusing
+  one doesn't zoom). Desktop and Android are untouched; the terminal page
+  stays as it is.
 - `/favicon.ico` answers with the app icon instead of a 404 on every desktop
   visit, and a client that hangs up mid-response (a phone locking, a tab
   closing) no longer leaves a `BrokenPipeError` traceback in the journal.
