@@ -3547,7 +3547,10 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 (function(){{
   // Desktop: "Open" pops the session out in its own window and this page
   // stays put. Phones: same tab (a pile of browser tabs is worse there).
-  var touch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+  // By the PRIMARY pointer: a touchscreen laptop is driven with a mouse or
+  // trackpad, so it keeps the desktop behaviour. Same test as the terminal page's.
+  var touch = matchMedia('(pointer: coarse)').matches ||
+              ('ontouchstart' in window && matchMedia('(hover: none)').matches);
   if (touch) document.body.classList.add('touch');
   // CRT effects: the server put .fx on <body> (so the power-on plays before any
   // script runs); localStorage overrides it either way and the toggle writes it.
@@ -4686,7 +4689,12 @@ APP_JS = r"""
   var frame = document.getElementById('frame'), tabs = document.getElementById('tabs');
   var pop = document.getElementById('pop'), err = document.getElementById('err');
   var isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '') || /Mac OS X/.test(navigator.userAgent);
-  var touch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+  // Touch UI (soft keys, same-tab Open, no pop-out) by the PRIMARY pointer: a
+  // laptop with a touchscreen has touch events but a mouse or trackpad to
+  // drive it. A phone that misreports its pointer still has no hover. Keep in
+  // step with the landing page's copy of this line.
+  var touch = matchMedia('(pointer: coarse)').matches ||
+              ('ontouchstart' in window && matchMedia('(hover: none)').matches);
 
   // ---- terminal helpers (same-origin frame, so we can reach into ttyd's page)
   function tdoc() { try { return frame.contentDocument; } catch (e) { return null; } }

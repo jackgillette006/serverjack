@@ -17,7 +17,8 @@ Safari). What is proven here:
 - the strip: edge fades, the mouse wheel, polls that change nothing touch
   nothing, the active tab and its window badge in view, long names cut with
   an ellipsis, the window list built from fresh data;
-- a refit after load (no dead band), no scrollbar strip, no touchCss error.
+- a refit after load (no dead band), no scrollbar strip, no touchCss error;
+- a touchscreen laptop (touch events, mouse pointer) keeps the desktop UI.
 
 Sessions it makes are all called pwc-*, and are killed at the end.
 """
@@ -152,14 +153,16 @@ def reconnect_rounds(page, sess, label, rounds):
 
 
 MADE = [f"pwc-a{TAG}", f"pwc-b{TAG}", f"pwc-c{TAG}", f"pwc-rs{TAG}",
-        f"pwc-a-really-long-session-name-for-the-strip-{TAG}"]
+        f"pwc-a-really-long-session-name-for-the-strip-{TAG}", f"pwc-p{TAG}", f"pwc-q{TAG}"]
 FILLERS = [f"pwc-f{i:02d}-{TAG}" for i in range(18)]
-A, B, C, RS, LONG = MADE
+A, B, C, RS, LONG, P, Q = MADE
 new_session(A)
 new_session(B, windows=3)
 new_session(C)
 new_session(RS)
 new_session(LONG)
+new_session(P)
+new_session(Q)
 
 try:
     with sync_playwright() as p:
@@ -503,6 +506,33 @@ try:
         sb = page.evaluate("(() => { const v = document.getElementById('frame').contentDocument"
                            ".querySelector('.xterm-viewport'); return v.offsetWidth - v.clientWidth; })()")
         ok("no scrollbar strip down the terminal", sb == 0, f"{sb}px")
+        b.close()
+
+        # ======================= G10: a touchscreen laptop keeps the desktop UI
+        print("chromium, touchscreen laptop (touch events, mouse pointer):")
+        b = p.chromium.launch(args=["--touch-events=enabled"])
+        page = b.new_context(viewport={"width": 1280, "height": 800}).new_page()
+        page.goto(f"{BASE}/")
+        ok("(the browser does expose touch events here)", page.evaluate("'ontouchstart' in window"))
+        page.click(f".sess:has(a.open[data-name='{P}']) details summary")
+        ok("landing: no touch layout, and the menu offers Pop out",
+           not page.evaluate("document.body.classList.contains('touch')")
+           and page.locator(f".sess:has(a.open[data-name='{P}']) a[data-open=popout]").is_visible())
+        page.goto(f"{BASE}/")
+        with page.expect_popup() as pi:
+            page.click(f"a.open[data-name='{P}']")
+        try:
+            pi.value.wait_for_url(f"**/s/{P}?popout=1")
+        except PlaywrightError:
+            pass
+        ok("...and Open pops out", "popout=1" in pi.value.url, pi.value.url)
+        pi.value.close()
+        open_term(page, BASE, Q)
+        ok("terminal: no touch layout, Pop out shown, the key row off by default",
+           not page.evaluate("document.body.classList.contains('touch')")
+           and page.locator("#popout").is_visible() and not page.locator("#keys").is_visible())
+        ok("...and no touch textarea stretched over the terminal",
+           page.frame_locator("#frame").locator("#sj-touch").count() == 0)
         b.close()
 finally:
     for s in MADE + FILLERS:
