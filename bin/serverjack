@@ -2650,7 +2650,7 @@ body.fx.off{animation:sj-off 110ms ease-in forwards,sj-back 160ms ease-out 900ms
 @keyframes sj-back{from{opacity:0;transform:scale(1,.004)}to{opacity:1;transform:none}}
 /* the toggle itself: a ghost control, footer of the landing page / bottom of #pop */
 .fxt{border:0;background:transparent;color:var(--text-muted);cursor:pointer;padding:2px 0;
-  font:500 11px/16px var(--font-mono);letter-spacing:.04em;opacity:.7}
+  font:500 11px/16px var(--font-mono);letter-spacing:.04em;opacity:.85}
 .fxt:hover{color:var(--accent);opacity:1}
 @media (prefers-reduced-motion:reduce){
   #crt,#conn,body.fx::before,body.fx::after{display:none!important}
@@ -3237,9 +3237,11 @@ h2:first-of-type{margin-top:var(--space-4)}
 .seg .pill::before{content:none}
 .seg .pill input{position:absolute;opacity:0;width:1px;height:1px;margin:0;pointer-events:none}
 .seg .pill:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
-.seg .pill.on,.seg .pill:has(input:checked){color:var(--accent);
-  border-color:rgb(57 255 136 / .35);background:var(--accent-wash)}
-@media (pointer:coarse){.seg .pill{padding:9px 16px;min-height:38px}}
+/* .on is set by the page script for browsers without :has(); separate rules,
+   because one unsupported selector drops a whole selector list */
+.seg .pill.on{color:var(--accent);border-color:rgb(57 255 136 / .35);background:var(--accent-wash)}
+.seg .pill:has(input:checked){color:var(--accent);border-color:rgb(57 255 136 / .35);background:var(--accent-wash)}
+@media (pointer:coarse){.seg .pill{padding:9px 16px;min-height:44px}}
 form.row{display:flex;flex-direction:column;gap:10px}
 label{font:500 12px/16px var(--font-mono);color:var(--text-secondary);letter-spacing:.02em}
 input,select,textarea{width:100%;padding:11px 12px;border-radius:var(--radius-sm);
@@ -3283,7 +3285,9 @@ h2[id],details.tool,#addsc{scroll-margin-top:calc(env(safe-area-inset-top) + var
 /* a section's lead-in sentence: the same gap to its cards as a heading's */
 h2 + p.hint{margin-bottom:var(--space-2)}
 .note{margin:6px 0 8px}
-.note code,.hint code{font:12px/18px var(--font-mono);color:var(--text-secondary);word-break:break-all}
+/* break at spaces first; split a token (a long URL) only when it can't fit a line */
+.note code,.hint code{font:12px/18px var(--font-mono);color:var(--text-secondary);
+  word-wrap:break-word;overflow-wrap:anywhere}
 .foot{margin-top:var(--space-5);padding-top:var(--space-3);border-top:1px solid var(--border-soft)}
 
 /* disclosure ("+ Save as a shortcut", "+ New shell") */
@@ -3304,7 +3308,8 @@ details.card[open] summary::before,details.inline[open] summary::before{content:
    whose whole row is the <details> toggle, same "+"/"−" marker as every
    other disclosure above, just smaller and dimmer to read as a footnote. */
 .ddchange{margin-top:var(--space-3)}
-.ddchange summary{color:var(--text-muted);font-size:12px;line-height:18px;min-height:0}
+/* details.ddchange, not .ddchange: it has to outrank "details.inline summary" */
+details.ddchange summary{color:var(--text-muted);font-size:12px;line-height:18px;min-height:0}
 .ddchange[open] summary{color:var(--text-secondary);margin-bottom:var(--space-2)}
 .ddchange form{margin-top:var(--space-2)}
 
@@ -3442,9 +3447,31 @@ details.tool[open] .chev{transform:rotate(180deg)}
 }
 @media (pointer:coarse){
   .btn{min-height:44px;padding:11px 16px}
-  .btn.sm{min-height:40px}
+  .btn.sm{min-height:44px}
   .btn.icon{width:44px;min-height:44px}
   .menu-list a,.menu-list button{min-height:44px}
+  /* the controls the 44px floor above missed */
+  details.card summary,details.inline summary{min-height:44px}
+  .save{min-height:44px}
+  .save label{flex:1;align-self:stretch;display:flex;align-items:center}
+  .menu-list details.ren input[type=text],.menu-list details.ren form button{min-height:44px}
+  .docs{padding:13px 0}
+  .foot .fxt{padding:14px 4px;margin:-14px -4px}
+  /* "start at boot" posts the moment it changes: a tall label, kept clear of
+     Stop/Start beside it (pushed to the far side when the row stacks) */
+  .orow .ob .ab{min-height:44px;margin-right:var(--space-3)}
+}
+@media (pointer:coarse) and (max-width:560px){.orow .ob .ab{margin-right:auto}}
+/* Windows Contrast themes (forced colours) replace colours and drop
+   backgrounds -- which is all the selected Start choice and every status
+   dot were made of. System colours that survive it: */
+@media (forced-colors:active){
+  .seg .pill.on{forced-color-adjust:none;background:Highlight;color:HighlightText;border-color:Highlight}
+  .seg .pill:has(input:checked){forced-color-adjust:none;background:Highlight;
+    color:HighlightText;border-color:Highlight}
+  .seg .pill:has(input:focus-visible){outline:2px solid CanvasText}
+  .dot,.state b::before,.pill::before{forced-color-adjust:none;background:CanvasText}
+  .dot.on{background:Highlight}
 }
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;
@@ -3875,7 +3902,7 @@ START_CARD = """<h2 id="start">Start a session</h2>
   <input id="name" name="name" aria-label="Session name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Name (optional), e.g. 3d-lab" value="{name}">
   <div id="cmdwrap">
     <textarea id="cmd" name="cmd" aria-label="Command" rows="2" autocapitalize="off" spellcheck="false"
-      placeholder="Optional: a command to run, e.g. sudo apt install ffmpeg">{cmd}</textarea>
+      placeholder="Optional command, e.g. sudo apt install ffmpeg">{cmd}</textarea>
     <details class="inline"{save_open}><summary>Save as a shortcut</summary>
       <div class="save"><input type="checkbox" id="save" name="save" value="1"{save_checked}><label for="save">Keep this command in Shortcuts</label></div>
       <input name="label" maxlength="60" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Shortcut name" placeholder="Shortcut name (optional), e.g. Update packages" value="{label}">

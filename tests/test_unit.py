@@ -2615,6 +2615,18 @@ class SessionRowTests(unittest.TestCase):
         self.assertEqual(mod.session_facts(dict(one, attached=True, created=0)),
                          '<span aria-hidden="true"><b class="att">attached</b></span>')
 
+    def test_no_has_in_a_selector_list(self):
+        # A browser without :has() (iOS before 15.4, Firefox before 121)
+        # drops a whole selector list over one :has() in it -- the plain
+        # fallback next to it included.
+        import re
+        term = mod.TERM_PAGE.split("<style>", 1)[1].split("</style>", 1)[0]
+        css = re.sub(r"/\*.*?\*/", "", mod.CSS + term + mod.DIRPICK_CSS, flags=re.S)
+        bad = [sel.strip() for sel in re.findall(r"([^{}]+)\{", css)
+               if ":has(" in sel and "," in re.sub(r"\([^()]*\)", "", sel)
+               and not sel.strip().startswith("@")]
+        self.assertEqual(bad, [])
+
     def test_sessions_lead_the_page_only_when_there_are_some(self):
         one = [{"name": "main", "windows": 1, "attached": False, "created": 0,
                 "cmd": "bash", "path": "~"}]
