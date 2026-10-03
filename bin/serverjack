@@ -3182,7 +3182,7 @@ select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outl
 .flash{background:var(--accent-wash);border:1px solid var(--accent-dim);color:var(--text-primary);
   padding:10px 14px;border-radius:var(--radius-sm);margin-bottom:var(--space-3);
   font:500 13px/18px var(--font-mono)}
-/* landing flows (LAND_JS): a button whose form is on its way; notes and errors
+/* landing flows (FLOWS_JS): a button whose form is on its way; notes and errors
    moved next to the card they are about, which the page then scrolls to */
 .btn.busy{opacity:.6;cursor:progress}
 h2[id],details.tool,#addsc{scroll-margin-top:calc(env(safe-area-inset-top) + var(--space-3))}
@@ -3472,7 +3472,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 }})();
 </script>
 <script>{dirpick_js}</script>
-<script>{land_js}</script>
+<script>{flows_js}</script>
 </main></body></html>
 """
 
@@ -3513,7 +3513,7 @@ START_CARD = """<h2>Start a session</h2>
 #    command twice or land on "already exists" for your own new session).
 #  - Kill and Rename go through /api/kill and /api/rename and update the row in
 #    place: no reload, no lost scroll position, errors under the field.
-LAND_JS = r"""
+FLOWS_JS = r"""
 (function () {
   'use strict';
   var start = document.getElementById('startform');
@@ -4928,7 +4928,7 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
     flash_html = (f'<div class="flash" id="note" role="status" data-at="{esc(flash_at)}">'
                   f'{esc(flash)}</div>') if flash else ""
     return PAGE.format(css=CSS, error=flash_html + err, body=body, title=esc(TITLE), glyph=I_LOGO,
-                       pwa_links=PWA_LINKS, dirpick_js=DIRPICK_JS, land_js=LAND_JS,
+                       pwa_links=PWA_LINKS, dirpick_js=DIRPICK_JS, flows_js=FLOWS_JS,
                        sysline=system_line(), fx_class=FX_CLASS, version=esc(VERSION))
 
 
