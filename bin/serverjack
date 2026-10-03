@@ -1787,8 +1787,10 @@ def create_command_session(name, cwd, cmd, marks=None, pane_mark=None):
 # ttyd's first fit a fifth of a second to land, and starts at the size the
 # user will actually see. Capped at 5 s -- a page that never attaches (a
 # tab closed straight away) only ever delays the command, never stops it --
-# and any error from tmux skips the wait. Sessions nobody opens
-# (create_command_session(): autostart, agent servers) don't get it.
+# and any error from tmux skips the wait. create_command_session() doesn't
+# use it: autostart starts its sessions through it with no page to wait
+# for, so a server started from its card (which does open at once) still
+# prints its first lines at 80 columns.
 ATTACH_WAIT = (
     'i=0; while [ "$i" -lt 50 ]; do '
     'n=$(tmux display -p -t "$TMUX_PANE" "#{session_attached}" 2>/dev/null) || break; '

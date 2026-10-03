@@ -239,8 +239,10 @@ Their pane script therefore begins with `ATTACH_WAIT`: poll
 settle for ttyd's first fit, and only then print `$ <cmd>` and run it.
 Printed at 80 columns and re-wrapped for a phone's ~47, that line used to
 push its own first row into history, above a `sudo` password prompt.
-`create_command_session()` (autostart, agent servers: nobody is about to
-attach) skips the wait. Both pass `COLORTERM=truecolor`.
+`create_command_session()` skips the wait: autostart uses it too and has
+no client to wait for, so an agent server started from its card (which
+does open straight away) still starts at 80 columns. Both pass
+`COLORTERM=truecolor`.
 
 Server-side, every operation goes through the `tmux()` wrapper and a
 machine-parseable `-F` format: `sessions()`/`windows()` list state (with a
