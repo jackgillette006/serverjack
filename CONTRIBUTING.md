@@ -7,7 +7,7 @@ it that way.
 
 In scope:
 
-- Opening, closing and attaching to tmux sessions from a phone or a desktop.
+- Opening, attaching to and killing tmux sessions from a phone or a desktop.
 - Running a pasted command in a visible terminal (the `sudo` case).
 - Getting coding CLIs installed, logged in and started, including their own
   remote-control servers. Adding or fixing a tool in the registry is the most

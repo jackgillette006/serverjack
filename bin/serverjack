@@ -3494,7 +3494,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <p class="sysline">{sysline}</p>
 {error}
 {body}
-<p class="foot">Opening a session puts you in a terminal attached to that tmux session. Use the browser's back button to return here (the session keeps running).
+<p class="foot">To leave a session, use the logo at the top left of its bar. Leaving never stops it: it keeps running until you kill it from its ⋯ menu here.
 <button class="fxt" id="fxt" type="button">CRT fx: on</button> &middot; <span class="ver">serverjack v{version}</span></p>
 <script>
 (function(){{
@@ -4442,7 +4442,7 @@ body.popout #popout,body.touch #popout{{display:none}}
   <button class="ib" id="add" title="New session" aria-label="New session">{i_plus}</button>
   <button class="ib" id="keysbtn" title="Show/hide extra keys" aria-label="Show/hide extra keys">{i_keys}</button>
   <button class="ib" id="popout" title="Pop out into a small window" aria-label="Pop out">{i_popout}</button>
-  <button class="ib" id="close" title="Close (the session keeps running)" aria-label="Close">{i_close}</button>
+  <button class="ib" id="close" title="Back to sessions (the session keeps running)" aria-label="Back to sessions">{i_close}</button>
 </div>
 <form id="pop" autocomplete="off">
   <div class="kinds">{kinds}</div>
@@ -4830,11 +4830,13 @@ APP_JS = r"""
     pop.classList.toggle('open'); err.classList.remove('on');
     if (pop.classList.contains('open')) pop.elements.name.focus();
   };
-  // Close means close: the session keeps running (kill it from its menu on
-  // the landing page). Pop-out window: close it; normal tab: back to the list.
+  // × leaves, it never ends anything: the session keeps running (kill it
+  // from its menu on the landing page). Pop-out window: close it; normal tab:
+  // back to the list -- replacing this entry, so Back from the list doesn't
+  // re-open the terminal just left.
   document.getElementById('close').onclick = function () {
-    if (POP) { window.close(); setTimeout(function () { location.href = '/'; }, 150); return; }
-    powerOff(function () { location.href = '/'; });
+    if (POP) { window.close(); setTimeout(function () { location.replace('/'); }, 150); return; }
+    powerOff(function () { location.replace('/'); });
   };
   pop.onsubmit = function (e) {
     e.preventDefault(); err.classList.remove('on');
@@ -4856,7 +4858,11 @@ APP_JS = r"""
   };
   if (touch) body.classList.add('touch');
   document.querySelector('#bar a.ib').onclick = function (e) {
-    if (!POP) return;                 // normal tab: just go to the list
+    if (!POP) {                       // normal tab: back to the list, as × does
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button) return;   // a new tab: the browser's
+      e.preventDefault(); powerOff(function () { location.replace('/'); });
+      return;
+    }
     e.preventDefault(); window.close();
     setTimeout(function () { location.href = '/'; }, 150);   // couldn't close (not script-opened): navigate
   };

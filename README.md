@@ -113,7 +113,7 @@ when the tailnet has other users. Read the full
 ## Why serverjack
 
 Start Claude Code in the right project directory, paste the `sudo` command an
-agent asked you to run, or close the tmux sessions you're done with, from
+agent asked you to run, or kill the tmux sessions you're done with, from
 your phone. serverjack is a web front door to a home server, reached over
 Tailscale, your private network, from a phone or a laptop. Open a URL and you
 get:

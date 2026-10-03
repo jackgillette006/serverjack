@@ -454,6 +454,29 @@ with sync_playwright() as p:
        tmux("display", "-p", "-t", f"={att}:", "#{session_attached}").stdout.strip())
     lctx.close()
 
+    # ------------------------------------ leaving a session (F14) --
+    print("chromium desktop, leaving a session:")
+    xctx = b.new_context(viewport={"width": 1280, "height": 800})
+    xp = xctx.new_page()
+    xp.goto(f"{BASE}/")
+    foot = xp.locator(".foot").inner_text()
+    ok("the footer names the control that exists, not a back button",
+       "back button" not in foot and "logo" in foot and "kill" in foot, foot)
+    for ctl in ("#close", "#bar a.ib.home"):
+        xp.goto(f"{BASE}/")
+        xp.goto(f"{BASE}/s/{first}")
+        xp.wait_for_selector("#tabs .tab.on")
+        if ctl == "#close":
+            ok("× is labelled for what it does", xp.get_attribute("#close", "aria-label") == "Back to sessions",
+               xp.get_attribute("#close", "aria-label"))
+        xp.click(ctl)
+        xp.wait_for_url(f"{BASE}/")
+        xp.go_back()
+        xp.wait_for_load_state()
+        ok(f"{ctl} back to the list replaces the terminal in history (Back doesn't re-open it)",
+           "/s/" not in xp.url, xp.url)
+    xctx.close()
+
     # -------------------------- a menu near the bottom of the screen (F65) --
     print("webkit iphone, menus near the bottom:")
     for w, h in ((390, 664), (844, 390)):
