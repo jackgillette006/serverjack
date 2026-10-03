@@ -2402,10 +2402,15 @@ body.fx #crt::after{animation:sj-line 200ms ease-out forwards}
 @keyframes sj-on{0%{opacity:1}60%{opacity:.5}99%{opacity:0}100%{opacity:0;visibility:hidden}}
 @keyframes sj-line{0%{opacity:1;transform:scaleY(.002)}40%{opacity:1;transform:scaleY(.002)}
   100%{opacity:0;transform:scaleY(400)}}
-/* leaving through one of our own controls: collapse to a line, then a dot */
-body.fx.off{animation:sj-off 110ms ease-in forwards}
+/* leaving through one of our own controls: collapse to a line, then a dot.
+   If the next page has not arrived 900ms later (a slow server, a dropped
+   network) the old one comes back: a home-screen app has no loading bar, and
+   a blank screen held until the response is worse than no effect at all.
+   It also undoes the collapse on a page restored from the back/forward cache. */
+body.fx.off{animation:sj-off 110ms ease-in forwards,sj-back 160ms ease-out 900ms forwards}
 @keyframes sj-off{0%{opacity:1;transform:none}60%{opacity:1;transform:scale(1,.004)}
   100%{opacity:0;transform:scale(.002,.004)}}
+@keyframes sj-back{from{opacity:0;transform:scale(1,.004)}to{opacity:1;transform:none}}
 /* the toggle itself: a ghost control, footer of the landing page / bottom of #pop */
 .fxt{border:0;background:transparent;color:var(--text-muted);cursor:pointer;padding:2px 0;
   font:500 11px/16px var(--font-mono);letter-spacing:.04em;opacity:.7}
