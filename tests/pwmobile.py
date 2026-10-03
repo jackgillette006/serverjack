@@ -12,7 +12,7 @@ def ok(label, cond, extra=""):
         fails += 1
     print(("  PASS " if cond else "  FAIL ") + label + (("  -- " + extra) if extra and not cond else ""))
 
-def suite(page, tag, can_read_clipboard):
+def suite(page, tag, can_read_clipboard, touch=False):
     page.goto(f"{BASE}/s/{SESS}"); page.wait_for_selector("#tabs .tab.on")
     page.frame_locator("#frame").locator(".xterm-helper-textarea").wait_for(state="attached", timeout=15000); time.sleep(1.5)
     if not page.locator("#keys").is_visible():
@@ -28,12 +28,20 @@ def suite(page, tag, can_read_clipboard):
         page.click("#paste"); time.sleep(0.6)
         page.keyboard.press("Enter"); time.sleep(0.8)
         out = pane(); ok("Paste button pastes clipboard", f"PASTEBTN_{tag}" in out, out[-200:])
-    # Copy view
-    page.click("#copy"); time.sleep(0.8)
+    # Copy view. On the touch run, a real tap: Linux WebKit (Playwright's)
+    # sends no click after a tap whose pointerdown was preventDefault'ed --
+    # iOS does -- so this is what proves Copy does not depend on that click.
+    press = page.tap if touch else page.click
+    press("#copy"); time.sleep(0.8)
     ok("screen view opens with pane text", page.locator("#screen").is_visible() and f"TYPED_{tag}" in page.locator("#screen-text").inner_text())
     ok("screen text is natively selectable", page.evaluate("(s=>s.userSelect||s.webkitUserSelect)(getComputedStyle(document.getElementById('screen-text')))") in ("text", "auto"))
-    page.click("#screen-close"); time.sleep(0.2)
+    press("#screen-close"); time.sleep(0.2)
     ok("screen view closes", not page.locator("#screen").is_visible())
+    if touch:
+        # no clipboard access here: the Paste key still answers a tap, with a hint
+        page.evaluate("Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })")
+        page.tap("#paste"); time.sleep(0.8)
+        ok("tap on Paste without clipboard access says how to paste", "Long-press" in page.locator("#hint").inner_text())
 
 with sync_playwright() as p:
     print("chromium desktop:")
@@ -49,7 +57,7 @@ with sync_playwright() as p:
     clear()
     b = p.webkit.launch()
     page = b.new_context(**p.devices["iPhone 14"]).new_page(); page.on("pageerror", lambda e: print("   [pageerror]", e))
-    suite(page, "ios", False)
+    suite(page, "ios", False, touch=True)
     # touch overlay: xterm's textarea should now cover the terminal
     fb = page.locator("#frame").bounding_box()
     tb = page.frame_locator("#frame").locator(".xterm-helper-textarea").bounding_box()

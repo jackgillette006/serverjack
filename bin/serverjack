@@ -4542,19 +4542,38 @@ body{{display:flex;flex-direction:column;height:100vh;height:100dvh;position:rel
    that overflows, the Copy view), but only there: a page-wide color-scheme
    would give the frame around ttyd's document an opaque white canvas. */
 #pop,#screen,#winmenu{{color-scheme:dark}}
-/* ---- touch key row (phones/tablets): Esc, Tab, arrows, Ctrl... */
+/* ---- touch key row (phones/tablets): Esc, Tab, Ctrl, ^C, Paste, Copy, arrows...
+   The most-needed keys come first: on a phone in portrait the row is wider
+   than the screen and scrolls sideways, and the edge with more keys past it
+   fades out (.more / .less, set from the scroll position). */
 #keys{{flex:none;display:none;background:var(--bg-secondary);border-top:1px solid var(--border-soft);
-  padding:6px 6px calc(6px + env(safe-area-inset-bottom));gap:6px;overflow-x:auto;scrollbar-width:none}}
+  padding:4px 4px calc(4px + env(safe-area-inset-bottom));gap:4px;overflow-x:auto;scrollbar-width:none}}
 #keys::-webkit-scrollbar{{display:none}}
 body.keys #keys{{display:flex}}
-.k{{flex:1 0 auto;min-width:44px;height:40px;border:1px solid var(--border);border-radius:var(--radius-sm);
+#keys.more{{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 32px),transparent);
+  mask-image:linear-gradient(to right,#000 calc(100% - 32px),transparent)}}
+#keys.less{{-webkit-mask-image:linear-gradient(to left,#000 calc(100% - 32px),transparent);
+  mask-image:linear-gradient(to left,#000 calc(100% - 32px),transparent)}}
+#keys.less.more{{-webkit-mask-image:linear-gradient(to right,transparent,#000 32px,#000 calc(100% - 32px),transparent);
+  mask-image:linear-gradient(to right,transparent,#000 32px,#000 calc(100% - 32px),transparent)}}
+.k{{flex:1 0 auto;min-width:36px;height:40px;padding:0 6px;border:1px solid var(--border);border-radius:var(--radius-sm);
   background:var(--surface);color:var(--text-secondary);font:500 12px/16px var(--font-mono);
-  cursor:pointer;touch-action:manipulation;user-select:none;-webkit-user-select:none;
+  cursor:pointer;touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;
   -webkit-tap-highlight-color:transparent;transition:color 120ms ease,border-color 120ms ease,background 120ms ease}}
+@media (pointer:coarse){{.k{{height:44px}}}}
 .k:hover{{color:var(--text-primary);border-color:var(--text-muted)}}
-.k:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
+.k:focus-visible{{outline:2px solid var(--accent);outline-offset:-2px}}
 .k:active,.k.armed{{background:var(--accent-wash);border-color:var(--accent);color:var(--accent)}}
 .k.act{{color:var(--accent);border-color:rgb(57 255 136 / .32)}}
+/* ---- a short hint just above the key row (how to paste without clipboard
+   access). Floats, so it never changes the row's layout. */
+#hintbox{{flex:none;position:relative;height:0;z-index:15}}
+#hint{{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);max-width:calc(100vw - 16px);
+  padding:6px 10px;border:1px solid var(--glass-border);border-radius:var(--radius-sm);background:var(--glass-bg);
+  -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));
+  color:var(--text-secondary);font:500 12px/16px var(--font-mono);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;pointer-events:none;opacity:0;transition:opacity 120ms ease}}
+#hint.on{{opacity:1}}
 /* ---- screen-text view (glass over the terminal) */
 #screen{{position:absolute;inset:0;z-index:30;background:var(--glass-bg);
   -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));
@@ -4567,6 +4586,8 @@ body.keys #keys{{display:flex}}
 #screen-text{{flex:1 1 auto;margin:0;padding:12px;overflow:auto;
   font:13px/1.45 var(--font-mono);white-space:pre-wrap;word-break:break-all;
   user-select:text;-webkit-user-select:text;color:var(--text-primary)}}
+#screen-text:focus{{outline:none}}
+#screen-text .msg{{padding:1px 6px;color:var(--text-muted)}}
 #screen-text .ln{{padding:1px 6px;border-radius:var(--radius-xs);cursor:pointer;min-height:1.4em}}
 #screen-text .ln:active{{background:var(--surface-alt)}}
 #screen-text .ln.copied{{background:var(--accent-wash);color:var(--accent)}}
@@ -4660,10 +4681,10 @@ body.touch #close{{display:none}}
    the inset with the keyboard up). Margins, not padding, on #frame-wrap: the
    iframe is absolutely positioned and would fill the padding. */
 #bar,.sbar{{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}}
-#keys{{padding-left:calc(6px + env(safe-area-inset-left));padding-right:calc(6px + env(safe-area-inset-right))}}
+#keys{{padding-left:calc(4px + env(safe-area-inset-left));padding-right:calc(4px + env(safe-area-inset-right))}}
 #frame-wrap{{margin-left:env(safe-area-inset-left);margin-right:env(safe-area-inset-right)}}
 body:not(.keys):not(.kb) #frame-wrap{{margin-bottom:env(safe-area-inset-bottom)}}
-body.kb #keys{{padding-bottom:6px}}
+body.kb #keys{{padding-bottom:4px}}
 body.touch #pop{{padding-left:calc(var(--space-3) + env(safe-area-inset-left));
   padding-right:calc(var(--space-3) + env(safe-area-inset-right))}}
 body.kb.touch #pop{{padding-bottom:var(--space-3)}}
@@ -4708,27 +4729,28 @@ body.kb #screen-text{{padding-bottom:12px}}
 <div id="note" role="status" hidden><span class="nt"></span><button class="ib" type="button" hidden></button></div>
 <div id="frame-wrap"><iframe id="frame" src="{src}" title="Terminal: {name}" allow="clipboard-read; clipboard-write"></iframe>
 <div id="conn" aria-hidden="true"><span class="cap">connecting</span></div></div>
+<div id="hintbox"><div id="hint" role="status" aria-live="polite"></div></div>
 <div id="keys">
   <button class="k" data-k="Escape">Esc</button>
   <button class="k" data-k="Tab">Tab</button>
-  <button class="k" data-k="Tab" data-shift="1">&#8679;Tab</button>
-  <button class="k" id="ctrl">Ctrl</button>
-  <button class="k" data-k="ArrowUp">&#8593;</button>
-  <button class="k" data-k="ArrowDown">&#8595;</button>
-  <button class="k" data-k="ArrowLeft">&#8592;</button>
-  <button class="k" data-k="ArrowRight">&#8594;</button>
-  <button class="k" data-k="c" data-ctrl="1">^C</button>
-  <button class="k" data-k="PageUp">PgUp</button>
-  <button class="k" data-k="PageDown">PgDn</button>
+  <button class="k" data-k="Tab" data-shift="1" aria-label="Shift+Tab">&#8679;Tab</button>
+  <button class="k" id="ctrl" aria-pressed="false" title="Ctrl for the next key you type">Ctrl</button>
+  <button class="k" data-k="c" data-ctrl="1" aria-label="Ctrl+C">^C</button>
   <button class="k act" id="paste" title="Paste clipboard into the terminal">Paste</button>
   <button class="k act" id="copy" title="Show the screen as selectable text">Copy</button>
+  <button class="k" data-k="ArrowUp" aria-label="Up">&#8593;</button>
+  <button class="k" data-k="ArrowDown" aria-label="Down">&#8595;</button>
+  <button class="k" data-k="ArrowLeft" aria-label="Left">&#8592;</button>
+  <button class="k" data-k="ArrowRight" aria-label="Right">&#8594;</button>
+  <button class="k" data-k="PageUp" aria-label="Page up">PgUp</button>
+  <button class="k" data-k="PageDown" aria-label="Page down">PgDn</button>
 </div>
-<div id="screen" hidden>
+<div id="screen" role="dialog" aria-label="Screen text" hidden>
   <div class="sbar"><span>Screen text &middot; tap a line to copy it, or select</span>
     <button class="ib" id="screen-copy">Copy all</button>
     <button class="ib" id="screen-refresh" title="Refresh" aria-label="Refresh">{i_refresh}</button>
-    <button class="ib" id="screen-close" title="Close" aria-label="Close">{i_close}</button></div>
-  <pre id="screen-text"></pre>
+    <button class="ib" id="screen-close" title="Close (Esc)" aria-label="Close">{i_close}</button></div>
+  <pre id="screen-text" tabindex="-1"></pre>
 </div>
 <script>window.SJ = {{term: {term_path_json}, name: {name_json}, title: {title_json}}};</script>
 <script>{dirpick_js}</script>
@@ -4839,7 +4861,13 @@ APP_JS = r"""
     var d = tdoc(); if (!d || d.__sj) return; d.__sj = true;
     d.addEventListener('keydown', function (e) {
       if (!e.isTrusted) return;
-      // Ctrl armed from the soft key row: next character goes as Ctrl+<char>
+      // The screen-text view covers the terminal: nothing typed may reach it
+      // unseen (Esc would interrupt an agent). Esc closes the view instead.
+      if (!screen.hidden) {
+        e.preventDefault(); e.stopPropagation();
+        if (e.key === 'Escape') closeScreen(true);
+        return;
+      }
       if (ctrlArmed && e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
         disarm();
         if (!ctrlSend(e.key)) return;
@@ -4868,7 +4896,7 @@ APP_JS = r"""
       if (!isMac && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && (e.key === 'v' || e.key === 'V')) e.stopPropagation();
     }, true);
     d.addEventListener('beforeinput', function (e) {
-      if (swallowInput) { e.preventDefault(); swallowInput = false; return; }
+      if (swallowInput || !screen.hidden) { e.preventDefault(); swallowInput = false; return; }
       if (ctrlArmed && e.inputType === 'insertText' && e.data && e.data.length === 1) {
         disarm();
         if (ctrlSend(e.data)) e.preventDefault();
@@ -4961,65 +4989,219 @@ APP_JS = r"""
   frame.addEventListener('load', function () { hook(); touchCss(); scrollHooks(); pollMouse(); focusTerm(); });
 
   // ---- soft key row
-  var ctrlBtn = document.getElementById('ctrl');
-  function disarm() { ctrlArmed = false; ctrlBtn.classList.remove('armed'); }
+  var keysRow = document.getElementById('keys'), ctrlBtn = document.getElementById('ctrl');
+  function armCtrl(on) { ctrlArmed = on; ctrlBtn.classList.toggle('armed', on); ctrlBtn.setAttribute('aria-pressed', on ? 'true' : 'false'); }
+  function disarm() { armCtrl(false); }
+  // .more / .less: keys hidden past the right / left edge, so that edge fades
+  function keysEdges() {
+    var sl = keysRow.scrollLeft, max = keysRow.scrollWidth - keysRow.clientWidth;
+    keysRow.classList.toggle('less', sl > 1);
+    keysRow.classList.toggle('more', sl < max - 1);
+  }
+  keysRow.addEventListener('scroll', keysEdges, { passive: true });
+  window.addEventListener('resize', keysEdges);
   function setKeys(on) { body.classList.toggle('keys', on); document.getElementById('keysbtn').classList.toggle('on', on);
-    try { localStorage.setItem('sj-keys', on ? '1' : '0'); } catch (_) {} }
+    try { localStorage.setItem('sj-keys', on ? '1' : '0'); } catch (_) {}
+    keysEdges(); }
   var saved = null; try { saved = localStorage.getItem('sj-keys'); } catch (_) {}
   setKeys(saved === null ? touch : saved === '1');
-  document.getElementById('keysbtn').onclick = function () { setKeys(!body.classList.contains('keys')); focusTerm(); };
-  Array.prototype.forEach.call(document.querySelectorAll('#keys .k[data-k], #ctrl'), function (b) {
+
+  // Buttons that must not take focus from the terminal: the soft keys, Paste,
+  // Copy, the keys toggle. pointerdown is preventDefault'ed, so focus (and a
+  // phone's keyboard) stay as they were, and a button acts on a *tap*:
+  // pointerdown and pointerup on it with under 10px of travel, no
+  // pointercancel and the key row not scrolled in between. So swiping the row
+  // to reach the keys past its edge sends nothing (it used to send the key
+  // under the finger, ^C included). Keyboard Enter/Space and assistive tech
+  // arrive as a bare click and run the same action; the click a browser sends
+  // after a pointer tap is ignored, so nothing fires twice.
+  var press = null, lastPtr = { b: null, t: 0 }, later = null;
+  function endPress() { if (press) { clearTimeout(press.hold); clearInterval(press.rep); press = null; } }
+  function travel(e, p) { return Math.abs(e.clientX - p.x) + Math.abs(e.clientY - p.y); }
+  function tapButton(b, act, opt) {
+    opt = opt || {};
+    var inRow = keysRow.contains(b);
     b.addEventListener('pointerdown', function (e) {
-      e.preventDefault();                       // keep focus (and the soft keyboard) on the terminal
-      if (b.id === 'ctrl') { ctrlArmed = !ctrlArmed; ctrlBtn.classList.toggle('armed', ctrlArmed); return; }
-      var mods = { ctrl: !!b.dataset.ctrl || ctrlArmed, shift: !!b.dataset.shift };
-      if (ctrlArmed) disarm();
-      sendKey(b.dataset.k, mods);
+      e.preventDefault();
+      lastPtr = { b: b, t: Date.now() }; endPress();
+      if (e.button > 0) return;                              // right/middle button
+      var p = press = { b: b, id: e.pointerId, x: e.clientX, y: e.clientY, sl: keysRow.scrollLeft,
+                        how: e.pointerType || 'mouse', n: 0 };
+      try { b.setPointerCapture(e.pointerId); } catch (_) {}  // a wobble off a small key is still this key
+      // Held: repeat after 400ms, every 60ms, at most 100 times (a lost pointerup can't run away)
+      if (opt.repeat && opt.repeat()) p.hold = setTimeout(function () {
+        if (press !== p) return;
+        p.n = 1; act(b, p.how);
+        p.rep = setInterval(function () {
+          if (press !== p) return;
+          if (p.n++ >= 100) return endPress();
+          act(b, p.how);
+        }, 60);
+      }, 400);
     });
+    b.addEventListener('pointermove', function (e) {
+      if (press && press.b === b && press.id === e.pointerId && travel(e, press) > 10) endPress();
+    });
+    b.addEventListener('pointerup', function (e) {
+      var p = press;
+      lastPtr = { b: b, t: Date.now() };
+      if (!p || p.b !== b || p.id !== e.pointerId) return;
+      endPress();
+      if (p.n || travel(e, p) > 10 || (inRow && keysRow.scrollLeft !== p.sl)) return;   // repeated, or a swipe
+      if (!opt.click) { eatClick = Date.now(); return act(b, p.how); }
+      // Paste wants the browser's own click: that is what gives it clipboard
+      // access on iOS. An engine that sends no click after a cancelled
+      // pointerdown (Linux WebKit on touch) still gets the paste from here.
+      later = { b: b, how: p.how, t: setTimeout(function () { later = null; act(b, p.how); }, 400) };
+    });
+    b.addEventListener('click', function () {
+      if (later && later.b === b) { clearTimeout(later.t); var how = later.how; later = null; return act(b, how); }
+      if (lastPtr.b === b && Date.now() - lastPtr.t < 800) return;   // the click after a pointer tap
+      act(b, 'key');
+    });
+  }
+  // The click a browser sends after a tap is aimed at whatever is under the
+  // finger by then. A button that hides the thing it sits on -- the Copy
+  // view's x, right over the keys toggle on a phone -- handed that click to
+  // the control underneath, which toggled the key row and focused the
+  // terminal (raising the keyboard). So the one click that follows a tap
+  // acted on above goes nowhere; keyboard and assistive-tech clicks have no
+  // tap before them and are untouched.
+  // (An engine that sends no click after a tap -- Linux WebKit -- has it
+  // dropped at the next press, which a click from the tap would precede.)
+  var eatClick = 0;
+  document.addEventListener('click', function (e) {
+    if (!eatClick) return;
+    var fresh = Date.now() - eatClick < 700;
+    eatClick = 0;
+    if (fresh && e.isTrusted) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  document.addEventListener('pointerdown', function () { eatClick = 0; }, true);
+  window.addEventListener('pointerup', endPress);
+  window.addEventListener('pointercancel', endPress);       // the browser took the touch as a swipe
+  window.addEventListener('blur', function () { if (!document.hasFocus()) endPress(); });
+  document.addEventListener('visibilitychange', endPress);
+  function pressKey(b) {
+    if (b === ctrlBtn) return armCtrl(!ctrlArmed);
+    var mods = { ctrl: !!b.dataset.ctrl || ctrlArmed, shift: !!b.dataset.shift };
+    if (ctrlArmed) disarm();
+    sendKey(b.dataset.k, mods);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('#keys .k[data-k], #ctrl'), function (b) {
+    // arrows and PgUp/PgDn repeat while held; never with Ctrl armed (one Ctrl, one key)
+    tapButton(b, pressKey, { repeat: function () { return /^(Arrow|Page)/.test(b.dataset.k || '') && !ctrlArmed; } });
+  });
+  function touchy(how) { return how === 'touch' || how === 'pen'; }
+  tapButton(document.getElementById('keysbtn'), function (b, how) {
+    setKeys(!body.classList.contains('keys'));
+    if (!touchy(how)) focusTerm();         // a phone keeps its keyboard up, or down, as it was
   });
 
   // ---- Paste / Copy buttons
-  function flash(btn, text) { var old = btn.textContent; btn.textContent = text; setTimeout(function () { btn.textContent = old; }, 1200); }
-  document.getElementById('paste').addEventListener('pointerdown', function (e) { e.preventDefault(); });
-  document.getElementById('paste').addEventListener('click', function () {
-    var btn = this;
-    // No clipboard API, or permission denied: touch-and-hold the terminal
-    // brings up the browser's own Paste callout instead.
-    if (!navigator.clipboard || !navigator.clipboard.readText) { flash(btn, 'hold to paste'); focusTerm(); return; }
+  function flash(btn, text) {
+    if (!btn.dataset.label) btn.dataset.label = btn.textContent;   // the real label, even mid-flash
+    clearTimeout(btn.sjFlash); btn.textContent = text;
+    btn.sjFlash = setTimeout(function () { btn.textContent = btn.dataset.label; }, 1200);
+  }
+  var hint = document.getElementById('hint'), hintT = null;
+  function showHint(text) {
+    hint.textContent = text; hint.classList.add('on'); clearTimeout(hintT);
+    hintT = setTimeout(function () { hint.classList.remove('on'); }, 2500);
+  }
+  // No clipboard API, or permission denied: say how to paste instead (on a
+  // phone, touch-and-hold on the terminal brings up the browser's own Paste).
+  function pasteHint() {
+    showHint(touch ? 'Long-press the terminal to paste' : 'Press ' + (isMac ? '⌘V' : 'Ctrl+V') + ' to paste');
+  }
+  function doPaste(btn) {
+    if (!navigator.clipboard || !navigator.clipboard.readText) { pasteHint(); focusTerm(); return; }
     navigator.clipboard.readText().then(function (t) {
       if (!t) { flash(btn, 'empty'); return; }
       sendText(t); focusTerm();
-    }).catch(function () { flash(btn, 'hold to paste'); focusTerm(); });
-  });
+    }).catch(function () { pasteHint(); focusTerm(); });
+  }
+  tapButton(document.getElementById('paste'), doPaste, { click: true });
+
+  // ---- screen-text view ("Copy")
   var screen = document.getElementById('screen'), screenText = document.getElementById('screen-text');
+  var screenRaw = '', screenSeq = 0, screenKb = false;
+  function screenMsg(text) {             // a status line: not a line of the screen, not copyable
+    screenRaw = ''; screenText.innerHTML = '';
+    var d = document.createElement('div'); d.className = 'msg'; d.textContent = text;
+    screenText.appendChild(d);
+  }
+  function copyLine(d, txt) {
+    var done = function () { d.classList.add('copied'); setTimeout(function () { d.classList.remove('copied'); }, 900); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done, function () {});
+    else { var r = document.createRange(); r.selectNodeContents(d); var sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); try { document.execCommand('copy'); done(); } catch (e) {} }
+  }
   function loadScreen() {
-    return fetch('/api/screen?name=' + encodeURIComponent(cur) + '&lines=400', { cache: 'no-store' })
-      .then(function (r) { return r.text(); })
+    var seq = ++screenSeq, want = cur;
+    screenMsg('Loading…');            // never leave the last session's text up while this loads
+    return fetch('/api/screen?name=' + encodeURIComponent(want) + '&lines=400', { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error(r.status === 404 ? 'gone' : 'HTTP ' + r.status);
+        return r.text();
+      })
       .then(function (t) {
-        screenText.innerHTML = '';
+        if (seq !== screenSeq || want !== cur) return;
+        screenText.innerHTML = ''; screenRaw = t;
         t.split('\n').forEach(function (line) {
           var d = document.createElement('div'); d.className = 'ln'; d.textContent = line || ' ';
           d.title = 'tap to copy this line';
           d.onclick = function () {
-            var txt = line.trim(); if (!txt) return;
-            var done = function () { d.classList.add('copied'); setTimeout(function () { d.classList.remove('copied'); }, 900); };
-            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done, function () {});
-            else { var r = document.createRange(); r.selectNodeContents(d); var sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); try { document.execCommand('copy'); done(); } catch (e) {} }
+            var txt = line.replace(/\s+$/, '');  // trailing space only: indentation is part of the line
+            if (txt) copyLine(d, txt);
           };
           screenText.appendChild(d);
         });
         screenText.scrollTop = screenText.scrollHeight;
+      })
+      .catch(function (e) {
+        if (seq !== screenSeq) return;
+        var m = (e && e.message) || '';
+        screenMsg(m === 'gone' ? 'This session has ended.'
+                  : /^HTTP /.test(m) ? 'Couldn’t load the screen text (' + m + '). Tap ↻ to try again.'
+                  : 'Can’t reach serverjack. Tap ↻ to try again.');
       });
   }
-  document.getElementById('copy').addEventListener('pointerdown', function (e) { e.preventDefault(); });
-  document.getElementById('copy').addEventListener('click', function () { screen.hidden = false; loadScreen(); });
+  // Is a phone keyboard up? iOS leaves the layout viewport alone and shrinks
+  // only the visual one; elsewhere this reads "no", which errs on not
+  // raising a keyboard nobody asked for.
+  function keyboardUp() { var vv = window.visualViewport; return !!vv && innerHeight - vv.height > 150; }
+  function openScreen() {
+    var ta = textarea(), d = tdoc();
+    screenKb = !!(ta && d && d.activeElement === ta && keyboardUp());
+    screen.hidden = false;
+    // Focus moves into the view: the phone keyboard drops, and nothing typed
+    // (Esc above all, which interrupts an agent) reaches the hidden terminal.
+    if (ta) ta.blur();
+    try { screenText.focus({ preventScroll: true }); } catch (e) { screenText.focus(); }
+    loadScreen();
+  }
+  function closeScreen(refocus) {
+    if (screen.hidden) return;
+    screen.hidden = true; screenSeq++;
+    if (refocus) focusTerm();
+  }
+  tapButton(document.getElementById('copy'), function () { openScreen(); });
   document.getElementById('screen-refresh').onclick = loadScreen;
-  document.getElementById('screen-close').onclick = function () { screen.hidden = true; focusTerm(); };
+  // Close: back to the terminal; on a phone, only with the keyboard if it was up before
+  tapButton(document.getElementById('screen-close'), function (b, how) { closeScreen(!touchy(how) || screenKb); });
   document.getElementById('screen-copy').onclick = function () {
     var btn = this;
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(screenText.textContent).then(function () { flash(btn, 'Copied'); }, function () { flash(btn, 'select text'); });
+    if (!screenRaw) return flash(btn, 'nothing to copy');
+    // the text as fetched, newlines and all (the line divs' textContent ran them together)
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(screenRaw).then(function () { flash(btn, 'Copied'); }, function () { flash(btn, 'select text'); });
     else flash(btn, 'select text');
   };
+  document.addEventListener('keydown', function (e) {        // Esc closes the view, and only the view
+    if (e.key !== 'Escape' || screen.hidden) return;
+    e.preventDefault(); e.stopImmediatePropagation(); closeScreen(true);
+  });
+  // A session switch starts clean: no armed Ctrl carried over, no key still
+  // repeating, no screen text of the previous session left open.
+  function resetInput() { disarm(); swallowInput = false; endPress(); closeScreen(false); }
 
   // ---- iOS: the soft keyboard doesn't shrink the layout viewport, so track
   // the visual viewport and size the page to it (keeps the key row visible).
@@ -5071,6 +5253,7 @@ APP_JS = r"""
     switchGen++;
     if (!POP && !here && inPopout(name, id)) return;
     hideNote();                            // e.g. "is open in a pop-out": not any more, it is here now
+    resetInput();
     cur = name; curId = id || null; WINS = []; winsKey = ''; closeWins(); closePop(false);
     clearTimeout(retryT); retryT = null; retryN = 0;
     loadFrame(name);
@@ -5209,11 +5392,19 @@ APP_JS = r"""
     var now = winmenu.querySelectorAll('button');          // a refill keeps a keyboard user's place
     if (at >= 0 && now.length) now[Math.min(at, now.length - 1)].focus();
   }
+  // A tap on the current tab of a one-window session has nothing to show,
+  // so on a touch screen it leaves the keyboard as it was: the terminal is
+  // focused again only if it had focus when the finger came down.
+  var tabHadTerm = false;
+  tabs.addEventListener('pointerdown', function () { tabHadTerm = termFocused(); }, true);
   function openWins(anchor) {
     if (!winmenu.hidden) { closeWins(); focusTerm(); return; }
     function show() {
       var t = curTab() || anchor;
-      if (WINS.length < 2) { focusTerm(); return; }      // one window: nothing to pick
+      if (WINS.length < 2) {                            // one window: nothing to pick
+        if (!touch || tabHadTerm) focusTerm();
+        return;
+      }
       closePop(false);
       fillWins(); winmenu.hidden = false; winmenu.style.left = '0px';
       t.setAttribute('aria-expanded', 'true');

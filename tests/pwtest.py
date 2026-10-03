@@ -173,14 +173,20 @@ with sync_playwright() as p:
     page.click("#keysbtn"); time.sleep(0.3)
     ok("key row visible", page.locator("#keys").is_visible())
     page.keyboard.type("cat -v"); page.keyboard.press("Enter"); time.sleep(0.6)
+    # A soft key acts on a tap -- pointerdown then pointerup on it, without
+    # moving -- so a swipe across the row sends nothing. Synthetic here: the
+    # mouse and touch paths have their own checks in pwinput.py.
+    def tap_key(sel):
+        page.locator(sel).dispatch_event("pointerdown", {"pointerId": 1, "isPrimary": True})
+        page.locator(sel).dispatch_event("pointerup", {"pointerId": 1, "isPrimary": True})
     for sel in ["[data-k=Escape]", "[data-k=Tab]:not([data-shift])", "[data-k=Tab][data-shift]", "[data-k=ArrowUp]"]:
-        page.locator("#keys " + sel).dispatch_event("pointerdown"); time.sleep(0.2)
-    page.locator("#ctrl").dispatch_event("pointerdown"); time.sleep(0.2)
+        tap_key("#keys " + sel); time.sleep(0.2)
+    tap_key("#ctrl"); time.sleep(0.2)
     page.keyboard.type("l"); time.sleep(0.4)
     page.keyboard.press("Enter"); time.sleep(0.6)
     out = pane()
     ok("soft Esc/Tab/ShiftTab/Up/Ctrl+l received", all(x in out for x in ["^[", "^[[Z", "^[[A", "^L"]), out[-300:])
-    page.locator("#keys [data-k=c][data-ctrl]").dispatch_event("pointerdown"); time.sleep(0.6)
+    tap_key("#keys [data-k=c][data-ctrl]"); time.sleep(0.6)
     ok("soft ^C ends cat", cmd() != "cat", cmd())
     page.screenshot(path="shots/desktop-keys.png")
 

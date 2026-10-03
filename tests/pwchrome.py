@@ -1014,18 +1014,18 @@ try:
             H = page.evaluate("innerHeight")
             if keys == "1":
                 ok("key row on: it pays the home indicator's inset",
-                   px(page, "#keys", "paddingBottom") == 6 + 34, px(page, "#keys", "paddingBottom"))
+                   px(page, "#keys", "paddingBottom") == 4 + 34, px(page, "#keys", "paddingBottom"))
                 page.evaluate("visualViewport.__set(innerHeight - 300)")
                 time.sleep(0.2)
                 ok("keyboard up: the key row sits flush on it (no dead band)",
                    page.evaluate("document.body.classList.contains('kb')")
-                   and px(page, "#keys", "paddingBottom") == 6
+                   and px(page, "#keys", "paddingBottom") == 4
                    and abs(rect(page, "#keys")[3] - (H - 300)) < 1, rect(page, "#keys"))
                 page.evaluate("visualViewport.__set(innerHeight)")
                 time.sleep(0.2)
                 ok("keyboard down again: the inset is back",
                    not page.evaluate("document.body.classList.contains('kb')")
-                   and px(page, "#keys", "paddingBottom") == 6 + 34)
+                   and px(page, "#keys", "paddingBottom") == 4 + 34)
             else:
                 ok("key row off: the terminal stops above the home indicator",
                    rect(page, "#frame")[3] <= H - 34 + 0.5, (rect(page, "#frame"), H))

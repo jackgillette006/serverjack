@@ -2756,7 +2756,7 @@ class TerminalPageTests(unittest.TestCase):
         for rule in ("#bar,.sbar{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}",
                      "#frame-wrap{margin-left:env(safe-area-inset-left);margin-right:env(safe-area-inset-right)}",
                      "body:not(.keys):not(.kb) #frame-wrap{margin-bottom:env(safe-area-inset-bottom)}",
-                     "body.kb #keys{padding-bottom:6px}"):
+                     "body.kb #keys{padding-bottom:4px}"):
             self.assertIn(rule, page)
         self.assertIn("body.classList.toggle('kb'", mod.APP_JS)
 
@@ -2781,6 +2781,34 @@ class TerminalPageTests(unittest.TestCase):
         self.assertIn("window.open('', 'serverjack-' + name, 'popup=yes", mod.PAGE)
         self.assertNotIn("window.open('/s/", mod.APP_JS)
         self.assertIn("location.replace('/')", mod.APP_JS)    # Back can't return to the popped-out page
+
+
+class TermPageKeyRowTests(unittest.TestCase):
+    """The terminal page's soft-key row and Copy view, as rendered. The
+    browser suites (tests/pwinput.py) prove the behaviour; this pins the
+    markup it rests on, without a browser."""
+
+    def setUp(self):
+        import re
+        self.page = mod.render_term("pwtest")
+        row = self.page[self.page.index('<div id="keys">'):]
+        row = row[:row.index("</div>")]
+        self.labels = [mod.html.unescape(t) for t in re.findall(r"<button[^>]*>([^<]*)</button>", row)]
+
+    def test_most_needed_keys_come_first(self):
+        # On a phone in portrait the row scrolls sideways; ^C, Paste and Copy
+        # used to be past the edge, behind four arrows.
+        self.assertEqual(self.labels, ["Esc", "Tab", "⇧Tab", "Ctrl", "^C", "Paste", "Copy",
+                                       "↑", "↓", "←", "→", "PgUp", "PgDn"])
+
+    def test_ctrl_exposes_its_latch_state(self):
+        self.assertIn('id="ctrl" aria-pressed="false"', self.page)
+
+    def test_copy_view_can_take_focus_and_paste_hint_is_announced(self):
+        self.assertIn('<pre id="screen-text" tabindex="-1">', self.page)
+        self.assertIn('id="hint" role="status" aria-live="polite"', self.page)
+        # the hint sits outside the scrolling row, so it can't reflow it
+        self.assertLess(self.page.index('id="hint"'), self.page.index('<div id="keys">'))
 
 
 if __name__ == "__main__":
