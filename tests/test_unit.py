@@ -2684,5 +2684,43 @@ class SessionRowTests(unittest.TestCase):
         self.assertNotIn('a"b<c>', page)
 
 
+class TerminalPageTests(unittest.TestCase):
+    """The terminal page's server side: what /api/sessions carries for the
+    page to follow a rename, and the 502 page the frame shows while ttyd is
+    down."""
+
+    def _sessions_from(self, stdout):
+        fake = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
+        with mock.patch.object(mod, "tmux", return_value=fake):
+            return mod.sessions()
+
+    def test_sessions_carry_tmux_session_id(self):
+        line = "\t".join(["game", "3", "1", "1700000000", "bash", mod.HOME + "/p", "$7"])
+        s = self._sessions_from(line + "\n")
+        self.assertEqual(s[0]["id"], "$7")
+        self.assertEqual(s[0]["name"], "game")
+        self.assertEqual(s[0]["windows"], 3)
+        self.assertEqual(s[0]["path"], "~/p")
+
+    def test_sessions_short_line_still_parses(self):
+        # An older tmux line (or a garbled one) pads with "" rather than raising.
+        s = self._sessions_from("main\t1\t0\n")
+        self.assertEqual(s[0]["name"], "main")
+        self.assertEqual(s[0]["id"], "")
+
+    def test_term_down_page_is_recognisable_and_retries(self):
+        page = mod.render_term_down(OSError(2, "No such file or directory"))
+        # The parent page keys on the title prefix and the marker id.
+        self.assertIn("<title>Terminal unavailable", page)
+        self.assertIn('id="sj-term-down"', page)
+        self.assertIn("Retry now", page)
+        self.assertNotIn("reload this page", page)
+        # Framed, the second header is hidden.
+        self.assertIn("html.framed h1", page)
+        self.assertIn("window.top !== window", page)
+        # Still an interstitial, not an installable page.
+        self.assertNotIn("manifest", page)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
