@@ -192,12 +192,23 @@ a deeper one, however exact the deeper one is; only at the same depth does
 exact beat prefix beat substring. Children of a matching folder (found only
 because the query is in their *parent's* name) always sort after every
 direct name match, however shallow those children are, so drilling into a
-folder never buries a real match under its own contents. Arrow keys move the
-highlight, Enter picks the highlighted suggestion, and **Tab** fills it in
-with a trailing `/` and shows *its* children too, so you can drill down the
-same way shell completion works. Typing (or pasting) a full path works
-exactly as before — any path can be typed, DIR_ROOTS or not, and one that
-doesn't exist yet is created when the session starts.
+folder never buries a real match under its own contents.
+
+A typed name is a search, never a new folder: the top match is highlighted,
+and Enter (Go on a phone) takes the highlighted match, as does tapping
+**Start** with the name still in the box. Arrow keys (or the mouse) move the
+highlight. To make a new folder, pick the list's last row, **+ New folder
+`~/name`**, or type a path — anything with a `/` or a leading `~`, DIR_ROOTS
+or not — which is used exactly as typed; the folder is created when the
+session actually starts, never before (a start refused for its name leaves
+nothing behind). **Tab** fills the highlighted (or first) match with a
+trailing `/` and shows *its* children, so you can drill down the way shell
+completion works — but only once you've typed or arrowed; Tab and Shift+Tab
+out of an untouched field just move on. On a touch screen, the **›** at the
+end of a row does the same drill-down, tapping the row picks it, and the
+list scrolls with a swipe. On a phone the list sits in the page, pushing the
+fields below it down rather than covering them; on a desktop it drops over
+the card and opens upwards when there's no room below.
 
 Leave the field empty and a session starts in your **default directory**
 (shown right in the placeholder, e.g. "`~/projects` — type a folder name or

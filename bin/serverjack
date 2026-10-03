@@ -2526,17 +2526,49 @@ DIRPICK_CSS = """
 .dirpick{position:relative}
 .tool .dirpick{margin:var(--space-2) 0 0}
 .dirlist{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:6;margin:0;padding:4px;
-  list-style:none;max-height:40vh;overflow:auto;background:var(--bg-primary);
+  list-style:none;max-height:40vh;overflow:auto;overscroll-behavior:contain;background:var(--bg-primary);
   border:1px solid var(--border);border-radius:var(--radius-sm);
   box-shadow:0 16px 40px rgb(0 0 0 / .45);font:13px/1.3 var(--font-mono)}
+.dirlist.up{top:auto;bottom:calc(100% + 4px)}
 .dirlist[hidden]{display:none}
-.dirlist li{padding:8px 10px;border-radius:var(--radius-xs);cursor:pointer;color:var(--text-secondary);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dirlist li b{color:var(--text-primary);font-weight:600}
-.dirlist li .rest{color:var(--text-muted);margin-left:2px}
+/* In flow -- pushing what follows down rather than covering it -- wherever
+   covering would steal a tap: right above a form's own button (the
+   default-dir form, the terminal's new-session panel), and on touch
+   screens everywhere, where the next field is under your finger. */
+.ddchange .dirlist,#pop .dirlist{position:static;margin-top:4px;box-shadow:none;max-height:min(30vh,220px)}
+/* One row: muted parent path, bold folder name, then the drill-in arrow.
+   The parent is what gives way when the row is too narrow -- cut from its
+   left end (an rtl box; the <bdi dir=ltr> inside keeps "~/" reading the
+   right way round) -- so the folder name always shows; only a name longer
+   than the whole row is cut itself. */
+.dirlist li{display:flex;align-items:center;min-width:0;padding:8px 10px;border-radius:var(--radius-xs);
+  cursor:pointer;color:var(--text-secondary);white-space:nowrap;overflow:hidden}
+.dirlist li .path{flex:1 1 auto;display:flex;min-width:0}
+.dirlist li .rest{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  direction:rtl;text-align:left;color:var(--text-muted)}
+.dirlist li b{flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;
+  color:var(--text-primary);font-weight:600}
+.dirlist li .tag{flex:none;margin-right:8px;color:var(--text-muted)}
+.dirlist li.new:not(:first-child){margin-top:4px;border-top:1px solid var(--border-soft);
+  border-radius:0 0 var(--radius-xs) var(--radius-xs)}
+.dirlist li .into{flex:none;padding-left:12px;color:var(--text-muted)}
+.dirlist li .into::after{content:"›"}
 .dirlist li[aria-selected="true"]{background:var(--accent-dim);color:var(--on-accent)}
-.dirlist li[aria-selected="true"] b,.dirlist li[aria-selected="true"] .rest{color:var(--on-accent)}
-@media (pointer:coarse){.dirlist li{padding:11px 12px;min-height:44px;display:flex;align-items:center}}
+.dirlist li[aria-selected="true"] b,.dirlist li[aria-selected="true"] .rest,
+.dirlist li[aria-selected="true"] .tag,.dirlist li[aria-selected="true"] .into{color:var(--on-accent)}
+@media (pointer:coarse){
+  .dirlist{position:static;margin-top:4px;box-shadow:none;max-height:min(30vh,212px)}
+  .dirlist li{padding:0 0 0 12px;min-height:44px}
+  .dirlist li.new{padding-right:12px}
+  .dirlist li .into{align-self:stretch;display:flex;align-items:center;justify-content:center;
+    width:44px;padding:0;font-size:18px;border-left:1px solid var(--border-soft)}
+}
+/* The terminal's new-session panel holds the list in flow, so it scrolls
+   rather than growing off the screen -- above the keyboard too, since the
+   page is sized to the visible viewport then -- and stops under the bar,
+   whose + is what closes it. */
+#pop{max-height:calc(100% - 56px - env(safe-area-inset-top));overflow-y:auto;overscroll-behavior:contain}
+body.touch #pop{max-height:calc(100% - 48px - env(safe-area-inset-top))}
 """
 
 # The one directory-picker combobox's behaviour, shared the same way as
@@ -2548,103 +2580,243 @@ DIRPICK_CSS = """
 DIRPICK_JS = r"""
 (function () {
   'use strict';
-  function debounce(fn, ms) {
-    var t = null;
-    return function () {
-      var args = arguments, self = this;
-      clearTimeout(t);
-      t = setTimeout(function () { fn.apply(self, args); }, ms);
-    };
-  }
+  // A bare folder name -- no "/", no leading "~" -- is a search term. What
+  // it submits is a match (the highlighted one, the top one by default),
+  // never a new folder by that name: that takes the "+ New folder" row, or
+  // a typed path.
+  function isName(v) { return !!v && v.indexOf('/') < 0 && v.charAt(0) !== '~'; }
   function row(d) {
     var li = document.createElement('li');
     li.setAttribute('role', 'option');
     li.dataset.path = d.path;
     var show = d.show || d.path, slash = show.lastIndexOf('/');
     li.dataset.show = show;
+    li.title = show;
+    if (d.create) {
+      li.className = 'new';
+      li.dataset.create = '1';
+      li.setAttribute('aria-label', 'New folder ' + show);
+      var tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = '+ New folder';
+      li.appendChild(tag);
+    }
+    var path = document.createElement('span');
+    path.className = 'path';
     if (slash >= 0) {
-      var rest = document.createElement('span');
+      var rest = document.createElement('span'), bdi = document.createElement('bdi');
       rest.className = 'rest';
-      rest.textContent = show.slice(0, slash + 1);
-      li.appendChild(rest);
+      bdi.dir = 'ltr';
+      bdi.textContent = show.slice(0, slash + 1);
+      rest.appendChild(bdi);
+      path.appendChild(rest);
     }
     var b = document.createElement('b');
     b.textContent = slash >= 0 ? show.slice(slash + 1) : show;
-    li.appendChild(b);
+    path.appendChild(b);
+    li.appendChild(path);
+    if (!d.create) {
+      var into = document.createElement('span');   // tap: show its subfolders (Tab does it from a keyboard)
+      into.className = 'into';
+      into.setAttribute('aria-hidden', 'true');
+      li.appendChild(into);
+    }
     return li;
+  }
+  // The nearest ancestor that scrolls (the terminal's new-session panel),
+  // or null when that is the page itself.
+  function scroller(el) {
+    for (var n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+      var o = getComputedStyle(n).overflowY;
+      if ((o === 'auto' || o === 'scroll') && n.scrollHeight > n.clientHeight) return n;
+    }
+    return null;
   }
   function wire(box) {
     var input = box.querySelector('input[name=dir]'), list = box.querySelector('.dirlist');
     if (!input || !list) return;
-    var uid = 'dp' + Math.random().toString(36).slice(2), items = [], active = -1, seq = 0, blurT = null;
+    var uid = 'dp' + Math.random().toString(36).slice(2);
+    var items = [], active = -1, kbd = -1, shown = null, hover = false;
+    var seq = 0, gotSeq = 0, got = null, kept = null, qT = null, blurT = null;
+    var typed = false, moved = false, enterWait = false;
+    var existing = box.hasAttribute('data-existing');   // a form that never creates a folder
+    list.id = uid + '-list';
+    input.setAttribute('aria-controls', list.id);
 
+    function focused() { return document.activeElement === input; }
+    // Closing also cancels whatever lookup is still due or in flight, so a
+    // late answer can't reopen the list after a pick, Escape or blur.
     function close() {
-      list.hidden = true; list.innerHTML = ''; items = []; active = -1;
+      clearTimeout(qT); seq++; enterWait = false;
+      list.hidden = true; list.innerHTML = ''; items = []; active = kbd = -1;
+      shown = null; hover = false;
+      list.classList.remove('up'); list.style.maxHeight = '';
       input.setAttribute('aria-expanded', 'false');
       input.removeAttribute('aria-activedescendant');
     }
-    function highlight(i) {
+    function highlight(i, quiet) {
       items.forEach(function (li) { li.removeAttribute('aria-selected'); });
       active = i;
       if (i >= 0 && items[i]) {
         items[i].setAttribute('aria-selected', 'true');
-        items[i].scrollIntoView({block: 'nearest'});
+        if (!quiet) items[i].scrollIntoView({block: 'nearest'});
         input.setAttribute('aria-activedescendant', items[i].id);
       } else {
         input.removeAttribute('aria-activedescendant');
       }
     }
-    function open(dirs) {
+    function place() {
+      var vv = window.visualViewport, top = vv ? vv.offsetTop : 0,
+          bottom = top + (vv ? vv.height : window.innerHeight),
+          ir = input.getBoundingClientRect();
+      if (getComputedStyle(list).position === 'absolute') {
+        // A dropdown over the page: opens upwards when there's no room below.
+        var below = bottom - ir.bottom, above = ir.top - top,
+            up = below < 200 && above > below, room = (up ? above : below) - 12;
+        list.classList.toggle('up', up);
+        list.style.maxHeight = room < window.innerHeight * 0.4 ? Math.max(room, 96) + 'px' : '';
+        return;
+      }
+      // In flow: scroll the list into view, but never the field out of it.
+      var sc = scroller(box), lr = list.getBoundingClientRect();
+      if (sc) {
+        var sr = sc.getBoundingClientRect();
+        top = Math.max(top, sr.top); bottom = Math.min(bottom, sr.bottom);
+      }
+      var by = Math.min(lr.bottom + 4 - bottom, ir.top - 4 - top);
+      if (by > 0) { if (sc) sc.scrollTop += by; else window.scrollBy(0, by); }
+    }
+    function open(q, dirs) {
       list.innerHTML = '';
       items = dirs.map(function (d, i) {
         var li = row(d); li.id = uid + '-' + i; list.appendChild(li); return li;
       });
       if (!items.length) { close(); return; }
+      shown = q; moved = hover = false;
       list.hidden = false;
+      list.scrollTop = 0;
       input.setAttribute('aria-expanded', 'true');
-      highlight(-1);
+      kbd = isName(q) ? 0 : -1;     // a typed name: the top match is what Enter, Go and Start take
+      highlight(kbd, true);
+      place();
     }
-    var query = debounce(function () {
+    function query() { clearTimeout(qT); qT = setTimeout(run, 80); }
+    function run() {
+      if (!focused()) return;
       var q = input.value.trim(), mine = ++seq;
       fetch('/api/dirs?q=' + encodeURIComponent(q), {cache: 'no-store'})
         .then(function (r) { if (!r.ok) throw 0; return r.json(); })
-        .then(function (data) { if (mine === seq) open(data.dirs || []); })
-        .catch(function () { if (mine === seq) close(); });
-    }, 80);
+        .then(function (data) {
+          var dirs = (data.dirs || []).slice(), c = data.create;
+          if (c && !existing) dirs.push({path: c.path, show: c.show, create: true});
+          if (mine > gotSeq) { gotSeq = mine; got = {q: q, dirs: dirs}; }
+          if (mine !== seq || !focused()) return;
+          var wait = enterWait;
+          open(q, dirs);
+          if (wait && active >= 0 && items[active]) take(items[active]);
+          enterWait = false;
+        })
+        .catch(function () {
+          if (mine > gotSeq) { gotSeq = mine; got = {q: q, dirs: []}; }   // no answer: submit goes as typed
+          if (mine === seq) close();
+        });
+    }
+    function take(li) { input.value = li.dataset.show; close(); }
+    function drill(li) {
+      if (!focused()) input.focus();
+      input.value = li.dataset.show.replace(/\/+$/, '') + '/';
+      typed = true; moved = false;
+      query();
+    }
 
-    input.addEventListener('focus', query);
-    input.addEventListener('input', query);
+    input.addEventListener('focus', function () {
+      clearTimeout(blurT); typed = false; kept = null; query();
+    });
+    input.addEventListener('input', function () { typed = true; enterWait = false; query(); });
+    // A tap on the field that already has focus fires no focus event: let it
+    // bring the list back after a pick or Escape.
+    input.addEventListener('click', function () { if (list.hidden) query(); });
     input.addEventListener('keydown', function (e) {
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        if (list.hidden || !items.length) return;
+      var k = e.key;
+      if (k === 'ArrowDown' || k === 'ArrowUp') {
+        if (list.hidden || !items.length) {
+          if (k === 'ArrowDown') { e.preventDefault(); query(); }
+          return;
+        }
         e.preventDefault();
         var n = items.length;
-        highlight(e.key === 'ArrowDown' ? (active + 1) % n : (active - 1 + n) % n);
-      } else if (e.key === 'Enter') {
-        if (!list.hidden && active >= 0 && items[active]) {
+        kbd = k === 'ArrowDown' ? (active + 1) % n : (active - 1 + n) % n;
+        moved = true; hover = false;
+        highlight(kbd);
+      } else if (k === 'Enter') {
+        var v = input.value.trim();
+        if (!list.hidden && active >= 0 && items[active] && (shown === v || moved || hover)) {
           e.preventDefault();
-          input.value = items[active].dataset.show;
-          close();
-        }   // else: let the form submit normally
-      } else if (e.key === 'Tab') {
-        if (list.hidden || !items.length) return;
+          take(items[active]);
+        } else if (isName(v) && !(got && got.q === v)) {
+          // A name the list hasn't caught up with yet (Go pressed right
+          // after typing): take its top match as soon as the answer lands.
+          e.preventDefault();
+          enterWait = true; clearTimeout(qT); run();
+        }   // else the form submits -- a name still goes as its match (see submit below)
+      } else if (k === 'Tab') {
+        // Completes only what you typed or arrowed to: an untouched field,
+        // and Shift+Tab always, let focus move on.
+        if (e.shiftKey || list.hidden || !items.length || !(typed || moved)) return;
         e.preventDefault();
-        var pick = items[active >= 0 ? active : 0];
-        input.value = pick.dataset.show.replace(/\/+$/, '') + '/';
-        query();
-      } else if (e.key === 'Escape') {
-        if (!list.hidden) { e.stopPropagation(); close(); }
+        var li = items[active >= 0 ? active : 0];
+        if (li.dataset.create) take(li); else drill(li);
+      } else if (k === 'Escape') {
+        if (!list.hidden) e.stopPropagation();
+        kept = null;
+        close();
       }
     });
-    list.addEventListener('pointerdown', function (e) {
-      var li = e.target.closest('li');
-      if (!li) return;
-      e.preventDefault();   // keep focus on input -- no blur before this runs
+    // Mouse: any press inside the list (a row, its padding, the scrollbar)
+    // keeps focus in the field. Picking waits for the click -- primary
+    // button only -- which a tap also sends but a swipe doesn't, so a swipe
+    // scrolls the list instead of picking whatever it started on.
+    list.addEventListener('mousedown', function (e) { clearTimeout(blurT); e.preventDefault(); });
+    list.addEventListener('click', function (e) {
+      var li = e.target.closest && e.target.closest('li');
+      if (e.button !== 0 || !li || !list.contains(li)) return;
       clearTimeout(blurT);
-      input.value = li.dataset.show;
-      close();
+      if (e.target.closest('.into')) drill(li); else take(li);
     });
-    input.addEventListener('blur', function () { blurT = setTimeout(close, 150); });
+    // Hovering moves the one highlight, so Enter takes what the mouse is on;
+    // leaving the list puts it back where the keyboard had it.
+    list.addEventListener('pointermove', function (e) {
+      if (e.pointerType !== 'mouse') return;
+      var i = items.indexOf(e.target.closest && e.target.closest('li'));
+      if (i >= 0 && i !== active) { hover = true; highlight(i, true); }
+    });
+    list.addEventListener('pointerleave', function () {
+      if (hover) { hover = false; highlight(kbd, true); }
+    });
+    input.addEventListener('blur', function () {
+      blurT = setTimeout(function () {
+        kept = (!list.hidden && shown && active >= 0 && items[active])
+          ? {q: shown, show: items[active].dataset.show} : null;
+        close();
+      }, 150);
+    });
+    // Submitting -- Start, Save, Start & open, or Enter/Go with no list up --
+    // with a folder name still in the box sends the match it stands for,
+    // the one Enter would have taken. Capture phase on document, so this
+    // runs before the form's own handlers (the terminal panel's fetch). With
+    // no answer yet (a slow network) the text goes as typed.
+    document.addEventListener('submit', function (e) {
+      if (e.target !== input.form) return;
+      var v = input.value.trim(), pick = null;
+      if (isName(v)) {
+        if (!list.hidden && shown === v && active >= 0 && items[active]) pick = items[active].dataset.show;
+        else if (kept && kept.q === v) pick = kept.show;
+        else if (got && got.q === v && got.dirs.length) pick = got.dirs[0].show;
+        if (pick) input.value = pick;
+      }
+      kept = null;
+      close();
+    }, true);
   }
   Array.prototype.forEach.call(document.querySelectorAll('.dirpick'), wire);
 })();
@@ -3087,13 +3259,13 @@ START_CARD = """<h2>Start a session</h2>
 <div class="card"><form class="row" id="startform" method="post" action="/start">
   <div class="seg">{what_options}</div>
   {dirpicker}
-  <input id="name" name="name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Name (optional), e.g. 3d-lab" value="{name}">
+  <input id="name" name="name" aria-label="Session name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Name (optional), e.g. 3d-lab" value="{name}">
   <div id="cmdwrap">
-    <textarea id="cmd" name="cmd" rows="2" autocapitalize="off" spellcheck="false"
+    <textarea id="cmd" name="cmd" aria-label="Command" rows="2" autocapitalize="off" spellcheck="false"
       placeholder="Optional: a command to run, e.g. sudo apt install ffmpeg">{cmd}</textarea>
     <details class="inline"{save_open}><summary>Save as a shortcut</summary>
       <div class="save"><input type="checkbox" id="save" name="save" value="1"><label for="save">Keep this command in Shortcuts</label></div>
-      <input name="label" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Name it, e.g. Update packages" value="{label}">
+      <input name="label" aria-label="Shortcut name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Name it, e.g. Update packages" value="{label}">
     </details>
   </div>
   <p class="hint" id="toolhint" hidden></p>
@@ -3320,8 +3492,8 @@ body.popout #popout,body.touch #popout{{display:none}}
 </div>
 <form id="pop" autocomplete="off">
   <div class="kinds">{kinds}</div>
-  <div><label>Name</label><input name="name" autocapitalize="off" spellcheck="false" placeholder="Name (optional), e.g. fit-app"></div>
-  <div><label>Directory</label>{dirpicker}</div>
+  <div><label for="pop_name">Name</label><input id="pop_name" name="name" autocapitalize="off" spellcheck="false" placeholder="Name (optional), e.g. fit-app"></div>
+  <div><label for="pop_dir">Directory</label>{dirpicker}</div>
   <div class="err" id="err"></div>
   <button class="btn" type="submit">Start &amp; open</button>
   <button class="fxt" id="fxt" type="button">CRT fx: on</button>
@@ -3790,25 +3962,34 @@ def kind_options():
         for i, (k, (_, label)) in enumerate(tool_kinds().items()))
 
 
-def dir_picker(value="", input_id=None):
+def dir_picker(value="", input_id=None, label="Directory", create=True):
     """The one directory-picker combobox, used on the Start card, every tool
     card, the Add-shortcut card, the "change default directory" form and the
     terminal's #pop form. DIRPICK_JS finds every ".dirpick" on the page and
-    wires it up: it fetches GET /api/dirs?q= as you type and on Tab/Enter/
-    pointer picks. An empty value means the default directory (resolve_dir()
-    falls back to default_dir()) -- the placeholder names it, e.g.
-    "~/projects · folder name or path", so an empty box always shows
-    where it will actually land. A typed path that doesn't exist yet is
-    created when the form is submitted, a picked suggestion always exists."""
+    wires it up: it fetches GET /api/dirs?q= as you type. An empty value
+    means the default directory (resolve_dir() falls back to default_dir())
+    -- the placeholder names it, e.g. "~/projects · folder name or path", so
+    an empty box always shows where it will actually land. A folder name is
+    a search: Enter, Go or the form's own submit button take the highlighted
+    (by default the top) match, never a new folder by that name. A new folder
+    is made only on purpose -- the list's "+ New folder" row, or a typed path
+    (anything with a "/" or a leading "~") -- and only when a session
+    actually starts in it. label is the input's accessible name (aria-label),
+    the same word a visible <label for=input_id> shows where there is one.
+    create=False is for forms that only take a folder that already exists
+    (the default directory, a shortcut): no "+ New folder" row there."""
     idattr = f' id="{esc(input_id)}"' if input_id else ""
     placeholder = f"{_dir_show(default_dir())} · folder name or path"
     return (
-        f'<div class="dirpick"><input{idattr} name="dir" role="combobox" '
+        f'<div class="dirpick"{"" if create else " data-existing"}><input{idattr} name="dir" role="combobox" '
+        f'aria-label="{esc(label)}" '
         'aria-autocomplete="list" aria-expanded="false" autocomplete="off" '
         'autocapitalize="off" spellcheck="false" '
         f'placeholder="{esc(placeholder)}" '
         f'value="{esc(value)}">'
-        '<ul class="dirlist" role="listbox" hidden></ul></div>')
+        # tabindex=-1: a scrolling list is a Tab stop of its own in some
+        # browsers; this one is driven from the field (arrows), never tabbed to.
+        '<ul class="dirlist" role="listbox" aria-label="Directories" tabindex="-1" hidden></ul></div>')
 
 
 def note(text):
@@ -4171,9 +4352,10 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
                           default_dir_show=esc(_dir_show(dflt)),
                           dd_open=" open" if dd_open else "",
                           default_dirpicker=dir_picker(
-                              dd_value if dd_value is not None else _dir_show(dflt), "dd_dir")),
+                              dd_value if dd_value is not None else _dir_show(dflt), "dd_dir",
+                              label="Default directory", create=False)),
         "<h2>Shortcuts</h2>", shortcuts,
-        ADD_SHORTCUT_CARD.format(dirpicker=dir_picker(input_id="sc_dir"), sc_label=esc(sc_label),
+        ADD_SHORTCUT_CARD.format(dirpicker=dir_picker(input_id="sc_dir", create=False), sc_label=esc(sc_label),
                                  sc_cmd=esc(sc_cmd), addsc_open=" open" if addsc_open else ""),
         "<h2>Sessions</h2>", cards,
         '<h2 id="agents">Agent servers</h2>',
@@ -4190,7 +4372,7 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
 
 def render_term(name, popout=False):
     return TERM_PAGE.format(
-        name=esc(name), src=esc(ttyd_src(name)), dirpicker=dir_picker(), kinds=kind_options(),
+        name=esc(name), src=esc(ttyd_src(name)), dirpicker=dir_picker(input_id="pop_dir"), kinds=kind_options(),
         title=esc(TITLE), tokens=TOKENS, pwa_links=PWA_LINKS, logo=logo_svg(28),
         i_dots=I_DOTS, i_plus=I_PLUS, i_keys=I_KEYBOARD, i_popout=I_POPOUT,
         i_close=I_CLOSE, i_send=I_SEND, i_refresh=I_REFRESH,
