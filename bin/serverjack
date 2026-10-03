@@ -2672,12 +2672,18 @@ def _term_theme():
         "magenta": _token("agent-purple"),
         "cyan": "#56d4c8",           # terminal-only: no app token for cyan
         "white": _token("text-secondary"),
-        "brightBlack": "#3f5148",    # hand-picked tints below, not token-derived --
-        "brightRed": "#ff7b72",      # standard ANSI hues stay recognizable but
-        "brightGreen": "#6dffab",    # readable against --bg-primary, which reads
-        "brightYellow": "#ffd479",   # xterm.js's own stock dark colors as
-        "brightBlue": "#7fb8ff",     # near-invisible
-        "brightMagenta": "#d896ff",
+        # brightBlack (SGR 90) is the grey of shell autosuggestions, CLI
+        # hint lines and htop's quieter columns, so it has to be readable,
+        # not just darker than white: 4.56:1 against --bg-primary, the same
+        # grey as the page's input placeholders. (It was #3f5148, 2.29:1 --
+        # darker than stock ttyd's grey.) tests/test_unit.py holds every
+        # text colour but `black` to 4.5:1.
+        "brightBlack": "#6d7f76",
+        "brightRed": "#ff7b72",      # hand-picked tints, not token-derived --
+        "brightGreen": "#6dffab",    # standard ANSI hues stay recognizable but
+        "brightYellow": "#ffd479",   # readable against --bg-primary, which reads
+        "brightBlue": "#7fb8ff",     # xterm.js's own stock dark colors as
+        "brightMagenta": "#d896ff",  # near-invisible
         "brightCyan": "#7ee8db",     # terminal-only, brightened tint of cyan above
         "brightWhite": _token("text-primary"),
     }
