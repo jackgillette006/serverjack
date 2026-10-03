@@ -2615,6 +2615,13 @@ class SessionRowTests(unittest.TestCase):
         self.assertEqual(mod.session_facts(dict(one, attached=True, created=0)),
                          '<span aria-hidden="true"><b class="att">attached</b></span>')
 
+    def test_gone_session_page_escapes_the_name_and_offers_close(self):
+        page = mod.render_session_gone('x"<script>alert(1)</script>')
+        self.assertIn("x&quot;&lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertNotIn("<script>alert(1)", page)
+        self.assertIn('id="close"', page)
+        self.assertNotIn('data-session=', page)      # not a copy of the session list
+
     def test_row_controls_are_named_for_their_row_and_escaped(self):
         page = self._page([{"name": 'a"b<c>', "windows": 1, "attached": False,
                             "created": 0, "cmd": "bash", "path": "~"}])

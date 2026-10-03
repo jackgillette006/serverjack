@@ -308,6 +308,88 @@ with sync_playwright() as p:
     np_.close()
     mctx.close()
 
+    # ------------------------------------------- the list keeps current --
+    print("chromium desktop, live list:")
+    lctx = b.new_context(viewport={"width": 1280, "height": 800})
+    lp = lctx.new_page()
+    lp.on("pageerror", lambda e: print("   [pageerror]", e))
+    doomed = make(f"pwlay-doomed-{TAG}")
+    lp.goto(f"{BASE}/")
+    lp.wait_for_timeout(2500)                        # the first poll has run, past the throttle
+    tmux("kill-session", "-t", f"={doomed}")
+    newcomer = make(f"pwlay-new-{TAG}")
+
+    def poke():
+        lp.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+
+    def present(n):
+        return lp.evaluate(f"[...document.querySelectorAll('.sess[data-session]')].some(r => r.dataset.session === {n!r})")
+    poke()
+    ok("a session killed elsewhere drops off the list without a reload",
+       wait_for(lambda: not present(doomed), 6), doomed)
+    ok("...and one started elsewhere appears, as a full row",
+       wait_for(lambda: present(newcomer), 6)
+       and lp.locator(f'.sess[data-session="{newcomer}"] a.open[data-name="{newcomer}"]').count() == 1
+       and lp.locator(f'.sess[data-session="{newcomer}"] form[action="/kill"]').count() == 1, newcomer)
+    # Open on a row the last poll already knew was gone: a note, no pop-up.
+    # An open menu elsewhere holds the row in place (the poll never moves rows
+    # under an open menu), which is exactly when a stale row can be tapped.
+    victim = make(f"pwlay-victim-{TAG}")
+    lp.wait_for_timeout(1100)
+    poke()
+    wait_for(lambda: present(victim), 6)
+    other = lp.eval_on_selector_all(".sess[data-session]", "els => els[0].dataset.session")
+    lp.click(f'.sess[data-session="{other}"] details.menu > summary')
+    tmux("kill-session", "-t", f"={victim}")
+    lp.wait_for_timeout(1100)
+    poke()
+    wait_for(lambda: lp.evaluate(f"(() => {{ const r = [...document.querySelectorAll('.sess[data-session]')]"
+                                 f".find(r => r.dataset.session === {victim!r}); return !!r; }})()"), 2)
+    lp.wait_for_timeout(800)
+    ok("...but not while a menu is open (rows never move under an open menu)", present(victim))
+    pages_before = len(lctx.pages)
+    lp.click(f'.sess[data-session="{victim}"] a.open')
+    lp.wait_for_timeout(500)
+    ok("Open on a session that has ended says so instead of opening it",
+       len(lctx.pages) == pages_before and not present(victim)
+       and victim in (lp.locator("#sessnote").inner_text() if lp.locator("#sessnote").count() else ""),
+       f"pages {pages_before}->{len(lctx.pages)}")
+    # serverjack unreachable: say so (after two misses), and clear it after
+    lp.route("**/api/sessions", lambda route: route.abort())
+    for _ in range(2):
+        lp.wait_for_timeout(1100)
+        poke()
+    down = wait_for(lambda: lp.locator("#sessnote.err").count() == 1, 4)
+    lp.screenshot(path="shots/layout-unreachable.png")
+    lp.unroute("**/api/sessions")
+    lp.wait_for_timeout(1100)
+    poke()
+    ok("when serverjack can't be reached the list says it may be out of date, then recovers",
+       down and wait_for(lambda: lp.locator("#sessnote.err").count() == 0, 4))
+    # the server side of a stale Open
+    r = lp.goto(f"{BASE}/s/{victim}")
+    ok("/s/<gone> lands on the list with a one-line note, not an error copy at /s/",
+       # r.url: the page script strips the one-shot note from the address bar
+       r.url.startswith(f"{BASE}/?done=ended&") and lp.locator(".flash").count() == 1
+       and victim in lp.locator(".flash").inner_text(), r.url)
+    r = lp.goto(f"{BASE}/s/{victim}?popout=1")
+    ok("/s/<gone>?popout=1 is a small 'session ended' page with a Close button",
+       r.status == 404 and lp.locator("#close").count() == 1
+       and lp.locator(".sess").count() == 0 and victim in lp.inner_text("body"), str(r.status))
+    # The session you just left shows as attached at render time (its socket
+    # is still closing); a second look a second later must correct it.
+    lp.goto(f"{BASE}/s/{att}")
+    lp.wait_for_selector("#tabs .tab.on")
+    lp.wait_for_timeout(1500)
+    hold.close()                                     # only this page is attached now
+    lp.goto(f"{BASE}/")
+    ok("the session just left does not stay 'attached' once its client is gone",
+       wait_for(lambda: lp.evaluate(
+           f"!document.querySelector('.sess[data-session=\"{att}\"] .dot.on')"), 4)
+       and tmux("display", "-p", "-t", f"={att}:", "#{session_attached}").stdout.strip() in ("", "0"),
+       tmux("display", "-p", "-t", f"={att}:", "#{session_attached}").stdout.strip())
+    lctx.close()
+
     # -------------------------- a menu near the bottom of the screen (F65) --
     print("webkit iphone, menus near the bottom:")
     for w, h in ((390, 664), (844, 390)):
@@ -328,7 +410,6 @@ with sync_playwright() as p:
         if w == 390:
             pg.screenshot(path="shots/layout-menu-bottom.png")
         c.close()
-    hold.close()
 
     # ---- an open menu that changes size: Rename, then a refused name (F31) --
     # The row is put at a known height (main's top padding) so that its menu

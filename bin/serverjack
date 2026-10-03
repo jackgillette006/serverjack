@@ -17,7 +17,10 @@ in the order you actually need them from a phone:
      (`claude`, `codex`, ...) in the chosen directory; there is no
      remote-control/server-mode choice here, that lives in Agent servers
      below.
-  2. Sessions        -- list, open, kill.
+  2. Sessions        -- list, open, kill. The list keeps itself current: it
+     re-reads /api/sessions every 15s while the page is visible and whenever
+     the tab or home-screen app comes back, so attached dots, ages and
+     sessions started or ended elsewhere show up without a reload.
   3. Agent servers    -- an accordion with one collapsed row per coding CLI
      that still needs something: not installed, installed but not logged in,
      or ready with a server, daemon or extra action to offer. A tool that is
@@ -48,7 +51,10 @@ Routes
     POST /                     303 to GET /, same query (WebKit reloads an error
                                page whose URL the page script reset as a POST
                                to it)
-    GET  /s/<name>             the terminal wrapper for one session
+    GET  /s/<name>             the terminal wrapper for one session; a name
+                               that is gone redirects to /?done=ended&n=<name>,
+                               or, in a pop-out (?popout=1), answers a small
+                               "session ended" page with a Close button
     GET  /app.js               the wrapper's script
     GET  /manifest.webmanifest, /icon.svg, /icon-180.png     PWA bits
     GET  /favicon.ico          the same PNG icon, for browsers that ask anyway
@@ -75,9 +81,10 @@ Routes
          /tools/action, /tools/server, /tools/daemon, /tools/autostart)
 
 Renaming a session leaves a browser sitting on /s/<old> without a session.
-That is harmless: the page polls /api/sessions every 15s, sees the old name is
-gone, and moves itself to another session -- the same path a killed session
-takes.
+That is harmless: the terminal page polls /api/sessions every 15s, sees the old
+name is gone, and moves itself to another session -- the same path a killed
+session takes. The landing page polls the same route on the same cadence and
+patches its list in place.
 
 Config files, all in $SERVERJACK_CONFIG (default ~/.config/serverjack):
     env             read by systemd, not by this file
@@ -3682,6 +3689,179 @@ LAND_JS = r"""
     });
   });
 })();
+
+// The session list keeps itself current. It used to be a snapshot from
+// render(): on a desktop the list tab is the hub that stays open (Open pops
+// sessions out), and the home-screen app resumes without reloading, so dots,
+// ages and the rows themselves went stale, and Open on a session that had
+// gone loaded an error copy of this page (in a pop-up, on desktop).
+//  - /api/sessions every 15s while visible (the terminal page's cadence),
+//    and whenever the page comes back (visibilitychange, focus, a
+//    back/forward-cache restore), plus once ~1s after load: the session you
+//    just left is usually still "attached" when the server renders this page,
+//    because the old page's terminal socket hasn't closed yet.
+//  - Rows are patched in place by name (dot, facts, command and path). Rows
+//    that are gone are removed and new ones are copied in from a fresh render
+//    of this page -- but not while a menu is open or focus is in a row, so a
+//    half-typed rename is never lost.
+//  - Open on a row the last poll already knew was gone says so instead.
+(function () {
+  'use strict';
+  var h2 = document.getElementById('sessions');
+  if (!h2) return;
+  var known = null, skew = 0, fails = 0, last = 0, inflight = false, importing = false;
+  function rows() { return Array.prototype.slice.call(document.querySelectorAll('.sess[data-session]')); }
+  function find(name) {
+    var r = rows();
+    for (var i = 0; i < r.length; i++) if (r[i].dataset.session === name) return r[i];
+    return null;
+  }
+  // session_age() in Python, against the server's clock (its Date header).
+  function age(created) {
+    if (!created) return '';
+    var s = Math.max(0, Math.floor(Date.now() / 1000 + skew) - created);
+    if (s >= 86400) return 'up ' + Math.floor(s / 86400) + 'd';
+    if (s >= 3600) return 'up ' + Math.floor(s / 3600) + 'h';
+    if (s >= 60) return 'up ' + Math.floor(s / 60) + 'm';
+    return 'up <1m';
+  }
+  function paint(row, s) {
+    var on = !!s.attached, state = on ? 'attached' : 'not attached';
+    var dot = row.querySelector('.dot');
+    if (dot && dot.getAttribute('aria-label') !== state) {
+      dot.classList.toggle('on', on);
+      dot.setAttribute('aria-label', state);
+      dot.title = state;
+    }
+    // session_facts() in Python
+    var f = row.querySelector('.facts');
+    var rest = [s.windows > 1 ? s.windows + ' windows' : '', age(s.created)]
+      .filter(function (x) { return x; }).join(' \u00b7 ');
+    if (f && f.dataset.k !== (on ? '1' : '0') + rest) {
+      f.dataset.k = (on ? '1' : '0') + rest;
+      f.textContent = '';
+      if (on) {
+        var wrap = document.createElement('span'), b = document.createElement('b');
+        wrap.setAttribute('aria-hidden', 'true');
+        b.className = 'att'; b.textContent = 'attached';
+        wrap.appendChild(b);
+        if (rest) wrap.appendChild(document.createTextNode(' \u00b7 '));
+        f.appendChild(wrap);
+      }
+      f.appendChild(document.createTextNode(rest));
+      if (s.created) f.title = 'started ' + new Date(s.created * 1000).toLocaleString();
+    }
+    var w = row.querySelector('.where'), wt = '\u00a0\u00b7 ' + s.cmd + ' \u00b7 ' + s.path;
+    if (w && w.textContent !== wt) w.textContent = wt;
+  }
+  function busy() {
+    if (document.querySelector('details.menu[open]')) return true;
+    var a = document.activeElement;
+    return !!(a && a.closest && a.closest('.sess[data-session]'));
+  }
+  // A line right under the Sessions heading: "x has ended", or "can't reach".
+  function note(text, cls, kind) {
+    var n = document.getElementById('sessnote');
+    if (!text) { if (n && (!kind || n.dataset.kind === kind)) n.remove(); return; }
+    if (!n) {
+      n = document.createElement('div');
+      n.id = 'sessnote';
+      n.setAttribute('role', 'status');
+      h2.parentNode.insertBefore(n, h2.nextSibling);
+    }
+    n.className = cls; n.dataset.kind = kind; n.textContent = text;
+  }
+  function anchor() { return document.getElementById('sessnote') || h2; }
+  function placeholder() {
+    var ph = document.getElementById('nosess'), any = rows().length > 0;
+    if (any && ph) ph.remove();
+    if (!any && !ph) {
+      ph = document.createElement('div');
+      ph.className = 'empty'; ph.id = 'nosess'; ph.textContent = 'No sessions running.';
+      var a = anchor();
+      a.parentNode.insertBefore(ph, a.nextSibling);
+    }
+  }
+  function importRows(list) {
+    if (importing) return;
+    importing = true;
+    fetch('/', { cache: 'no-store' }).then(function (r) { return r.ok ? r.text() : ''; })
+      .then(function (html) {
+        if (!html || busy()) return;
+        var fresh = {};
+        new DOMParser().parseFromString(html, 'text/html')
+          .querySelectorAll('.sess[data-session]')
+          .forEach(function (r) { fresh[r.dataset.session] = r; });
+        var prev = null;
+        list.forEach(function (s) {
+          var cur = find(s.name);
+          if (!cur && fresh[s.name]) {
+            cur = document.adoptNode(fresh[s.name]);
+            var after = prev || anchor();
+            after.parentNode.insertBefore(cur, after.nextSibling);
+            paint(cur, s);
+          }
+          if (cur) prev = cur;
+        });
+        placeholder();
+      })
+      .catch(function () {})
+      .then(function () { importing = false; });
+  }
+  function sync(list) {
+    var by = {};
+    list.forEach(function (s) { by[s.name] = s; });
+    rows().forEach(function (r) { if (by[r.dataset.session]) paint(r, by[r.dataset.session]); });
+    if (busy()) return;
+    rows().forEach(function (r) { if (!by[r.dataset.session]) r.remove(); });
+    if (list.some(function (s) { return !find(s.name); })) importRows(list);
+    placeholder();
+  }
+  function refresh() {
+    if (inflight) return;
+    inflight = true; last = Date.now();
+    fetch('/api/sessions', { cache: 'no-store' }).then(function (r) {
+      var d = Date.parse(r.headers.get('Date') || '');
+      if (d) skew = d / 1000 - Date.now() / 1000;
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (list) {
+      known = list.map(function (s) { return s.name; });
+      fails = 0;
+      note('', '', 'down');
+      sync(list);
+    }).catch(function () {
+      // twice in a row, so a phone waking up before its network doesn't flash it
+      if (++fails >= 2) note("Can't reach serverjack right now; this list may be out of date.", 'err', 'down');
+    }).then(function () { inflight = false; });
+  }
+  // focus and visibilitychange usually arrive together: one fetch for both
+  function soon() { if (!document.hidden && Date.now() - last > 1000) refresh(); }
+  setTimeout(refresh, 1200);
+  setInterval(function () { if (!document.hidden) refresh(); }, 15000);
+  document.addEventListener('visibilitychange', soon);
+  addEventListener('focus', soon);
+  addEventListener('pageshow', function (e) {
+    if (!e.persisted) return;
+    document.body.classList.remove('off');   // left mid power-off: don't come back black
+    refresh();
+  });
+  // Runs before the page's own click handler (capture), so a session the
+  // last poll knew was gone is never opened -- least of all in a pop-up.
+  document.addEventListener('click', function (e) {
+    if (!known) return;
+    var a = e.target.closest && e.target.closest('a.open, a[data-open=here], a[data-open=popout]');
+    var row = a && a.closest('.sess[data-session]');
+    if (!row || known.indexOf(row.dataset.session) !== -1) return;
+    e.preventDefault(); e.stopPropagation();
+    var m = a.closest('details.menu');
+    if (m) m.open = false;
+    note('\u201c' + row.dataset.session + '\u201d has ended.', 'flash', 'ended');
+    row.remove();
+    placeholder();
+    refresh();
+  }, true);
+})();
 """
 
 START_CARD = """<h2>Start a session</h2>
@@ -5181,7 +5361,7 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
                                        i_copy=I_COPY, i_link=I_LINK) if SSH_TARGET else "",
         ) for s in sess)
     else:
-        cards = '<div class="empty">No sessions running. Start one above.</div>'
+        cards = '<div class="empty" id="nosess">No sessions running. Start one above.</div>'
     scs = load_shortcuts()
     # The built-in row first, and only when this really is a git checkout --
     # a tarball copy has nothing to pull.
@@ -5303,6 +5483,33 @@ def render_term_down(why):
     # No {pwa_links}: this is an error interstitial, not a page to install as
     # a PWA -- and PWA_LINKS' manifest/icon sub-requests would only add noise.
     return TERM_DOWN_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_LOGO, why=esc(why))
+
+
+SESSION_GONE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Session ended &middot; {title}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#080f0e">
+<meta name="color-scheme" content="dark">
+<style>{css}</style></head><body><main>
+<h1>{glyph}serverjack{title_small}</h1>
+<div class="flash">Session “{name}” has ended.</div>
+<p class="note">It exited, or was killed or renamed somewhere else; nothing is running under that
+name any more. The session list is in the window this one was opened from.</p>
+<div class="btns"><button class="btn sec" id="close" type="button">Close</button></div>
+<script>
+document.getElementById('close').onclick = function () {{
+  window.close();
+  setTimeout(function () {{ location.replace('/'); }}, 150);   // not script-opened: go to the list
+}};
+</script>
+</main></body></html>
+"""
+
+
+def render_session_gone(name):
+    """What a pop-out window (/s/<name>?popout=1) shows when <name> is gone."""
+    return SESSION_GONE_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_LOGO,
+                                    title_small=title_small(), name=esc(name))
 
 
 DENY_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -5587,9 +5794,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_html(render(flash=note, flash_at=at, open_tool=arg("open"), **kw))
         if path.startswith("/s/"):
             name = unquote(path[3:])
-            if not session_exists(name):
-                return self.send_html(render(f"No session called “{name}” (it may have exited)."), 404)
             popout = "popout" in parse_qs(urlparse(self.path).query)
+            if not session_exists(name):
+                # Not the whole landing page at /s/<name> (a reload repeated
+                # the error, and a pop-up became a second landing page): the
+                # list with a note, or in a pop-out a small page to close.
+                if popout:
+                    return self.send_html(render_session_gone(name), 404)
+                return self.redirect(done_url("ended", name))
             return self.send_html(render_term(name, popout))
         if path == "/app.js":
             return self.send_bytes(APP_JS.encode(), "application/javascript; charset=utf-8", cache=False)
