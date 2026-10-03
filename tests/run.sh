@@ -332,6 +332,20 @@ else
   failures=$((failures + 1))
 fi
 tmux kill-session -t =pwauto 2>/dev/null
+# Unticking "start at boot" for a server whose folder has since been deleted
+# must still drop the entry (that is when you'd untick it), and must not make
+# the folder again.
+gone=$TEST_HOME/autostart-gone
+mkdir "$gone"
+post_auto() {
+  curl -s -o /dev/null -w '%{http_code}' -H 'Sec-Fetch-Site: same-origin' --data-urlencode id=fakesrv \
+    --data-urlencode kind=server --data-urlencode "dir=$gone" "$@" "http://127.0.0.1:$PORT_AUTO/tools/autostart"
+}
+result "start at boot: ticking it for a folder that exists" 303 "$(post_auto --data-urlencode on=1)"
+rmdir "$gone"
+result "...unticking it once the folder is gone still works" 303 "$(post_auto)"
+result "...drops the entry" 0 "$(grep -c autostart-gone "$ACFG/autostart.json" || true)"
+result "...and doesn't make the folder again" no "$([[ -e $gone ]] && echo yes || echo no)"
 
 # "managed-install" and "guided-install" are not Playwright suites (no
 # matching .py file) -- each selects one of the separate, heavier container
