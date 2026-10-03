@@ -320,6 +320,18 @@ try:
         page.keyboard.insert_text("ok"); time.sleep(0.4)
         ok("...and after a Ctrl-latched key arriving as text", logged() == "^[zz^Cxhello^Dok", repr(logged()))
 
+        # The latch and a keyboard key that is no character: Ctrl goes with it
+        # and lets go, as with the soft keys (it stayed armed, and the next
+        # letter went as a control character: Return then x sent ^M^X).
+        rawlog()
+        for key in ("Enter", "Backspace", "ArrowUp"):
+            page.tap("#ctrl"); time.sleep(0.2)
+            page.keyboard.press(key); time.sleep(0.2)
+            page.keyboard.type("x"); time.sleep(0.2)
+        time.sleep(0.3)
+        ok("Ctrl latch: Return, Backspace and an arrow from the keyboard take it, and it lets go",
+           logged() == "^Mx^Hx^[[1;5Ax" and "armed" not in page.get_attribute("#ctrl", "class"), repr(logged()))
+
         rawlog()
         page.evaluate("navigator.clipboard.writeText('PASTEONCE')")
         page.tap("#paste"); time.sleep(1.0)
