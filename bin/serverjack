@@ -163,8 +163,9 @@ appended. Fields: id, label, bin, paths, docs, install, install_note, needs ("no
 login, login_note, login_check, run, run_note, server{label,cmd,session,note,per_dir},
 daemon{label,start,stop,pidfile,note}, actions[{label,cmd,note,dir}], hidden.
 server.per_dir: true means one server per project directory (Claude's model):
-each Start makes another tmux session named <session>-<dirname> and the card
-lists every instance with its directory. Otherwise there is one session.
+each Start makes another tmux session named <session>-<dirname> (-2, -3 ...
+when that name is taken, e.g. by another directory with the same name) and
+the card lists every instance with its directory. Otherwise there is one.
 run_note, actions[].note, server.note and daemon.note are the one-line
 explanations shown beside those options; keep them to a single sentence.
 "paths" lists extra directories to look for "bin" in -- a coding CLI often
@@ -929,51 +930,151 @@ def daemon_pid(daemon):
     return pid
 
 
-# Installed/logged-in are the slow bits (a login check shells out), so they are
-# cached briefly and refreshed the moment a button touches that tool.
-_STATE_CACHE = {}
+# Logged-in is the slow bit: a login check shells out, and a CLI that hangs
+# (no network, an update prompt) would hold the whole page until the timeout.
+# So its answer is cached for STATE_TTL and served stale-while-revalidate:
+# once an entry is old, the page still gets it at once and one background
+# thread per tool asks again. Only a tool never checked before (or one whose
+# cache a button just cleared) is checked inline, because the card's one
+# button needs a real answer -- and one check at a time per tool: requests
+# that arrive while it runs wait for that same check instead of starting
+# their own (three tabs reloading after an Update cost one check, not
+# three). The server also starts every tool's check as it comes up
+# (warm_login_cache()), so the first page after a restart rarely waits for
+# one at all. Two exceptions, both so the card is right the moment a flow
+# finishes rather than a minute later:
+#   * Installed is a PATH lookup, microseconds, so it is never cached.
+#   * While a login-<id> or install-<id> session is still running its
+#     command, an answer is used only while it is under FLOW_TTL old -- a
+#     render in the middle of the flow (Back to the list, another tab) must
+#     not pin the old answer, and a burst of renders still shares one check.
+#     An answer from during the flow is not kept once the flow ends: the
+#     next render asks again, so the card turns Ready straight away.
+# /api/status never asks at all: it reports no login state (status()).
+# clear_tool_cache() bumps a generation number, so a background check that
+# started before a button was pressed cannot write back its older answer.
+_STATE_CACHE = {}          # tid -> (expires, logged_in)
+_STATE_GEN = {}            # tid -> generation, bumped by clear_tool_cache()
+_STATE_BUSY = {}           # tid -> threading.Event of the check in flight for it
+_STATE_FLOW = set()        # tids whose cached answer came from during a login/install
+_STATE_LOCK = threading.Lock()
 STATE_TTL = 60
+FLOW_TTL = 3
+LOGIN_CHECK_TIMEOUT = 5
 
 
 def clear_tool_cache(tid=None):
-    if tid is None:
-        _STATE_CACHE.clear()
-    else:
-        _STATE_CACHE.pop(tid, None)
+    with _STATE_LOCK:
+        tids = set(_STATE_CACHE) | set(_STATE_BUSY) if tid is None else {tid}
+        for t in tids:
+            _STATE_CACHE.pop(t, None)
+            # a check already running answers its own waiters, but the next
+            # request starts a fresh one rather than waiting for it
+            _STATE_BUSY.pop(t, None)
+            _STATE_FLOW.discard(t)
+            _STATE_GEN[t] = _STATE_GEN.get(t, 0) + 1
 
 
-def tool_state(tool, names=None):
-    """Everything the page needs to decide which one button to show."""
+def _check_login(tool):
+    return run_check(tool["login_check"], timeout=LOGIN_CHECK_TIMEOUT)
+
+
+def _run_login_check(tool, gen, ev, flow=False):
+    """Run the check, cache it (unless clear_tool_cache() came in between)
+    and hand it to whoever waits on ev. Returns the answer. flow: asked
+    while a login/install session runs."""
+    tid, val = tool["id"], None
+    try:
+        val = _check_login(tool)
+    finally:
+        with _STATE_LOCK:
+            if _STATE_BUSY.get(tid) is ev:
+                del _STATE_BUSY[tid]
+            if _STATE_GEN.get(tid, 0) == gen:
+                _STATE_CACHE[tid] = (time.time() + STATE_TTL, val)
+                (_STATE_FLOW.add if flow else _STATE_FLOW.discard)(tid)
+        ev.val = val
+        ev.set()
+    return val
+
+
+def _login_flow_open(tid, panes):
+    """True while a login-<tid> / install-<tid> session (auto_name may have
+    added -2, -3 ...) is still running its command."""
+    for kind in ("login-", "install-"):
+        base = re.sub(r"[^A-Za-z0-9_-]+", "-", kind + tid).strip("-")
+        pat = re.compile(re.escape(base) + r"(-[0-9]+)?")
+        for s in panes:
+            if pat.fullmatch(s["name"]) and not pane_exited(s.get("cmd", ""), s.get("pid")):
+                return True
+    return False
+
+
+def logged_in_state(tool, panes):
+    """The tool's login_check answer, cached as described above."""
     tid = tool["id"]
-    hit = _STATE_CACHE.get(tid)
-    if hit and hit[0] > time.time():
-        installed, logged_in = hit[1]
-    else:
-        installed = shutil.which(tool.get("bin") or tid, path=TOOL_PATH) is not None
-        logged_in = None
-        if installed and tool.get("login_check"):
-            logged_in = run_check(tool["login_check"])
-        _STATE_CACHE[tid] = (time.time() + STATE_TTL, (installed, logged_in))
+    flow = _login_flow_open(tid, panes)
+    now = time.time()
+    with _STATE_LOCK:
+        hit = _STATE_CACHE.get(tid)
+        if hit and not flow and tid in _STATE_FLOW:
+            hit = None                          # from a flow that has finished: ask again
+        gen = _STATE_GEN.get(tid, 0)
+        ev = _STATE_BUSY.get(tid)
+        # hit[0] is when the answer goes stale: checked at hit[0] - STATE_TTL
+        if hit and hit[0] - STATE_TTL + (FLOW_TTL if flow else STATE_TTL) > now:
+            return hit[1]
+        spawn = mine = False
+        if ev is None:
+            ev = _STATE_BUSY[tid] = threading.Event()
+            spawn = bool(hit) and not flow
+            mine = not spawn
+    if hit and not flow:                        # stale: served now, refreshed once
+        if spawn:
+            threading.Thread(target=_run_login_check, args=(tool, gen, ev),
+                             name="login-check", daemon=True).start()
+        return hit[1]
+    if mine:
+        return _run_login_check(tool, gen, ev, flow)
+    ev.wait(LOGIN_CHECK_TIMEOUT + 1)            # the check in flight, not one of our own
+    return getattr(ev, "val", None)
+
+
+def warm_login_cache():
+    """Every tool's login check, started as the server comes up, so the
+    first page after a restart (an Update reloads every open one) finds the
+    answers made or on their way instead of asking from scratch."""
+    try:
+        tools = load_tools()[0]
+        if tools:
+            tool_states(tools)
+    except Exception as e:      # a warm-up must never take the server down
+        sys.stderr.write(f"login check warm-up: {e}\n")
+
+
+def tool_state(tool, names=None, login=True):
+    """Everything the page needs to decide which one button to show.
+    names: server_panes(), when the caller already has it. login=False
+    skips the login check (logged_in is then None)."""
+    tid = tool["id"]
+    if names is None:
+        names = server_panes()
+    installed = shutil.which(tool.get("bin") or tid, path=TOOL_PATH) is not None
+    logged_in = None
+    if login and installed and tool.get("login_check"):
+        logged_in = logged_in_state(tool, names)
 
     needs = tool.get("needs")
     needs_ok = True
     if needs == "node":
         needs_ok = bool(shutil.which("node", path=TOOL_PATH) and shutil.which("npm", path=TOOL_PATH))
 
-    server = tool.get("server") or {}
-    sess = server.get("session") or ""
-    if names is None:
-        names = sessions()
-    # Instances: the one session, or (per_dir) every "<session>-<dir>" one.
-    # "exited": the session is there but the command has died into the
-    # fallback shell (e.g. Claude refusing an untrusted directory); the error
-    # is on screen and the server can be started again.
-    instances = []
-    if sess:
-        for s in names:
-            if s["name"] == sess or (server.get("per_dir") and s["name"].startswith(sess + "-")):
-                instances.append({"session": s["name"], "dir": s["path"],
-                                  "state": "exited" if s["cmd"] in SHELLS else "on"})
+    sess = (tool.get("server") or {}).get("session") or ""
+    # Instances: the sessions serverjack started as this tool's server (see
+    # server_instances()). "exited": the session is there but the command
+    # has died into the fallback shell (e.g. Claude refusing an untrusted
+    # directory); the error is on screen and the server can be started again.
+    instances = server_instances(tool, names)
     states = {i["state"] for i in instances}
     state = "on" if "on" in states else ("exited" if "exited" in states else "off")
     return {
@@ -986,21 +1087,37 @@ def tool_state(tool, names=None):
     }
 
 
-def tool_states(tools):
+def tool_states(tools, login=True):
     """States for a whole list, checked in parallel: the page then costs about
     one login check, not one per tool."""
     if not tools:
         return []
-    names = sessions()
+    names = server_panes()
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(tools)) as ex:
-        return list(ex.map(lambda t: tool_state(t, names), tools))
+        return list(ex.map(lambda t: tool_state(t, names, login), tools))
 
 
 # ----------------------------------------------------------------- tmux ----
 
+def _tmux_arg(a):
+    """tmux reads ANY argument that ends in ";" as a command separator --
+    "~/odd;" or the "\\;" closing a pasted `find ... -exec rm {} \\;` lose
+    it, and the rest of the line becomes a second, broken tmux command. A
+    backslash before that last ";" is tmux's own escape for a literal one.
+    A bare ";" is left alone: that one is meant as a separator."""
+    return a[:-1] + "\\;" if a.endswith(";") and a != ";" else a
+
+
 def tmux(*args, check=False):
+    if any(isinstance(a, str) and "\0" in a for a in args):
+        # No session name or path holds a NUL byte, and subprocess raises on
+        # one: a %00 in a URL (/s/%00, ?n=) is just a session that isn't there.
+        r = subprocess.CompletedProcess(["tmux", *args], 1, "", "embedded NUL byte")
+        if check:
+            r.check_returncode()
+        return r
     return subprocess.run(
-        ["tmux", *args], capture_output=True, text=True, check=check,
+        ["tmux", *map(_tmux_arg, args)], capture_output=True, text=True, check=check,
         env={**os.environ, "PATH": PATH_ENV},
     )
 
@@ -1099,11 +1216,142 @@ def session_exists(name):
 SHELLS = ("bash", "sh", "zsh", "fish", "dash")
 
 
+def _shell_has_terminal(pid):
+    """True when process <pid> (a pane's own process) owns its terminal's
+    foreground process group -- i.e. nothing is running in front of it.
+    None when /proc can't say. tpgid is field 8 of /proc/<pid>/stat; the
+    command name in field 2 can hold spaces and parentheses, so the fields
+    are counted from after the last ')'."""
+    try:
+        pid = int(pid)
+        with open(f"/proc/{pid}/stat") as f:
+            stat_line = f.read()
+        return int(stat_line[stat_line.rindex(")") + 2:].split()[5]) == pid
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def pane_exited(cmd, pid=None):
+    """Whether a pane has dropped to a plain shell: the command a server or
+    tool session was started for has exited (see command_args()).
+
+    tmux names the pane's foreground process group, so "a shell" alone is
+    not proof -- a session started by serverjack 1.5.0 kept a `bash -lc`
+    wrapper in front of the command, and a tool may itself be a shell
+    script. It only counts when the pane's own process is the one holding
+    the terminal, which is exactly the state `exec bash -l` leaves behind.
+    Without /proc to ask, the name is all there is."""
+    if cmd not in SHELLS:
+        return False
+    owns = _shell_has_terminal(pid) if pid else None
+    return True if owns is None else owns
+
+
 def session_idle(name):
     """True when the session's pane is sitting at a plain shell, i.e. the
     command a server/tool session was started for has exited."""
-    r = tmux("display-message", "-p", "-t", f"={name}:", "#{pane_current_command}")
-    return r.returncode == 0 and r.stdout.strip() in SHELLS
+    r = tmux("display-message", "-p", "-t", f"={name}:",
+             "#{pane_current_command}\t#{pane_pid}")
+    if r.returncode != 0:
+        return False
+    cmd, _, pid = r.stdout.strip("\n").partition("\t")
+    return pane_exited(cmd, pid)
+
+
+# ---------- server instances
+#
+# A server serverjack starts is marked with two tmux session options:
+# @sj_server = the tool id, @sj_dir = the directory it was started in
+# (percent-encoded: the listing below is tab- and line-separated, and a
+# directory name can hold either). User options survive
+# rename-session, so a server is still found after a rename, two project
+# directories with the same basename get two servers, and an interactive
+# session that merely happens to be called claude-remote-<x> is never taken
+# for one -- or stopped by the card's Stop.
+
+SERVER_MARK, SERVER_DIR_MARK = "@sj_server", "@sj_dir"
+
+
+def server_panes():
+    """sessions(), cut down to what the agent cards need: each session's
+    name, its active pane's command, pid and directory, and the server
+    marks. [] when no tmux server is running."""
+    fmt = "\t".join(["#{session_name}", "#{pane_current_command}", "#{pane_pid}",
+                     "#{pane_current_path}", "#{" + SERVER_MARK + "}",
+                     "#{" + SERVER_DIR_MARK + "}"])
+    r = tmux("list-sessions", "-F", fmt)
+    out = []
+    if r.returncode != 0:
+        return out
+    for line in r.stdout.splitlines():
+        name, cmd, pid, path, mark, mdir = (line.split("\t") + [""] * 6)[:6]
+        out.append({"name": name, "cmd": cmd, "pid": pid, "path": path,
+                    "mark": mark, "mark_dir": unquote(mdir)})
+    return out
+
+
+def _legacy_server(tool, p):
+    """A server started by serverjack 1.5.0 or older carries no marks. Such
+    a session is still adopted when its name is the one that version gave
+    it AND it was started with this server's exact command -- command_args()
+    has always put that in the session's environment, and an interactive
+    session holds the tool's run command there instead."""
+    server = tool.get("server") or {}
+    want = server_session_name(server, p["path"] or HOME)
+    if p["name"] != want:
+        return False
+    r = tmux("show-environment", "-t", f"={p['name']}:", "SERVERJACK_CMD")
+    return r.returncode == 0 and r.stdout.strip() == "SERVERJACK_CMD=" + server["cmd"].strip()
+
+
+def server_instances(tool, panes):
+    """The sessions that are this tool's server, as
+    [{"session", "dir" (~ form), "state": "on"|"exited"}]."""
+    server = tool.get("server") or {}
+    if not server.get("session") or not server.get("cmd"):
+        return []
+    out = []
+    for p in panes:
+        if p["mark"]:
+            if p["mark"] != tool["id"]:
+                continue
+            d = p["mark_dir"] or p["path"]
+        elif _legacy_server(tool, p):
+            d = p["path"]
+        else:
+            continue
+        out.append({"session": p["name"], "dir": _dir_show(d) if d else "~",
+                    "state": "exited" if pane_exited(p["cmd"], p["pid"]) else "on"})
+    return out
+
+
+def same_dir(a, b):
+    """Two directories, in ~ or absolute form, name the same place."""
+    return _auto_dir(a) == _auto_dir(b)
+
+
+def start_server(tool, cwd):
+    """Start the tool's server in cwd (an absolute path). Returns
+    (session name, error, started). A running instance -- for a per-dir
+    server, one in this same directory -- is left alone and reported with
+    error "already running"; one that exited into its shell is replaced.
+    Shared by the card's Start button and autostart."""
+    server = tool.get("server") or {}
+    insts = server_instances(tool, server_panes())
+    if server.get("per_dir"):
+        insts = [i for i in insts if same_dir(i["dir"], cwd)]
+    for i in insts:
+        if i["state"] == "on":
+            return i["session"], "already running", False
+    for i in insts:                       # exited into its shell: replace it
+        tmux("kill-session", "-t", f"={i['session']}")
+    # Same-basename directories (~/a/app, ~/b/app) or an unrelated session
+    # that already has the name: the next free one, "<name>-2".
+    name = auto_name(server_session_name(server, cwd))
+    err = create_command_session(name, cwd, server["cmd"],
+                                 marks={SERVER_MARK: tool["id"],
+                                        SERVER_DIR_MARK: quote(cwd, safe="/")})
+    return name, err, err is None
 
 
 def server_session_name(server, cwd):
@@ -1304,19 +1552,30 @@ def command_args(cmd):
     tool_kinds() decides a tool is "installed" in the first place; it just
     isn't used here to change what gets run."""
     cmd = cmd.strip()
-    inner = f'export PATH={shlex.quote(TOOL_PATH)}:"$PATH"; eval "$SERVERJACK_CMD"'
-    # set -m: the command gets its own process group, so tmux reports it (not
-    # this wrapper) as the pane's command, and a ^C reaches only the command.
+    # set -m, in both shells: job control gives each command its own process
+    # group and makes it the terminal's foreground group. tmux names a pane
+    # after that group, so the pane reports the command itself (claude,
+    # sleep ...), not one of these wrappers -- which is how a server that is
+    # running is told from one that has exited (pane_exited()) -- and a ^C
+    # reaches only the command. The inner `bash -lc` needs its own: without
+    # it the command shares the inner shell's group and the pane says
+    # "bash" for as long as the command runs.
+    inner = f'set -m; export PATH={shlex.quote(TOOL_PATH)}:"$PATH"; eval "$SERVERJACK_CMD"'
     return ["-n", (cmd.split() or ["cmd"])[0], "-e", "SERVERJACK_CMD=" + cmd,
             'set -m; printf "\\$ %s\\n" "$SERVERJACK_CMD"; bash -lc '
             + shlex.quote(inner) + '; '
             'rc=$?; echo; echo "[exited with status $rc]"; exec bash -l']
 
 
-def create_command_session(name, cwd, cmd):
-    """A session that runs one command in front of a login shell."""
+def create_command_session(name, cwd, cmd, marks=None):
+    """A session that runs one command in front of a login shell. marks:
+    tmux user options to set on it in the same tmux call, so no listing
+    ever sees the session without them (see start_server())."""
+    extra = []
+    for key, value in (marks or {}).items():
+        extra += [";", "set-option", "-t", f"={name}:", key, value]
     r = tmux("new-session", "-d", "-s", name, "-c", cwd, "-e", f"PATH={TOOL_PATH}",
-             *command_args(cmd))
+             *command_args(cmd), *extra)
     if r.returncode != 0:
         return (r.stderr or r.stdout).strip() or "tmux new-session failed"
     return None
@@ -1453,8 +1712,12 @@ def autostart_on(tid, kind, cwd=None):
     return any(_auto_match(e, tid, kind, cwd) for e in load_autostart())
 
 
-def set_autostart(tid, kind, cwd, on):
-    items = [e for e in load_autostart() if not _auto_match(e, tid, kind, cwd)]
+def set_autostart(tid, kind, cwd, on, per_dir=True):
+    """per_dir=False: a server that only ever runs once keeps one entry,
+    whichever directory it was ticked in, so ticking replaces it and
+    unticking removes it."""
+    items = [e for e in load_autostart() if not _auto_match(e, tid, kind, cwd)
+             and (per_dir or kind != "server" or e.get("tool") != tid or e.get("kind") != kind)]
     if on:
         e = {"tool": tid, "kind": kind}
         if kind == "server":
@@ -1496,12 +1759,9 @@ def autostart_start_one(e):
     cwd = _auto_dir(e.get("dir"))
     if not os.path.isdir(cwd):
         return f"autostart: {tid} server directory is gone: {cwd}"
-    name = server_session_name(server, cwd)
-    if session_exists(name):
-        if not session_idle(name):
-            return f"autostart: {tid} server “{name}” already running"
-        tmux("kill-session", "-t", f"={name}")      # exited into its shell: replace it
-    err = create_command_session(name, cwd, server["cmd"])
+    name, err, _started = start_server(t, cwd)
+    if err == "already running":
+        return f"autostart: {tid} server “{name}” already running"
     if err:
         return f"autostart: {tid} server “{name}” failed: {err}"
     return f"autostart: started {tid} server “{name}” in {cwd}"
@@ -1864,7 +2124,9 @@ def status():
     names = sessions()
     tools = load_tools()[0]
     agents = []
-    for st in tool_states(tools):
+    # No login checks: nothing here reports them, and this route answers
+    # anyone SERVERJACK_ALLOW lets through without an identity.
+    for st in tool_states(tools, login=False):
         agents.append({
             "id": st["id"], "installed": st["installed"],
             "servers_running": sum(1 for i in st["servers"] if i["state"] == "on"),
@@ -2787,7 +3049,7 @@ UPDATE_CARD = """<div class="card sess" id="sc-update">
 
 SESSION_CARD = """<div class="card sess">
   <div class="info">
-    <div class="name"><span class="dot{on}"></span>{name}</div>
+    <div class="name"><span class="dot{on}"></span>{name}{tag}</div>
     <div class="meta">{cmd} &middot; {path} &middot; {windows} &middot; {ago}{attached}</div>
   </div>
   <details class="menu">
@@ -3675,10 +3937,15 @@ def wants_agent_card(t, st):
 def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc_cmd="",
            addsc_open=False, save_open=False, open_tool="", what="shell",
            flash="", dd_open=False, dd_value=None):
+    tools, tools_error = load_tools()
+    pairs = list(zip(tools, tool_states(tools))) if tools else []
+    # Sessions serverjack started as an agent's server get a "server" tag.
+    served = {i["session"] for _t, st in pairs for i in st["servers"]}
     sess = sessions()
     if sess:
         cards = "\n".join(SESSION_CARD.format(
             on=" on" if s["attached"] else "", name=esc(s["name"]), cmd=esc(s["cmd"]),
+            tag=' <i class="pill">server</i>' if s["name"] in served else "",
             path=esc(s["path"]),
             windows=f"{s['windows']} window{'s' if s['windows'] != 1 else ''}",
             ago=ago(s["created"]),
@@ -3702,9 +3969,6 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
             dir=esc((x.get("dir") or HOME).replace(HOME, "~", 1))) for x in scs)
     else:
         shortcuts = builtin + '\n<div class="empty">None yet. Tick “Save as a shortcut” above to keep a command here.</div>'
-
-    tools, tools_error = load_tools()
-    pairs = list(zip(tools, tool_states(tools))) if tools else []
 
     # Start-a-session's segmented choice: Shell, then every installed tool
     # with a run command, in registry order -- the same test tool_kinds()
@@ -4540,7 +4804,8 @@ class Handler(BaseHTTPRequestHandler):
                 cwd, err = resolve_dir(f.get("dir"), "")
                 if err:
                     return fail(err)
-            set_autostart(tid, kind, cwd, bool(f.get("on")))
+            set_autostart(tid, kind, cwd, bool(f.get("on")),
+                          per_dir=bool((t.get("server") or {}).get("per_dir")))
             return self.redirect("/")
 
         if path == "/tools/server":
@@ -4548,29 +4813,37 @@ class Handler(BaseHTTPRequestHandler):
             sess = server.get("session")
             if not sess or not server.get("cmd"):
                 return fail(f"No server is configured for {t['label']}.")
+            per_dir = bool(server.get("per_dir"))
             if f.get("action") == "stop":
-                target = f.get("session") or sess
-                # Only ever kill one of this server's own sessions.
-                if target == sess or (server.get("per_dir") and target.startswith(sess + "-")):
-                    tmux("kill-session", "-t", f"={target}")
+                # Only ever kill one of this server's own sessions -- found by
+                # its marks, so a renamed server still stops and a session
+                # that merely shares the name prefix is never touched.
+                insts = st["servers"]
+                target = f.get("session", "")
+                inst = next((i for i in insts if i["session"] == target), None)
+                if inst is None and not target and not per_dir and insts:
+                    inst = insts[0]
+                if inst is not None:
+                    tmux("kill-session", "-t", f"={inst['session']}")
                 # A deliberate stop must not come back after a restart: drop
-                # the autostart entry that would recreate this same session.
+                # the autostart entry that would start it again -- the one for
+                # this directory, or for a single server, the only one.
+                gone = (inst or {}).get("dir") or f.get("dir", "")
                 drop_autostart(lambda e: e.get("tool") == tid and e.get("kind") == "server"
-                               and server_session_name(server, _auto_dir(e.get("dir"))) == target)
+                               and (not per_dir or (bool(gone) and same_dir(e.get("dir"), gone))))
                 clear_tool_cache(tid)
                 return self.redirect("/")
             # Start in the directory picked on the card: Claude's server opens
-            # its sessions there (and never trusts the home directory).
+            # its sessions there.
             cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
             if err:
                 return fail(err)
-            name = server_session_name(server, cwd)
-            if session_exists(name):
-                if not session_idle(name):
-                    return fail(f"“{name}” is already running. Open it from the Sessions list.")
-                tmux("kill-session", "-t", f"={name}")     # exited into its shell: replace it
-            err = create_command_session(name, cwd, server["cmd"])
+            name, err, _started = start_server(t, cwd)
             clear_tool_cache(tid)
+            if err == "already running":
+                where = f" in {_dir_show(cwd)}" if per_dir else ""
+                return fail(f"{server.get('label') or 'The server'} is already running{where} "
+                            f"(session “{name}”). Open it from the Sessions list.")
             if err:
                 return fail(err, 500)
             return self.redirect(term_href(name))
@@ -4693,6 +4966,7 @@ if __name__ == "__main__":
     # autostart.json, in the background: the page must come up now, not in
     # AUTOSTART_DELAY seconds. Daemon thread, so Ctrl-C still exits.
     threading.Thread(target=autostart_boot, name="autostart", daemon=True).start()
+    threading.Thread(target=warm_login_cache, name="login-warm-up", daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
