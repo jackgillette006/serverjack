@@ -248,6 +248,22 @@ with sync_playwright() as p:
            geo[1] <= geo[2] and geo[3] >= 3, str(geo))
         c.close()
 
+    # ...but an error re-render from the Start card keeps Start first, so the
+    # field to fix is right under the error instead of below every session.
+    c = phone(p, wk, 390, 664)
+    pg = c.new_page()
+    pg.goto(f"{BASE}/")
+    pg.fill("#name", att)                            # already exists: refused
+    with pg.expect_navigation():
+        pg.locator("#startform button[type=submit]").first.tap()
+    geo = pg.evaluate("""() => { const n = document.getElementById('name').getBoundingClientRect(),
+      e = document.querySelector('.err'); return [n.top, n.bottom, innerHeight, e ? e.textContent : null,
+      document.getElementById('name').value]; }""")
+    ok("iPhone 14 390x664: a refused Start comes back with the name field on the first screen",
+       geo[3] and att in geo[3] and geo[4] == att and 0 <= geo[0] and geo[1] <= geo[2], str(geo))
+    pg.screenshot(path="shots/layout-start-error.png")
+    c.close()
+
     # ------------------------------------- touch targets on a phone (F73) --
     c = phone(p, wk)
     pg = c.new_page()

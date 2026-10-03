@@ -11,7 +11,7 @@ one-line note; screenshots of anything odd help.
 
 You are testing a browser-based tmux terminal at https://<your-host>/ .
 Open it in Chrome (with the Claude in Chrome extension) or do the steps by hand.
-1. Landing page, top to bottom: Sessions (each row with ⋯ and Open), Start a session, Shortcuts with Add a shortcut, Agent servers (one collapsed row per coding tool that still needs something). With no sessions running, Start a session comes first and Sessions sits under the shortcuts.
+1. Landing page, top to bottom: Sessions (each row with ⋯ and Open), Start a session, Shortcuts with Add a shortcut, Agent servers (one collapsed row per coding tool that still needs something). With no sessions running, Start a session comes first and Sessions sits under the shortcuts. Start a shell with the name of a session that already exists: the page comes back with the error at the top and Start a session (your typed name still in it) right under it, ahead of the sessions.
 2. Create a Shell session named "t-desktop" in your home directory. You should land in a terminal with a tab bar on top and "t-desktop" highlighted.
 3. Type `echo hello` Enter. Output appears.
 4. Type `sleep 30` Enter, then press Ctrl+C with NOTHING selected. The sleep is interrupted (prompt comes back).
