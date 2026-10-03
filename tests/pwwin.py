@@ -1,7 +1,7 @@
 """tmux windows in the terminal bar (Chromium only -- no engine-specific code).
 
 The bar shows one tab per *session*; windows live inside a session. With more
-than one window the active tab grows a "2/3" badge and tapping it opens a
+than one window the active tab grows a "· 2" badge with a caret and tapping it opens a
 compact list. Selecting a window is a tmux operation, not a browser one, so
 the proof is `tmux display -p '#{window_index}'` on the host afterwards.
 
@@ -74,8 +74,14 @@ try:
         ok("active tab grows a window-count badge", badge,
            page.locator("#tabs .tab.on").inner_text())
         if badge:
+            # The window count and a caret, not a 1-based position: the menu
+            # shows tmux's own (0-based) indexes, one numbering scheme only.
             txt = page.locator("#tabs .tab.on .wb").inner_text()
-            ok("...reading <position>/<count>", txt.strip().endswith("/2"), repr(txt))
+            ok("...reading the count and a caret", txt.strip() == "\u00b7 2"
+               and page.locator("#tabs .tab.on .wb svg").count() == 1, repr(txt))
+            ok("...and the tab says it opens a menu",
+               page.get_attribute("#tabs .tab.on", "aria-haspopup") == "menu"
+               and page.get_attribute("#tabs .tab.on", "aria-expanded") == "false")
         ok("the tab still carries the session name and .on",
            SESS in page.locator("#tabs .tab.on").inner_text(),
            page.locator("#tabs .tab.on").inner_text())
@@ -83,6 +89,8 @@ try:
         # ------------------------------------------------------- the menu --
         page.click("#tabs .tab.on")
         page.wait_for_selector("#winmenu:not([hidden])", timeout=5000)
+        ok("...aria-expanded while it is open",
+           page.get_attribute("#tabs .tab.on", "aria-expanded") == "true")
         rows = page.locator("#winmenu button")
         ok("clicking the active tab opens the window list", rows.count() == 2,
            str(rows.count()))
@@ -108,6 +116,9 @@ try:
         page.keyboard.press("Escape")
         ok("Escape closes the window list",
            wait_for(lambda: page.locator("#winmenu[hidden]").count() == 1))
+        ok("...and puts the keyboard back in the terminal", wait_for(lambda: page.evaluate(
+            "document.getElementById('frame').contentDocument.activeElement.className"
+            ".includes('xterm-helper-textarea')")))
 
         # ------------------------------------ one window: tab click does nothing --
         tmux("kill-window", "-t", f"={SESS}:1")

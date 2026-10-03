@@ -68,7 +68,7 @@ Home Screen app.
 2. Type part of a project's name (e.g. `proj`). The top match is highlighted. Press **Go**: the field fills with that folder's `~/...` path, the list closes and the keyboard stays up. Press **Go** again: the session starts in that folder, and no folder named `proj` appears in `~`. Is the list visible above the keyboard while you type, or does it sit behind it? Describe what you see.
 3. Back on the list, type a name that matches nothing. The only row is **+ New folder `~/name`**. Tap it, then Start: the session starts in that new folder.
 4. Type `~/` and tap the **›** at the end of a row: the field becomes that folder's path with a trailing `/`, the list shows its subfolders, and the keyboard stays up. Tap a row: it is picked.
-5. In a session, tap +, then the Directory field. With the keyboard up the sheet stays below the tab bar, the list shows above the keyboard, and Start & open can be reached by scrolling the sheet. Rotate to landscape: the Name field is still reachable by scrolling the sheet.
+5. In a session, tap +, then the Directory field. With the keyboard up the sheet stays below the tab bar, the list shows above the keyboard, and its Start button can be reached by scrolling the sheet. Rotate to landscape: the Name field is still reachable by scrolling the sheet.
 Report PASS/FAIL per step, the iOS version, and Safari or Home Screen app.
 
 ## Directory picker (Windows desktop, classic scrollbars)

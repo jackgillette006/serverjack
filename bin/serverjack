@@ -41,12 +41,12 @@ Start a session leads and Sessions sits under the shortcuts.
      whose start/stop are quick non-interactive commands.
 
 Opening a session goes to /s/<name>: a slim menu bar (session tabs, + new,
-x close, pop-out, soft keys for phones) over the terminal in a frame at
+x close on a desktop, pop-out, soft keys for phones) over the terminal in a frame at
 /term/?arg=<name>. That path is served by this process, which forwards it --
 WebSocket upgrade and all -- to ttyd on a Unix socket; ttyd runs
 bin/tmux-attach.sh with that argument, which attaches. The terminal only ever appears once you are inside a session. When a
-session has more than one tmux window the active tab carries a "2/3" badge and
-tapping it opens a window list.
+session has more than one tmux window the active tab carries a window-count
+badge with a caret, and tapping it opens a window list.
 
 Routes
     GET  /                     the landing page; ?done=<what>&n=<name> shows a
@@ -85,11 +85,13 @@ Routes
     POST /tools (dispatches to /tools/install, /tools/login, /tools/open,
          /tools/action, /tools/server, /tools/daemon, /tools/autostart)
 
-Renaming a session leaves a browser sitting on /s/<old> without a session.
-That is harmless: the terminal page polls /api/sessions every 15s, sees the old
-name is gone, and moves itself to another session -- the same path a killed
-session takes. The landing page polls the same route on the same cadence and
-patches its list in place.
+Renaming a session elsewhere is followed: /api/sessions carries tmux's
+#{session_id}, so the page (polling every 15s) finds the same session under
+its new name and relabels its tab and URL without reloading the terminal. A
+session that really ended -- or a frame whose terminal connection dropped --
+is noticed at once: the page sends a pop-out to window.close() and a tab to
+the list with a "has ended" note, never to some other session. The landing
+page polls the same route on the same cadence and patches its list in place.
 
 Config files, all in $SERVERJACK_CONFIG (default ~/.config/serverjack):
     env             read by systemd, not by this file
@@ -1507,8 +1509,8 @@ def rename_session(old, new):
     """Rename a session. Returns (new name, error). The same name rules as a
     new session apply, duplicates included -- tmux would happily make two
     sessions ambiguous by prefix otherwise. A browser attached to the old
-    name is moved on by the page's own "that session is gone" handling within
-    ~15s."""
+    name stays attached (tmux clients follow a rename) and its page relabels
+    the tab within ~15s, matching it by #{session_id} (see sessions())."""
     old = (old or "").strip()
     if not old or not session_exists(old):
         return None, f"No session called “{old}” (it may have exited)."
@@ -2655,7 +2657,7 @@ body.fx.off{animation:sj-off 110ms ease-in forwards,sj-back 160ms ease-out 900ms
   font:500 11px/16px var(--font-mono);letter-spacing:.04em;opacity:.85}
 .fxt:hover{color:var(--accent);opacity:1}
 @media (prefers-reduced-motion:reduce){
-  #crt,#conn,body.fx::before,body.fx::after{display:none!important}
+  #crt,body:not(.retry) #conn,#conn::before,body.fx::before,body.fx::after{display:none!important}
   body.fx.off{opacity:1!important;transform:none!important}
 }
 """
@@ -2686,6 +2688,10 @@ body.fx.conn #conn{display:block}
   animation:sj-sweep 600ms linear infinite}
 #conn .cap{position:absolute;left:12px;bottom:10px;color:var(--accent);opacity:.5;
   font:500 11px/16px var(--font-mono);letter-spacing:.1em}
+/* reconnecting on its own (APP_JS retrying()): said whatever the CRT setting */
+body.retry #conn{display:block}
+body.retry:not(.fx) #conn::before{display:none}
+body.retry #conn .cap{opacity:.9}
 @keyframes sj-sweep{0%{transform:translateY(0);opacity:0}12%{opacity:1}
   88%{opacity:1}100%{transform:translateY(100vh);opacity:0}}
 """
@@ -3046,12 +3052,12 @@ DIRPICK_JS = r"""
         close();
       }, 150);
     });
-    // Submitting -- Start, Save, Start & open, or Enter/Go with no list up --
-    // with a folder name in the box sends what it stands for (pickFor), or
-    // stops and shows the list when that's for you to choose. Capture phase
-    // on document, so this runs before the form's own handlers (the
-    // terminal panel's fetch, a confirm) and a dropped submit never reaches
-    // them.
+    // Submitting -- Start (the Start card's or the terminal panel's), Save,
+    // or Enter/Go with no list up -- with a folder name in the box sends what
+    // it stands for (pickFor), or stops and shows the list when that's for
+    // you to choose. Capture phase on document, so this runs before the
+    // form's own handlers (the terminal panel's fetch, a confirm) and a
+    // dropped submit never reaches them.
     document.addEventListener('submit', function (e) {
       if (!form || e.target !== form) return;
       var v = input.value.trim();
@@ -4480,13 +4486,23 @@ body{{display:flex;flex-direction:column;height:100vh;height:100dvh;position:rel
 .ib.home{{color:var(--accent);padding:0 8px}}
 #tabs{{flex:1 1 auto;display:flex;overflow-x:auto;scrollbar-width:none;min-width:0}}
 #tabs::-webkit-scrollbar{{display:none}}
+/* more tabs off an edge: that edge fades out (.fl/.fr, set from scroll position) */
+#tabs.fl{{-webkit-mask-image:linear-gradient(to right,transparent,#000 24px);
+  mask-image:linear-gradient(to right,transparent,#000 24px)}}
+#tabs.fr{{-webkit-mask-image:linear-gradient(to left,transparent,#000 24px);
+  mask-image:linear-gradient(to left,transparent,#000 24px)}}
+#tabs.fl.fr{{-webkit-mask-image:linear-gradient(to right,transparent,#000 24px,#000 calc(100% - 24px),transparent);
+  mask-image:linear-gradient(to right,transparent,#000 24px,#000 calc(100% - 24px),transparent)}}
 .tab{{border:0;border-bottom:2px solid transparent;background:transparent;color:var(--text-muted);
   font:500 13px/18px var(--font-mono);padding:0 14px;min-height:44px;cursor:pointer;white-space:nowrap;
-  -webkit-tap-highlight-color:transparent;transition:color 140ms ease}}
+  -webkit-tap-highlight-color:transparent;transition:color 140ms ease;
+  flex:none;display:inline-flex;align-items:center;max-width:min(40vw,220px)}}
+.tab .tn{{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .tab:hover{{color:var(--text-primary)}}
 .tab:focus-visible{{outline:2px solid var(--accent);outline-offset:-2px}}
 .tab.on{{color:var(--accent);border-bottom-color:var(--accent);background:var(--accent-wash)}}
-.tab .wb{{margin-left:6px;color:var(--text-muted);font-size:11px}}
+.tab .wb{{flex:none;margin-left:6px;color:var(--text-muted);font-size:11px;
+  display:inline-flex;align-items:center;gap:3px}}
 .tab.on .wb{{color:var(--accent);opacity:.85}}
 /* ---- tmux windows of the current session (glass, under the active tab) */
 #winmenu{{position:absolute;z-index:12;min-width:210px;max-width:min(340px,calc(100vw - 16px));
@@ -4552,6 +4568,8 @@ body.keys #keys{{display:flex}}
 body.touch #pop{{top:auto;bottom:0;left:0;right:0;width:auto;
   border-radius:var(--radius-lg) var(--radius-lg) 0 0;border-bottom:0;
   padding:var(--space-3) var(--space-3) calc(var(--space-3) + env(safe-area-inset-bottom))}}
+/* opaque as a sheet: it sits over the key row, which must not show through */
+body.touch #pop{{background:var(--bg-secondary);-webkit-backdrop-filter:none;backdrop-filter:none}}
 body.touch #pop.open{{animation:sj-up 150ms ease}}
 label{{font:500 12px/16px var(--font-mono);color:var(--text-secondary);letter-spacing:.02em}}
 input,select{{width:100%;padding:11px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);
@@ -4573,6 +4591,11 @@ input:focus,select:focus{{outline:none;border-color:var(--accent-dim);box-shadow
   font:600 13px/18px var(--font-mono);color:var(--on-accent);background:var(--accent);cursor:pointer}}
 .btn:hover{{background:#5cffa0}}
 .btn:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
+.btn:disabled{{opacity:.6;cursor:default}}
+.btn.ghost{{background:transparent;color:var(--text-muted);font-weight:500}}
+.btn.ghost:hover{{background:var(--surface);color:var(--text-primary)}}
+#pop .acts{{display:flex;gap:8px}}
+#pop .acts .btn[type=submit]{{flex:1 1 auto}}
 .err{{color:#ffc6c1;background:var(--danger-wash);border:1px solid var(--danger);
   border-radius:var(--radius-sm);padding:8px 10px;font:500 12px/16px var(--font-mono);display:none}}
 .err.on{{display:block}}
@@ -4588,6 +4611,16 @@ body.popout #handle{{display:flex}}
 body.popout.showbar #bar{{display:flex}}
 body.popout.showbar #pop.open{{display:flex}}
 body.popout #popout,body.touch #popout{{display:none}}
+/* touch: the logo is the way back to the list; x would only repeat it (and reads as "kill") */
+body.touch #close{{display:none}}
+/* short landscape (a phone on its side): denser chrome, so the terminal keeps its rows.
+   Targets stay >= 44px wide; heights only. Longhand paddings keep any side insets. */
+@media (orientation:landscape) and (max-height:500px){{
+  #bar,.tab,.sbar{{min-height:36px}}
+  #keys{{padding-top:4px;padding-bottom:calc(4px + env(safe-area-inset-bottom))}}
+  .k{{height:32px}}
+  #pop{{top:calc(40px + env(safe-area-inset-top))}}
+}}
 @media (prefers-reduced-motion:reduce){{
   *,*::before,*::after{{animation-duration:.01ms!important;animation-iteration-count:1!important;
     transition-duration:.01ms!important}}
@@ -4598,21 +4631,21 @@ body.popout #popout,body.touch #popout{{display:none}}
 <div id="bar">
   <a class="ib home" href="/" title="All sessions" aria-label="All sessions">{logo}</a>
   <div id="tabs"></div>
-  <button class="ib" id="add" title="New session" aria-label="New session">{i_plus}</button>
+  <button class="ib" id="add" title="New session" aria-label="New session" aria-expanded="false" aria-controls="pop">{i_plus}</button>
   <button class="ib" id="keysbtn" title="Show/hide extra keys" aria-label="Show/hide extra keys">{i_keys}</button>
   <button class="ib" id="popout" title="Pop out into a small window" aria-label="Pop out">{i_popout}</button>
   <button class="ib" id="close" title="Back to sessions (the session keeps running)" aria-label="Back to sessions">{i_close}</button>
 </div>
 <form id="pop" autocomplete="off">
   <div class="kinds">{kinds}</div>
-  <div><label for="pop_name">Name</label><input id="pop_name" name="name" autocapitalize="off" spellcheck="false" placeholder="Name (optional), e.g. fit-app"></div>
+  <div><label for="pop_name">Name</label><input id="pop_name" name="name" autocapitalize="off" spellcheck="false" placeholder="Name (optional), e.g. 3d-lab"></div>
   <div><label for="pop_dir">Directory</label>{dirpicker}</div>
-  <div class="err" id="err"></div>
-  <button class="btn" type="submit">Start &amp; open</button>
-  <button class="fxt" id="fxt" type="button">CRT fx: on</button>
+  <div class="err" id="err" role="alert"></div>
+  <div class="acts"><button class="btn" type="submit">Start</button>
+    <button class="btn ghost" type="button" id="pop-cancel">Cancel</button></div>
 </form>
-<div id="winmenu" hidden></div>
-<div id="frame-wrap"><iframe id="frame" src="{src}" allow="clipboard-read; clipboard-write"></iframe>
+<div id="winmenu" role="menu" aria-label="tmux windows" hidden></div>
+<div id="frame-wrap"><iframe id="frame" src="{src}" title="Terminal: {name}" allow="clipboard-read; clipboard-write"></iframe>
 <div id="conn" aria-hidden="true"><span class="cap">connecting</span></div></div>
 <div id="keys">
   <button class="k" data-k="Escape">Esc</button>
@@ -4667,16 +4700,12 @@ APP_JS = r"""
     })();
   }
   // ---- CRT effects. .fx arrives on <body> from the server so the power-on
-  // plays before this script runs; localStorage overrides it, the toggle writes it.
-  var fxb = document.getElementById('fxt'), fxls = null;
+  // plays before this script runs; localStorage overrides it. The toggle that
+  // writes it is in the landing page's footer (a display setting has no place
+  // in the new-session form), and this page follows it.
+  var fxls = null;
   try { fxls = localStorage.getItem('sj-fx'); } catch (e) {}
-  function fxSet(on, save) {
-    body.classList.toggle('fx', on);
-    fxb.textContent = 'CRT fx: ' + (on ? 'on' : 'off');
-    if (save) try { localStorage.setItem('sj-fx', on ? '1' : '0'); } catch (e) {}
-  }
-  fxSet(fxls === '0' ? false : fxls === '1' || body.classList.contains('fx'), false);
-  fxb.onclick = function () { fxSet(!body.classList.contains('fx'), true); };
+  body.classList.toggle('fx', fxls === '0' ? false : fxls === '1' || body.classList.contains('fx'));
   function powerOff(go) {
     if (!body.classList.contains('fx')) return go();
     var done = false, fire = function () { if (!done) { done = true; go(); } };
@@ -4754,11 +4783,14 @@ APP_JS = r"""
   // Touch devices: stretch xterm's invisible textarea over the whole terminal
   // so touch-and-hold brings up the native Paste callout, and taps focus it.
   function touchCss() {
-    var d = tdoc(); if (!d || !touch || d.getElementById('sj-touch')) return;
+    // A frame that has committed but not parsed yet has no <head> and no root
+    // element: skip it, the frame's load event runs this again.
+    var d = tdoc(), root = d && (d.head || d.documentElement);
+    if (!root || !touch || d.getElementById('sj-touch')) return;
     var st = d.createElement('style'); st.id = 'sj-touch';
     // fixed + viewport units: the textarea's parent (.xterm-helpers) has no size, so % would collapse to 0
     st.textContent = '.xterm-helper-textarea{position:fixed!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;opacity:0!important;z-index:20!important;-webkit-user-select:text!important;user-select:text!important;caret-color:transparent}';
-    (d.head || d.documentElement).appendChild(st);
+    root.appendChild(st);
   }
   // Finger swipe -> wheel events. xterm.js answers touch by scrolling its
   // own viewport, which is empty under tmux (tmux keeps the history), so a
@@ -4893,33 +4925,76 @@ APP_JS = r"""
   // ---- session tabs
   function pageUrl(name) { return '/s/' + encodeURIComponent(name) + (POP ? '?popout=1' : ''); }
   function setUrl(name) { history.replaceState(null, '', pageUrl(name)); document.title = name + ' · ' + TITLE; }
-  function switchTo(name) {
+  function safe(f) { try { f(); } catch (e) { if (window.console) console.error(e); } }
+  function noop() {}
+  // Point the frame at a session WITHOUT a history entry. Assigning frame.src
+  // would add one, and Back would then move the frame alone to the previous
+  // session while the bar, the URL and every /api call stayed on this one.
+  var loadedArg = cur, loadT = null;       // the session the frame was last pointed at
+  function loadFrame(name) {
+    var src = termSrc(name);
+    loadedArg = name;
+    // Firefox fires no 'load' for its own error page (serverjack down as the
+    // frame loads): look at the frame a moment later whatever happens.
+    clearTimeout(loadT); loadT = setTimeout(checkConn, 1500);
+    frame.title = 'Terminal: ' + name;
+    body.classList.add('conn');
+    try { frame.contentWindow.location.replace(src); } catch (e) { frame.src = src; }
+  }
+  function frameArg() {
+    try { return new URLSearchParams(frame.contentWindow.location.search).get('arg'); } catch (e) { return null; }
+  }
+  function switchTo(name, id) {
     if (name === cur) { focusTerm(); return; }
-    cur = name; WINS = []; closeWins(); body.classList.add('conn');
-    frame.src = termSrc(name);
-    setUrl(name); refresh();
+    cur = name; curId = id || null; WINS = []; winsKey = ''; closeWins(); closePop(false);
+    clearTimeout(retryT); retryT = null; retryN = 0;
+    loadFrame(name);
+    setUrl(name); refresh().catch(noop);
   }
 
   // ---- tmux windows of the current session. They belong to the session, not
   // to this client: selecting one moves every attached client, which is what
   // you want when the phone and the desktop are on the same session.
-  var WINS = [], winmenu = document.getElementById('winmenu');
-  function closeWins() { winmenu.hidden = true; }
+  var WINS = [], winsKey = '', winsAt = 0, winmenu = document.getElementById('winmenu');
+  function curTab() { return tabs.querySelector('.tab.on'); }
+  function closeWins() {
+    winmenu.hidden = true;
+    var t = curTab(); if (t && t.hasAttribute('aria-haspopup')) t.setAttribute('aria-expanded', 'false');
+  }
+  // The badge is the window COUNT and a caret ("· 3" and a chevron): the
+  // caret says the tab opens a list, and the list shows tmux's own indexes --
+  // a 1-based position next to them would be a second numbering scheme. The
+  // caret is an outline chevron like the landing page's, not a glyph whose
+  // size depends on whichever fallback font has it.
+  var CHEV = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" ' +
+             'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+             '<path d="M6 9.5l6 6 6-6"/></svg>';
+  var shownFor = '';
   function paintBadge() {
-    var t = tabs.querySelector('.tab.on'); if (!t) return;
-    var old = t.querySelector('.wb'); if (old) old.parentNode.removeChild(old);
-    if (WINS.length < 2) return;
-    var pos = 0; WINS.forEach(function (w, i) { if (w.active) pos = i + 1; });
-    var b = document.createElement('span'); b.className = 'wb';
-    b.textContent = '\u00b7 ' + pos + '/' + WINS.length;
-    t.appendChild(b);
-    t.title = WINS.length + ' windows \u2014 tap to switch';
+    var t = curTab(); if (!t) return;
+    var b = t.querySelector('.wb'), n = WINS.length, txt = n > 1 ? String(n) : '';
+    if ((b ? b.getAttribute('data-n') : '') !== txt) {  // update in place; nothing else is touched
+      if (!txt) { t.removeChild(b); t.removeAttribute('aria-haspopup'); t.removeAttribute('aria-expanded'); }
+      else {
+        if (!b) { b = document.createElement('span'); b.className = 'wb'; t.appendChild(b); }
+        b.setAttribute('data-n', txt);
+        b.textContent = '\u00b7 ' + n;
+        b.insertAdjacentHTML('beforeend', CHEV);
+        t.setAttribute('aria-haspopup', 'menu'); t.setAttribute('aria-expanded', winmenu.hidden ? 'false' : 'true');
+      }
+      t.title = t.getAttribute('data-title') + (n > 1 ? ' \u2014 ' + n + ' windows, tap for the list' : '');
+      t.setAttribute('aria-label', cur + (n > 1 ? ', ' + n + ' windows' : ''));
+    }
+    // Bring the current tab into view when it changed or its badge did -- not
+    // on every poll, which would yank back a strip the user is scrolling.
+    if (shownFor !== cur + '\n' + txt) { shownFor = cur + '\n' + txt; showCur(); }
   }
   function fillWins() {
+    var old = winmenu.querySelectorAll('button'), at = Array.prototype.indexOf.call(old, document.activeElement);
     winmenu.innerHTML = '';
     WINS.forEach(function (w) {
       var b = document.createElement('button');
-      b.type = 'button'; b.className = w.active ? 'on' : '';
+      b.type = 'button'; b.className = w.active ? 'on' : ''; b.setAttribute('role', 'menuitem');
       if (w.active) b.setAttribute('aria-current', 'true');
       var i = document.createElement('span'); i.className = 'wi';
       i.textContent = (w.active ? '\u25b8' : '') + w.index;
@@ -4929,17 +5004,35 @@ APP_JS = r"""
       b.onclick = function () { selectWin(w.index); };
       winmenu.appendChild(b);
     });
+    var now = winmenu.querySelectorAll('button');          // a refill keeps a keyboard user's place
+    if (at >= 0 && now.length) now[Math.min(at, now.length - 1)].focus();
   }
   function openWins(anchor) {
-    if (WINS.length < 2) { focusTerm(); return; }      // one window: nothing to pick
     if (!winmenu.hidden) { closeWins(); focusTerm(); return; }
-    fillWins(); winmenu.hidden = false; winmenu.style.left = '0px';
-    var r = anchor.getBoundingClientRect();
-    winmenu.style.top = (r.bottom + 4) + 'px';
-    winmenu.style.left = Math.max(4, Math.min(r.left, innerWidth - winmenu.offsetWidth - 8)) + 'px';
-    var first = winmenu.querySelector('button.on') || winmenu.querySelector('button');
-    if (first) first.focus();
+    function show() {
+      var t = curTab() || anchor;
+      if (WINS.length < 2) { focusTerm(); return; }      // one window: nothing to pick
+      closePop(false);
+      fillWins(); winmenu.hidden = false; winmenu.style.left = '0px';
+      t.setAttribute('aria-expanded', 'true');
+      var r = t.getBoundingClientRect();
+      winmenu.style.top = (r.bottom + 4) + 'px';
+      winmenu.style.left = Math.max(4, Math.min(r.left, innerWidth - winmenu.offsetWidth - 8)) + 'px';
+      var first = winmenu.querySelector('button.on') || winmenu.querySelector('button');
+      if (first) first.focus();
+    }
+    // Open straight from what we have, so the tap feels instant, then refresh
+    // it in place: another device or a tmux key may have switched windows.
+    // With fewer than two cached, ask first -- one may have just been made.
+    if (WINS.length < 2) loadWins().then(show); else { show(); loadWins(); }
   }
+  winmenu.addEventListener('keydown', function (e) {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    var b = winmenu.querySelectorAll('button'), i = Array.prototype.indexOf.call(b, document.activeElement);
+    if (!b.length) return;
+    e.preventDefault();
+    b[(Math.max(i, 0) + (e.key === 'ArrowDown' ? 1 : b.length - 1)) % b.length].focus();
+  });
   function selectWin(index) {
     fetch('/api/window', { method: 'POST',
                            body: new URLSearchParams({ name: cur, index: index }) })
@@ -4947,48 +5040,318 @@ APP_JS = r"""
       .catch(function () { closeWins(); });
   }
   function loadWins() {
-    return fetch('/api/windows?name=' + encodeURIComponent(cur), { cache: 'no-store' })
+    var name = cur; winsAt = Date.now();
+    return fetch('/api/windows?name=' + encodeURIComponent(name), { cache: 'no-store' })
       .then(function (r) { return r.ok ? r.json() : []; })
       .then(function (list) {
-        WINS = Array.isArray(list) ? list : [];
+        if (name !== cur) return;
+        list = Array.isArray(list) ? list : [];
+        var key = JSON.stringify(list);
+        if (key === winsKey) return;                     // unchanged: leave focus and scroll alone
+        winsKey = key; WINS = list;
         paintBadge();
-        if (!winmenu.hidden) fillWins();
-      }).catch(function () {});
+        if (!winmenu.hidden) { if (WINS.length < 2) closeWins(); else fillWins(); }
+      }).catch(noop);
+  }
+  function freshWins() { if (Date.now() - winsAt > 2000) loadWins(); }
+  window.addEventListener('focus', freshWins);
+
+  // ---- the strip itself
+  function edges() {                       // fade an edge that has more tabs past it
+    var max = tabs.scrollWidth - tabs.clientWidth;
+    tabs.classList.toggle('fl', max > 1 && tabs.scrollLeft > 1);
+    tabs.classList.toggle('fr', max > 1 && tabs.scrollLeft < max - 1);
+  }
+  function showCur() {                     // the whole current tab, clear of the fades
+    var t = curTab(); if (!t) return;
+    var a = tabs.getBoundingClientRect(), r = t.getBoundingClientRect(), pad = 24;
+    if (r.left < a.left + pad) tabs.scrollLeft -= a.left + pad - r.left;
+    else if (r.right > a.right - pad) tabs.scrollLeft += Math.min(r.right - (a.right - pad), r.left - (a.left + pad));
+    edges();
+  }
+  tabs.addEventListener('scroll', edges, { passive: true });
+  window.addEventListener('resize', function () { edges(); });
+  // A mouse wheel only scrolls vertically, and the strip only sideways (with
+  // its scrollbar hidden): turn one into the other, as browser tab bars do.
+  tabs.addEventListener('wheel', function (e) {
+    if (e.ctrlKey || Math.abs(e.deltaY) <= Math.abs(e.deltaX) || tabs.scrollWidth <= tabs.clientWidth) return;
+    tabs.scrollLeft += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * tabs.clientWidth : e.deltaY;
+    e.preventDefault();
+  }, { passive: false });
+  var tabKey = '';
+  function paintTabs(list) {
+    var key = JSON.stringify([cur].concat(list.map(function (s) { return [s.name, s.cmd, s.path]; })));
+    if (key !== tabKey) {
+      // Rebuilt only when something it shows changed, keeping the strip's
+      // scroll position and a keyboard user's focus.
+      tabKey = key;
+      var sl = tabs.scrollLeft, ae = document.activeElement, again = null;
+      var keep = ae && ae.parentNode === tabs ? ae.getAttribute('data-name') : null;
+      tabs.innerHTML = '';
+      list.forEach(function (s) {
+        var b = document.createElement('button'), n = document.createElement('span');
+        b.type = 'button'; b.className = 'tab' + (s.name === cur ? ' on' : '');
+        b.setAttribute('data-name', s.name);
+        b.setAttribute('data-title', s.name + ' \u2014 ' + s.cmd + ' \u00b7 ' + s.path);
+        b.title = b.getAttribute('data-title');
+        if (s.name === cur) b.setAttribute('aria-current', 'true');
+        n.className = 'tn'; n.textContent = s.name; b.appendChild(n);
+        b.onclick = function () { if (s.name === cur) openWins(b); else switchTo(s.name, s.id); };
+        tabs.appendChild(b);
+        if (s.name === keep) again = b;
+      });
+      tabs.scrollLeft = sl;
+      if (again) again.focus();
+    }
+    paintBadge();
+    edges();
+  }
+  // Sessions are matched by tmux's #{session_id}, which survives a rename:
+  // renamed elsewhere, the tab and URL follow (the tmux client is still
+  // attached, so the frame is left alone). Gone, the page never moves on to
+  // another session by itself -- what you type next would land in a session
+  // you did not pick. A pop-out closes; a tab goes to the list, which says so.
+  // from: the session a switch left, until a list has the one switched to.
+  // A tab is picked from a strip up to 15 s old, so its session may have
+  // ended meanwhile: the page then stays on (goes back to) the one it was
+  // on and says so, rather than leaving for the list or closing a pop-out.
+  // switchGen: bumped by every switch, so a list asked for before one --
+  // which can't have the new session in it -- is asked for again instead.
+  var curId = null, gone = false, from = null, switchGen = 0, askedAt = 0;
+  function pick(list, name, id) {
+    var me = null;
+    list.forEach(function (s) { if (s.name === name && (!id || !s.id || s.id === id)) me = s; });
+    if (!me && id) list.forEach(function (s) { if (s.id === id) me = s; });
+    return me;
   }
   function render(list) {
-    tabs.innerHTML = '';
-    var present = false;
-    list.forEach(function (s) {
-      if (s.name === cur) present = true;
-      var b = document.createElement('button');
-      b.className = 'tab' + (s.name === cur ? ' on' : '');
-      b.textContent = s.name;
-      b.title = s.cmd + ' · ' + s.path;
-      b.onclick = function () {
-        if (s.name === cur) openWins(b); else switchTo(s.name);
-      };
-      tabs.appendChild(b);
-    });
-    paintBadge();
-    var on = tabs.querySelector('.on'); if (on) on.scrollIntoView({ inline: 'nearest', block: 'nearest' });
-    // current session gone (exited / killed elsewhere): move on instead of
-    // sitting on a dead terminal
-    if (!present && cur !== null) { if (list.length) { cur = null; switchTo(list[0].name); } else location.href = '/'; }
+    var me = pick(list, cur, curId), back = !me && from ? pick(list, from.name, from.id) : null;
+    if (back) {
+      var lost_ = cur;
+      cur = back.name; curId = back.id || null; WINS = []; winsKey = ''; switchGen++;
+      loadFrame(cur); setUrl(cur);
+      note('\u201c' + lost_ + '\u201d has ended.');
+      me = back;
+    }
+    from = null;
+    if (!me) { ended(cur); return false; }
+    if (me.id) curId = me.id;
+    if (me.name !== cur) { cur = me.name; setUrl(cur); frame.title = 'Terminal: ' + cur; }
+    // ttyd's own reconnect (a dropped socket) asks for the name the frame
+    // was loaded with: renamed, that is a session that no longer exists.
+    if (loadedArg !== cur) loadFrame(cur);
+    paintTabs(list);
+    return true;
   }
+  function ended(name) {
+    // once: two answers in flight together (a poll, a reconnect's check)
+    // both find the session gone, and a second location.replace() would
+    // cancel the first navigation
+    if (gone) return;
+    gone = true;
+    var to = '/?ended=' + encodeURIComponent(name);
+    if (POP) { window.close(); setTimeout(function () { location.replace(to); }, 150); return; }
+    location.replace(to);
+  }
+  // Resolves true (session here), false (gone: render() is leaving); rejects
+  // when serverjack doesn't answer.
   function refresh() {
-    return fetch('/api/sessions', { cache: 'no-store' }).then(function (r) { return r.json(); })
-      .then(render).then(loadWins).catch(function () {});
+    if (gone) return Promise.resolve(false);
+    var g = switchGen; askedAt = Date.now();
+    return fetch('/api/sessions', { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (list) {
+        if (!Array.isArray(list)) throw new Error('bad /api/sessions');
+        if (g !== switchGen) return refresh();          // asked before a switch: stale
+        var here = render(list);
+        if (here) loadWins();
+        return here;
+      });
   }
-  function syncKind() {
-    var k = (pop.querySelector('input[name=kind]:checked') || {}).value || 'shell';
-    pop.elements.name.required = (k !== 'shell');
-    pop.elements.name.placeholder = (k === 'shell') ? 'auto (shell, shell-2, …)' : 'e.g. fit-app';
+  // A pop-out's strip (or a tab's) is brought up to date when the window is
+  // come back to, not only every 15 s.
+  window.addEventListener('focus', function () { if (Date.now() - askedAt > 2000) refresh().catch(noop); });
+
+  // ---- the terminal's connection. Restarting serverjack or ttyd (Update
+  // serverjack does both), or a phone waking before its network is back, drops
+  // ttyd's WebSocket. ttyd retries exactly once, straight away; that retry
+  // lands inside the restart and fails, and ttyd then waits for an Enter on a
+  // "Press ⏎ to Reconnect" overlay (a phone's key row has no Enter). So the
+  // page watches the frame for that overlay, or for our own 502 page
+  // (TERM_DOWN_PAGE, #sj-term-down), and reloads the frame once serverjack
+  // answers, the session is still there and ttyd answers too -- backing off
+  // 0, 1, 2, 4, 8, then every 10 s. A reload, never a synthetic Enter: if the
+  // state were misread, Enter would run whatever is on the command line.
+  var TOKEN = TERM.replace(/\/+$/, '') + '/token';     // ttyd's own tiny JSON endpoint
+  var BACKOFF = [0, 1000, 2000, 4000, 8000, 10000];
+  var retryT = null, retryN = 0, probing = false, stuckT = null, connQ = false, loadedAt = Date.now();
+  function connState() {
+    var d = tdoc();
+    // null: another origin's document -- the browser's own error page, when
+    // serverjack didn't answer as the frame loaded (a tab tapped during a
+    // restart). ttyd's page and our 502 page are both readable.
+    if (!d) return 'lost';
+    if (!d.body) return '';
+    if (d.getElementById('sj-term-down')) return 'lost';
+    var t = overlayText();
+    if (t === null) return '';
+    if (/Reconnect$/.test(t)) return 'lost';                    // ttyd gave up
+    if (/Reconnecting|Connection Closed/.test(t)) return 'retrying';
+    return 'live';
   }
-  pop.addEventListener('change', syncKind); syncKind();
-  document.getElementById('add').onclick = function () {
-    pop.classList.toggle('open'); err.classList.remove('on');
-    if (pop.classList.contains('open')) pop.elements.name.focus();
-  };
+  // ttyd's overlay line ('' when none, null with no terminal)
+  function overlayText() {
+    var d = tdoc(), x = d && d.querySelector('.xterm'), t = '', i;
+    if (!x) return null;
+    for (i = 0; i < x.children.length; i++) if (!x.children[i].className) t = x.children[i].textContent || '';
+    return t;
+  }
+  function checkConn() {
+    var s = connState();
+    // Any word from ttyd about its socket (closed, reconnecting, reconnected)
+    // and the session may have gone with it: ttyd's own quiet reconnect then
+    // shows only "No tmux session called ..." for 20 s, which reads as live.
+    // Asking the session list at once lets render() leave for the list.
+    if (overlayText() && Date.now() - askedAt > 1000) refresh().catch(noop);
+    if (s === 'live' && body.classList.contains('retry')) retrying(false);   // e.g. ttyd's own Enter
+    if (s !== 'retrying') { clearTimeout(stuckT); stuckT = null; }
+    else if (!stuckT) stuckT = setTimeout(function () {    // ttyd's own retry, stuck connecting
+      stuckT = null; if (connState() === 'retrying') lost();
+    }, 8000);
+    if (s === 'lost') lost();
+  }
+  function connSoon() { if (!connQ) { connQ = true; setTimeout(function () { connQ = false; checkConn(); }, 100); } }
+  // While the page reconnects by itself, the frame says so ("reconnecting",
+  // over the terminal) instead of ttyd's "Press ⏎ to Reconnect", which asks
+  // for a key a phone's key row doesn't have. Our 502 page says it already.
+  var capEl = document.querySelector('#conn .cap');
+  function retrying(on) {
+    var d = tdoc(), x = d && d.querySelector('.xterm'), i;
+    if (on && d && d.getElementById('sj-term-down')) on = false;
+    body.classList.toggle('retry', on);
+    if (capEl) capEl.textContent = on ? 'reconnecting\u2026' : 'connecting';
+    if (x) for (i = 0; i < x.children.length; i++) {
+      if (!x.children[i].className) x.children[i].style.visibility = on ? 'hidden' : '';
+    }
+  }
+  function lost() {
+    if (retryT || probing || gone) return;
+    body.classList.remove('conn');
+    retrying(true);
+    if (Date.now() - loadedAt > 30000) retryN = 0;          // a fresh drop after a good run
+    retryT = setTimeout(reconnect, BACKOFF[Math.min(retryN++, BACKOFF.length - 1)]);
+  }
+  function timed(p, ms) {                 // a phone with no network can leave a fetch hanging for minutes
+    return new Promise(function (ok, no) {
+      var t = setTimeout(function () { no(new Error('timeout')); }, ms);
+      p.then(function (v) { clearTimeout(t); ok(v); }, function (e) { clearTimeout(t); no(e); });
+    });
+  }
+  function reconnect() {
+    retryT = null;
+    if (document.hidden) return;                            // left alone; coming back calls wake()
+    probing = true;
+    timed(refresh(), 8000).then(function (here) {
+      if (!here) { probing = false; return; }
+      return timed(fetch(TOKEN, { cache: 'no-store' }), 8000).then(function (r) {
+        probing = false;
+        if (r.status >= 500) throw new Error('ttyd down');
+        loadFrame(cur);
+      });
+    }).catch(function () { probing = false; lost(); });
+  }
+  function wake() {
+    if (document.hidden) return;
+    if (connState() === 'lost' && !probing) { clearTimeout(retryT); retryT = null; retryN = 0; reconnect(); return; }
+    refresh().catch(noop);
+  }
+  document.addEventListener('visibilitychange', wake);
+  window.addEventListener('online', wake);
+  window.addEventListener('pageshow', function (e) { if (e.persisted) wake(); });
+
+  // ---- after every frame load (the first one too), on every device
+  // xterm's viewport keeps a scrollbar that never has anything to scroll under
+  // tmux: a light 15px strip down the right where scrollbars take space.
+  function frameCss() {
+    var d = tdoc(), root = d && (d.head || d.documentElement);
+    if (!root || d.getElementById('sj-frame')) return;
+    var st = d.createElement('style'); st.id = 'sj-frame';
+    st.textContent = '.xterm-viewport{scrollbar-width:none}.xterm-viewport::-webkit-scrollbar{display:none}';
+    root.appendChild(st);
+  }
+  function frameChrome() {
+    var d = tdoc(), w = frame.contentWindow;
+    if (!d || !d.body || d.__sjChrome) return; d.__sjChrome = true;
+    // A press in the terminal dismisses the + panel and the window list
+    // (clicks inside the frame never reach this document's listeners).
+    d.addEventListener('pointerdown', function () { closePop(false); if (!winmenu.hidden) closeWins(); }, true);
+    w.addEventListener('focus', freshWins);
+    new MutationObserver(connSoon).observe(d.body, { childList: true, subtree: true });
+  }
+  // ttyd fits the grid once, before it swaps to its WebGL/canvas renderer,
+  // whose cells are rounded down to whole device pixels -- so the grid comes up
+  // narrower than the frame (a dead band on the right; 3-4 columns short on a
+  // phone) until something resizes it. Fit again once the renderer is in. A
+  // fit that changes nothing sends nothing to tmux; no repeating timer.
+  var refitT = [];
+  function refit() {
+    try {
+      var t = frame.contentWindow.term; if (!t || typeof t.fit !== 'function') return;
+      // tmux keeps the history and the page scrolls it (/api/scroll), so xterm's
+      // own scrollback is unused -- and while it is on, xterm keeps a 15px strip
+      // free for a scrollbar. 1000 is xterm's default: one someone set is left alone.
+      if (t.options.scrollback === 1000) t.options.scrollback = 0;
+      t.fit();
+    } catch (e) {}
+  }
+  function frameLoaded() {
+    loadedAt = Date.now();
+    safe(frameCss); safe(frameChrome);
+    var a = frameArg();
+    // The browser restored the frame to another session's URL (a reload, a
+    // bfcache return): the bar, the URL and every /api call follow cur.
+    if (a !== null && a !== cur) { loadFrame(cur); return; }
+    if (connState() === 'lost') body.classList.remove('conn');   // no sweep over the 502 page
+    else retrying(false);                   // a new terminal page: lost() says so again if need be
+    checkConn();
+    refitT.forEach(clearTimeout);
+    refitT = [500, 1500, 4000].map(function (ms) { return setTimeout(refit, ms); });
+  }
+  frame.addEventListener('load', frameLoaded);
+
+  // ---- the + panel. Every way it closes goes through closePop(), so the +
+  // button's state can't drift. refocus puts the keyboard back in the terminal:
+  // always with a mouse, on touch only if it was there when + was tapped
+  // (focusing it raises the phone keyboard).
+  var addBtn = document.getElementById('add'), startBtn = pop.querySelector('button[type=submit]');
+  var popHadTerm = false, busy = false;
+  function termFocused() { var d = tdoc(); return document.activeElement === frame && !!d && d.activeElement === textarea(); }
+  // Firefox: after a click on this page, focusing the frame's textarea only
+  // takes if the frame's window is focused first.
+  function backToTerm() { try { frame.contentWindow.focus(); } catch (e) {} focusTerm(); }
+  function showErr(t) {
+    err.textContent = ''; err.classList.toggle('on', !!t);
+    if (t) setTimeout(function () { err.textContent = t; }, 0);   // role=alert: text after it shows
+  }
+  function openPop() {
+    closeWins(); pop.classList.add('open'); showErr('');
+    addBtn.classList.add('on'); addBtn.setAttribute('aria-expanded', 'true');
+    pop.elements.name.focus();
+  }
+  function closePop(refocus) {
+    if (!pop.classList.contains('open')) return false;
+    pop.classList.remove('open'); showErr('');
+    addBtn.classList.remove('on'); addBtn.setAttribute('aria-expanded', 'false');
+    if (refocus && (!touch || popHadTerm)) backToTerm();
+    return true;
+  }
+  addBtn.addEventListener('pointerdown', function () { if (!pop.classList.contains('open')) popHadTerm = termFocused(); });
+  addBtn.onclick = function () { if (!closePop(true)) openPop(); };
+  document.getElementById('pop-cancel').onclick = function () { closePop(true); };
+  // Anywhere else on this page closes it too (the frame has its own listener).
+  document.addEventListener('pointerdown', function (e) {
+    if (pop.classList.contains('open') && !pop.contains(e.target) && !addBtn.contains(e.target)) closePop(false);
+  }, true);
   // × leaves, it never ends anything: the session keeps running (kill it
   // from its menu on the landing page). Pop-out window: close it; normal tab:
   // back to the list -- replacing this entry, so Back from the list doesn't
@@ -4998,15 +5361,19 @@ APP_JS = r"""
     powerOff(function () { location.replace('/'); });
   };
   pop.onsubmit = function (e) {
-    e.preventDefault(); err.classList.remove('on');
+    e.preventDefault();
+    if (busy) return;              // a second tap while the first is in flight would start a second session
+    busy = true; startBtn.disabled = true; startBtn.textContent = 'Starting\u2026'; showErr('');
+    function done() { busy = false; startBtn.disabled = false; startBtn.textContent = 'Start'; }
     fetch('/api/new', { method: 'POST', body: new URLSearchParams(new FormData(pop)) })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        if (j.error) { err.textContent = j.error; err.classList.add('on'); return; }
-        pop.classList.remove('open'); pop.reset();
+        done();
+        if (j.error) { if (pop.classList.contains('open')) showErr(j.error); return; }
+        closePop(false); pop.reset();
         switchTo(j.name);
       })
-      .catch(function () { err.textContent = 'request failed'; err.classList.add('on'); });
+      .catch(function () { done(); if (pop.classList.contains('open')) showErr('request failed'); });
   };
   document.getElementById('popout').onclick = function () {
     // "popup" asks for a window without tabs/address bar. Named per session
@@ -5017,29 +5384,34 @@ APP_JS = r"""
   };
   if (touch) body.classList.add('touch');
   document.querySelector('#bar a.ib').onclick = function (e) {
-    if (!POP) {                       // normal tab: back to the list, as × does
-      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button) return;   // a new tab: the browser's
-      e.preventDefault(); powerOff(function () { location.replace('/'); });
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button) return;   // a new tab/window: the browser's own
+    e.preventDefault();
+    if (POP) {
+      window.close();
+      setTimeout(function () { location.href = '/'; }, 150);   // couldn't close (not script-opened): navigate
       return;
     }
-    e.preventDefault(); window.close();
-    setTimeout(function () { location.href = '/'; }, 150);   // couldn't close (not script-opened): navigate
+    // Back to the list, as × does -- replacing this entry, so Back from the
+    // list doesn't re-open the terminal just left.
+    powerOff(function () { location.replace('/'); });
   };
   document.getElementById('handle').onclick = function () {
     body.classList.toggle('showbar');
-    if (!body.classList.contains('showbar')) { pop.classList.remove('open'); focusTerm(); }
+    if (!body.classList.contains('showbar')) { closePop(false); focusTerm(); }
   };
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { pop.classList.remove('open'); closeWins(); }
+    if (e.key !== 'Escape') return;
+    var menu = !winmenu.hidden;
+    closeWins();
+    if (closePop(false) || menu) backToTerm();      // only when it closed something
   });
   document.addEventListener('click', function (e) {
     if (winmenu.hidden) return;
     if (!winmenu.contains(e.target) && !(e.target.closest && e.target.closest('#tabs .tab.on'))) closeWins();
   });
-  document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
-  setInterval(refresh, 15000);
+  setInterval(function () { refresh().catch(noop); checkConn(); }, 15000);
   body.classList.add('conn');
-  refresh(); hook(); touchCss(); scrollHooks(); pollMouse(); focusTerm();
+  [function () { refresh().catch(noop); }, hook, touchCss, scrollHooks, pollMouse, focusTerm, frameLoaded].forEach(safe);
 })();
 """
 

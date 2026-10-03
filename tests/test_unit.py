@@ -2686,8 +2686,8 @@ class SessionRowTests(unittest.TestCase):
 
 class TerminalPageTests(unittest.TestCase):
     """The terminal page's server side: what /api/sessions carries for the
-    page to follow a rename, and the 502 page the frame shows while ttyd is
-    down."""
+    page to follow a rename, the 502 page the frame shows while ttyd is down,
+    and the markup the page's script and tests/pwchrome.py rely on."""
 
     def _sessions_from(self, stdout):
         fake = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
@@ -2720,6 +2720,21 @@ class TerminalPageTests(unittest.TestCase):
         self.assertIn("window.top !== window", page)
         # Still an interstitial, not an installable page.
         self.assertNotIn("manifest", page)
+
+    def test_term_page_markup(self):
+        page = mod.render_term('a"<b>')
+        self.assertIn('title="Terminal: a&quot;&lt;b&gt;"', page)    # escaped
+        self.assertNotIn('id="fxt"', page)                           # CRT toggle lives on the landing page
+        self.assertIn('id="pop-cancel"', page)
+        self.assertIn('<div class="err" id="err" role="alert">', page)
+        self.assertIn('aria-expanded="false" aria-controls="pop"', page)
+        self.assertNotIn("Start &amp; open", page)
+
+    def test_app_js_never_moves_to_another_session(self):
+        # The old "session gone" path attached the alphabetically first
+        # session and focused it; nothing may switch to list[0] again.
+        self.assertNotIn("list[0]", mod.APP_JS)
+        self.assertIn("'/?ended='", mod.APP_JS)
 
 
 if __name__ == "__main__":
