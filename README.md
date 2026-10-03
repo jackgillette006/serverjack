@@ -310,7 +310,8 @@ attaches this session, and *SSH app (login only)*, an `ssh://` link that can
 only log in to the server -- the scheme has no way to carry a command),
 **Rename**, and *Kill session*. Whether **Open** pops out or stays in the tab
 follows the device's main pointer, so a laptop with a touchscreen is still a
-desktop.
+desktop (a finger swipe on its terminal still scrolls the history), while an
+iPad stays a tablet even with a trackpad attached.
 
 A pop-out window is just the terminal under a slim strip: click the strip to
 show the bar, which opens over the terminal's top rows (so the session is

@@ -451,7 +451,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
   exposing touch events was treated as a phone: no Pop out anywhere, Open
   replacing the landing tab, the soft-key row on by default and an invisible
   text box over the terminal that hid the link cursor. Phone or desktop now
-  follows the device's main pointer.
+  follows the device's main pointer; a finger swipe on the terminal still
+  scrolls its history, and an iPad stays a tablet even with a trackpad
+  attached (not tried on a real iPad).
 - **iPhone in landscape: nothing under the notch or the rounded corners.**
   The terminal page drew edge to edge but only kept clear of the top and
   bottom, so the logo, ×, Esc and Copy sat in the corners and the start of

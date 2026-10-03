@@ -27,7 +27,9 @@ Safari). What is proven here:
 - a popped-out session is never attached a second time from this browser
   (Back after Pop out, its tab in another tab's strip), and a blocked pop-up
   says so and opens an ordinary tab;
-- a touchscreen laptop (touch events, mouse pointer) keeps the desktop UI;
+- a touchscreen laptop (touch events, mouse pointer) keeps the desktop UI,
+  and a finger swipe on its terminal still scrolls tmux's history; an iPad
+  that reports a fine pointer (a trackpad attached) stays a tablet;
 - a notched iPhone (safe-area insets patched in, as WebKit here reports 0):
   bar, terminal, key row, + sheet and Copy view stay inside the side insets in
   landscape, the terminal clears the home indicator with the key row off, and
@@ -159,6 +161,21 @@ FAKE_VV = """(() => { if (window.top !== window) return;
   t.offsetTop = 0; t.offsetLeft = 0; t.scale = 1;
   t.__set = v => { h = v; t.dispatchEvent(new Event('resize')); };
   Object.defineProperty(window, 'visualViewport', { value: t, configurable: true }); })()"""
+# One finger dragged down the terminal (dy px per move, 12 moves): older lines.
+SWIPE = """(dy) => { const f = document.getElementById('frame'), w = f.contentWindow, d = f.contentDocument;
+  const el = d.querySelector('.xterm-screen'), r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2; let y = r.top + 100;
+  const mk = (type, yy) => { const t = new w.Touch({identifier: 1, target: el, clientX: x, clientY: yy});
+    const on = type === 'touchend' ? [] : [t];
+    return new w.TouchEvent(type, {touches: on, targetTouches: on, changedTouches: [t],
+                                   bubbles: true, cancelable: true}); };
+  el.dispatchEvent(mk('touchstart', y));
+  for (let i = 0; i < 12; i++) { y += dy; el.dispatchEvent(mk('touchmove', y)); }
+  el.dispatchEvent(mk('touchend', y)); }"""
+# An iPad's Safari as it may look with a trackpad attached: it calls itself a
+# Mac, has touch points, and (here, desktop WebKit) a fine pointer that hovers.
+AS_IPAD = """Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'MacIntel' });
+Object.defineProperty(Navigator.prototype, 'maxTouchPoints', { get: () => %d });"""
 
 
 def clients(name):
@@ -793,6 +810,30 @@ try:
            and page.locator("#popout").is_visible() and not page.locator("#keys").is_visible())
         ok("...and no touch textarea stretched over the terminal",
            page.frame_locator("#frame").locator("#sj-touch").count() == 0)
+        # The layout is the desktop's, but a finger is still a finger.
+        tmux("send-keys", "-t", f"={Q}:", "seq 1 400", "Enter")
+        time.sleep(0.6)
+        page.evaluate(SWIPE, 20)
+        ok("...and a finger swipe on the terminal still scrolls tmux's history",
+           wait_for(lambda: tmux("display", "-p", "-t", f"={Q}:", "#{pane_in_mode}").stdout.strip() == "1", 3))
+        tmux("send-keys", "-t", f"={Q}:", "-X", "cancel")
+        b.close()
+
+        # ===== G10's limit: an iPad stays a tablet, even with a trackpad attached
+        print("webkit, an iPad with a trackpad (Safari says Mac, fine pointer, touch points):")
+        b = p.webkit.launch()
+        for mtp, want, what in ((5, True, "an iPad"), (0, False, "a Mac")):
+            ctx = b.new_context(viewport={"width": 1180, "height": 820})
+            ctx.add_init_script(AS_IPAD % mtp)
+            page = ctx.new_page()
+            page.goto(f"{BASE}/")
+            land = page.evaluate("document.body.classList.contains('touch')")
+            open_term(page, BASE, Q)
+            term = page.evaluate("document.body.classList.contains('touch')")
+            ok(f"{what}: {'the touch' if want else 'the desktop'} layout on both pages",
+               land == want and term == want and page.locator("#popout").is_visible() != want,
+               f"landing={land} terminal={term}")
+            ctx.close()
         b.close()
 
         # =================== F37 F81 F82: a notched iPhone's safe areas (WebKit)
