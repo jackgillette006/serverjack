@@ -73,6 +73,8 @@ You are testing a browser-based tmux terminal at https://<your-host>/ on iPhone 
 16. (iPad, if you have one; never tried so far.) Attach a trackpad or a Magic Keyboard, then reload the home page and a session: it still behaves as a tablet — the key row is on by default, Open stays in the same tab, there is no ↗ in the bar, and a finger swipe scrolls the history (14b).
 Report PASS/FAIL per step and the iOS version.
 
+Known and accepted, don't report: emoji with a VS16 selector, a skin tone or a ZWJ join (`printf 'A❤️B|A👍🏽B|\n'`) can overlap the next character, or shift the rest of the line by a column, after the screen is redrawn (reopen the session). tmux and xterm.js disagree about their width — see the README's Known limitations.
+
 ## Directory picker (iPhone; what emulation can't prove)
 
 `tests/pwdirpick.py` covers the picker in emulated WebKit and Chromium; these

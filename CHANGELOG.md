@@ -600,6 +600,13 @@ and this project uses [Semantic Versioning](https://semver.org/).
   a screen full of tmux's `·` dots (tmux 3.3 or newer; put back when the
   last page leaves).
 
+### Docs
+
+- Known limitations: emoji with a VS16 selector (❤️ ⚠️ ✔️), skin tones or
+  ZWJ joins are two cells to tmux and one (or one per part) to ttyd's
+  xterm.js, so after a redraw the next character can overlap them. Neither
+  has a setting for it yet.
+
 ### Added
 
 - A quiet screens count in the terminal bar while a session is open on more
