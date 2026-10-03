@@ -186,9 +186,17 @@ Only id, label and bin are required. Example:
     ]
 
 Every agent card submits one form to POST /tools, and the button that was
-pressed carries the route in its value ("/tools/open", "/tools/action:0"...),
-so a card can share one directory picker between several buttons. Those same
-routes also work as plain endpoints of their own.
+pressed carries the route in its value ("/tools/server", "/tools/action:0"...).
+The buttons that read a directory (a server's Start, an action with "dir")
+belong to a second form on the card, which also owns the card's one labelled
+directory picker, shown in the first row that uses it -- so a card with no
+such button has no picker, and Enter in the picker never runs anything else.
+Those same routes also work as plain endpoints of their own.
+
+A server serverjack starts is marked with tmux session options (@sj_server,
+@sj_dir; see server_instances()), and that -- not the session name -- is how
+the card finds it again: after a rename, for two directories with the same
+basename, and never mistaking an interactive session for one.
 
 Security: no password of its own. Every button on this page runs a command as
 the user serverjack runs as -- it is SSH with a nicer font. Only expose it
@@ -732,7 +740,7 @@ BUILTIN_TOOLS = [
             "session": "claude-remote",
             "per_dir": True,
             "note": "No local chat: the Claude app starts Claude Code sessions here on "
-                    "demand, several at once, in the directory picked above. One server "
+                    "demand, several at once, in the directory you pick. One server "
                     "per project directory. Prints a QR code; gives up after ~10 minutes "
                     "without network.",
         },
@@ -753,7 +761,7 @@ BUILTIN_TOOLS = [
             "stop": "codex remote-control stop",
             "pidfile": "~/.codex/app-server-daemon/app-server.pid",
             "note": "The ChatGPT app connects to this daemon and opens Codex sessions "
-                    "in any directory on this machine. Pair once with the code below.",
+                    "in any directory on this machine. Pair once with the code above.",
         },
         "actions": [
             {"label": "Pair with phone", "cmd": "codex remote-control pair",
@@ -2844,6 +2852,16 @@ details.tool[open] .chev{transform:rotate(180deg)}
 .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .pill.on{color:var(--accent);border-color:rgb(57 255 136 / .35);background:var(--accent-wash)}
 .pill.warn{color:var(--warning);border-color:rgb(255 200 87 / .35);background:rgb(255 200 87 / .08)}
+/* a collapsed agent row stays short: each pill is one line and its label is
+   what gives way, never the state or the dot */
+.pill::before,.state b::before{flex:none}
+.state .pill{max-width:100%;min-width:0;white-space:nowrap}
+.state .pill .pl{min-width:0;overflow:hidden;text-overflow:ellipsis}
+/* an agent card's directory picker sits in the option row that uses it */
+.orow .odir{margin-top:var(--space-2)}
+.orow:has(.odir) .ob{align-self:flex-end}
+.seg .hint{flex:1 1 100%}
+.seg .hint a{color:var(--text-secondary)}
 /* "start at boot" -- a checkbox in the option row that posts on change */
 .ab{display:inline-flex;align-items:center;gap:6px;color:var(--text-muted);
   font:500 11px/16px var(--font-mono);white-space:nowrap;cursor:pointer;user-select:none}
@@ -3725,15 +3743,24 @@ def note(text):
 CONFIRM = ' data-confirm="Stop {}?"'
 
 
-def orow(label, note_text, buttons, hint="", cls=""):
-    """One option row: what it is + the one-line difference, then the button."""
+def orow(label, note_text, buttons, hint="", cls="", extra=""):
+    """One option row: what it is + the one-line difference, then the button.
+    extra: more of the left column under the note (the directory picker)."""
     left = ""
-    if label or note_text:
+    if label or note_text or extra:
         left = ('<div class="ol"><div class="olabel">' + label + "</div>"
                 + (f'<p class="onote">{note_text}</p>' if note_text else "")
-                + "</div>")
+                + extra + "</div>")
     return (f'<div class="orow{cls}">' + left + '<div class="ob">' + buttons + "</div>"
             + (f'<span class="hint">{hint}</span>' if hint else "") + "</div>")
+
+
+def summary_pill(label, word, cls="", title=""):
+    """A server/daemon pill in a collapsed agent row. One line whatever the
+    width: the label is what gives way (ellipsis), never the state."""
+    tip = f' title="{esc(title)}"' if title else ""
+    return (f'<i class="pill{cls}"{tip}><span class="pl">{esc(label)}:</span>'
+            f'<span>{esc(word)}</span></i>')
 
 
 def tool_card(t, st, open_=False):
@@ -3744,6 +3771,7 @@ def tool_card(t, st, open_=False):
     docs = (f'<a class="docs" href="{esc(t["docs"])}" target="_blank" rel="noopener">Docs &#8599;</a>'
             if t.get("docs") else "")
     daemon, server = t.get("daemon") or {}, t.get("server") or {}
+    actions = t.get("actions") or []
     sstate = st.get("server_state", "off")
     ready = st["installed"] and st["logged_in"] is not False
 
@@ -3756,24 +3784,25 @@ def tool_card(t, st, open_=False):
         bits = ["<b>Ready</b>"]
         if daemon:
             on = st["daemon_running"]
-            bits.append(f'<i class="pill{" on" if on else ""}">'
-                        f'{esc(daemon.get("label") or "Daemon")}: '
-                        f'{"running" if on else "stopped"}</i>')
+            bits.append(summary_pill(daemon.get("label") or "Daemon",
+                                     "running" if on else "stopped", " on" if on else ""))
         if server and server.get("per_dir"):
-            # One pill per instance, each naming its directory: "running" alone
-            # would hide the fact that it only serves that one project.
-            label = esc(server.get("label") or "Server")
-            if not st["servers"]:
-                bits.append(f'<i class="pill">{label}: stopped</i>')
-            for inst in st["servers"]:
-                cls = " on" if inst["state"] == "on" else " warn"
-                word = "running" if inst["state"] == "on" else "exited"
-                bits.append(f'<i class="pill{cls}">{label}: {word} &middot; {esc(inst["dir"])}</i>')
+            # One pill for every instance, counted and coloured by the worst
+            # state; which directory each one serves is in the open card (and
+            # the pill's tooltip). A pill per instance made the collapsed row
+            # several lines tall on a phone.
+            n_on = sum(1 for i in st["servers"] if i["state"] == "on")
+            n_ex = len(st["servers"]) - n_on
+            word = " · ".join(x for x in (f"{n_on} running" if n_on else "",
+                                          f"{n_ex} exited" if n_ex else "") if x)
+            tip = "\n".join(("running" if i["state"] == "on" else "exited") + " · " + i["dir"]
+                            for i in st["servers"])
+            bits.append(summary_pill(server.get("label") or "Server", word or "stopped",
+                                     " warn" if n_ex else (" on" if n_on else ""), tip))
         elif server:
             word = {"on": "running", "exited": "exited", "off": "stopped"}[sstate]
             cls = {"on": " on", "exited": " warn", "off": ""}[sstate]
-            bits.append(f'<i class="pill{cls}">{esc(server.get("label") or "Server")}: '
-                        f'{word}</i>')
+            bits.append(summary_pill(server.get("label") or "Server", word, cls))
         state = '<span class="state">' + "".join(bits) + "</span>"
 
     out = [f'<details class="tool" id="tool-{esc(tid)}" name="agent"{" open" if open_ else ""}>',
@@ -3781,21 +3810,41 @@ def tool_card(t, st, open_=False):
            f'<span class="name">{esc(st["label"])}</span>{state}</span>{I_CHEV}</summary>',
            '<div class="tbody">']
 
-    # One form per tool: every button in it shares the directory picker and
-    # says in its value which route it wants (see the module docstring). The
+    # One form per tool: every button in it says in its value which route it
+    # wants (see the module docstring). The buttons that read a directory --
+    # a server's Start, an action with "dir" -- belong instead (form=) to a
+    # second, hidden form that also owns the card's one directory picker, and
+    # the picker sits in the first row that uses it, labelled. So a card with
+    # nothing that reads a directory has no picker, and Enter in the picker
+    # can only press a button that uses it, never an unrelated action. The
     # daemon and the server's Stop keep their own forms (no directory, and a
     # confirm of their own); their buttons sit in the option rows via form=.
-    dirline = dir_picker()
+    dform = f"d-{esc(tid)}"
+    placed = []
 
-    def main_form(inner, with_dir=True):
-        return ('<form method="post" action="/tools">' + hid
-                + (dirline if with_dir else "") + inner + "</form>")
+    def picker_here():
+        """The labelled picker, the first time a row asks for it."""
+        if placed:
+            return ""
+        placed.append(1)
+        return (f'<div class="odir"><label for="dp-{esc(tid)}">Directory</label>'
+                + dir_picker(input_id=f"dp-{tid}").replace("<input ", f'<input form="{dform}" ', 1)
+                + "</div>")
+
+    def dir_button(route, word):
+        return (f'<button class="btn sm sec" type="submit" form="{dform}" name="do" '
+                f'value="{route}">{word}</button>')
+
+    def main_form(inner):
+        return '<form method="post" action="/tools">' + hid + inner + "</form>"
 
     # "start at boot". Same form= trick as Stop: the checkbox sits in the
     # option row, its form is hidden below. picker=True means "whatever the
-    # directory picker says at the moment you tick it" (the Start rows).
-    def autostart_box(fid, kind, cwd=None, picker=False):
-        on = autostart_on(tid, kind, cwd)
+    # directory picker says at the moment you tick it". on: the box's state,
+    # when the caller knows better than an exact (tool, kind, dir) match.
+    def autostart_box(fid, kind, cwd=None, picker=False, on=None):
+        if on is None:
+            on = autostart_on(tid, kind, cwd)
         form = (f'<form method="post" action="/tools/autostart" id="{fid}" hidden>' + hid
                 + f'<input type="hidden" name="kind" value="{kind}">'
                 + f'<input type="hidden" name="dir" value="{esc(cwd or "")}"></form>')
@@ -3805,9 +3854,16 @@ def tool_card(t, st, open_=False):
                + "> start at boot</label>")
         return form, box
 
+    def stop_form(fid, confirm, inst):
+        return (f'<form method="post" action="/tools/server" id="{fid}" hidden'
+                f' data-confirm="{esc(confirm)}">' + hid
+                + '<input type="hidden" name="action" value="stop">'
+                + f'<input type="hidden" name="session" value="{esc(inst["session"])}">'
+                + f'<input type="hidden" name="dir" value="{esc(inst["dir"])}"></form>')
+
     if not st["installed"]:
         if not st["needs_ok"]:
-            out.append(note("Needs Node.js (node + npm), which isn\u2019t installed on this server."))
+            out.append(note("Needs Node.js (node + npm), which isn’t installed on this server."))
         elif t.get("install"):
             out.append('<form method="post" action="/tools/install">' + hid
                        + '<button class="btn sec wide" type="submit">Install</button></form>')
@@ -3824,28 +3880,36 @@ def tool_card(t, st, open_=False):
 
     else:
         rows, aux = [], []
+        uses_dir = (bool(server) and (bool(server.get("per_dir")) or sstate != "on")) \
+            or any(a.get("dir") for a in actions)
+        if uses_dir:
+            aux.append(f'<form method="post" action="/tools" id="{dform}" hidden>{hid}</form>')
+        boot = [e for e in load_autostart() if e.get("tool") == tid and e.get("kind") == "server"]
 
-        for i, a in enumerate(t.get("actions") or []):
+        for i, a in enumerate(actions):
             label = esc(a.get("label") or a.get("cmd", ""))
-            word = "Open" if a.get("dir") else "Run"
-            rows.append(orow(label, esc(a.get("note", "")),
-                             '<button class="btn sm sec" type="submit" name="do" '
-                             f'value="/tools/action:{i}">{word}</button>'))
+            if a.get("dir"):
+                rows.append(orow(label, esc(a.get("note", "")),
+                                 dir_button(f"/tools/action:{i}", "Open"), extra=picker_here()))
+            else:
+                rows.append(orow(label, esc(a.get("note", "")),
+                                 '<button class="btn sm sec" type="submit" name="do" '
+                                 f'value="/tools/action:{i}">Run</button>'))
 
         if server and server.get("per_dir"):
-            # One row per running/exited instance (Stop + Open), then a Start
-            # row for the directory picked above.
+            # One row per running/exited instance (Stop + Open), one per
+            # saved "start at boot" directory with nothing running in it,
+            # then a Start row with the directory picker.
             label = server.get("label") or "server"
             for n, inst in enumerate(st["servers"]):
                 fid = f"f-{esc(tid)}-server-{n}"
-                aux.append(f'<form method="post" action="/tools/server" id="{fid}" hidden'
-                           + CONFIRM.format(esc(label)) + ">" + hid
-                           + '<input type="hidden" name="action" value="stop">'
-                           + f'<input type="hidden" name="session" value="{esc(inst["session"])}"></form>')
+                running = inst["state"] == "on"
+                aux.append(stop_form(fid, (f"Stop {label} in “{inst['dir']}”?" if running else
+                                           f"Remove the exited {label} in “{inst['dir']}”?"), inst))
                 href = esc(term_href(inst["session"]))
                 aform, abox = autostart_box(f"a-{esc(tid)}-server-{n}", "server", inst["dir"])
                 aux.append(aform)
-                if inst["state"] == "on":
+                if running:
                     btns = (abox
                             + f'<button class="btn sm sec" type="submit" form="{fid}">Stop</button>'
                             f'<a class="btn sm sec" href="{href}">Open</a>')
@@ -3856,37 +3920,58 @@ def tool_card(t, st, open_=False):
                             f'<button class="btn sm sec" type="submit" form="{fid}">Remove</button>')
                     rows.append(orow(f'{esc(label)} &middot; <code>{esc(inst["dir"])}</code>',
                                      "It exited; Open shows why.", btns))
-            aform, abox = autostart_box(f"a-{esc(tid)}-server-new", "server", picker=True)
-            aux.append(aform)
+            pending = [e for e in boot
+                       if not any(same_dir(i["dir"], e.get("dir")) for i in st["servers"])]
+            for n, e in enumerate(pending):
+                d = _auto_dir(e.get("dir"))
+                aform, abox = autostart_box(f"a-{esc(tid)}-server-p{n}", "server", d, on=True)
+                aux.append(aform)
+                if os.path.isdir(d):
+                    sid = f"s-{esc(tid)}-server-p{n}"
+                    aux.append(f'<form method="post" action="/tools/server" id="{sid}" hidden>'
+                               + hid + f'<input type="hidden" name="dir" value="{esc(d)}"></form>')
+                    btns = abox + f'<button class="btn sm sec" type="submit" form="{sid}">Start</button>'
+                    why = "Starts at boot; not running now."
+                else:
+                    btns, why = abox, "Set to start at boot, but the directory is gone. Untick to forget it."
+                rows.append(orow(f'{esc(label)} &middot; <code>{esc(_dir_show(d))}</code>', why, btns))
             rows.append(orow(f"Start {esc(label)}", esc(server.get("note", "")),
-                             abox + '<button class="btn sm sec" type="submit" name="do" '
-                             'value="/tools/server">Start</button>'))
+                             dir_button("/tools/server", "Start"), extra=picker_here()))
         elif server:
+            # One server at a time, so at most one "start at boot" entry, in
+            # whichever directory it was ticked: the box shows that entry.
             label = server.get("label") or "server"
-            href = esc(term_href(st["server_session"]))
-            if sstate == "on":
+            entry = boot[0] if boot else None
+            on_boot = (f' Starts at boot in <code>{esc(_dir_show(_auto_dir(entry.get("dir"))))}</code>.'
+                       if entry else "")
+            live = [i for i in st["servers"] if i["state"] == "on"]
+            if live:
+                inst = live[0]
                 fid = f"f-{esc(tid)}-server"
-                aux.append(f'<form method="post" action="/tools/server" id="{fid}" hidden'
-                           + CONFIRM.format(esc(label)) + ">" + hid
-                           + '<input type="hidden" name="action" value="stop"></form>')
-                aform, abox = autostart_box(f"a-{esc(tid)}-server", "server",
-                                            st["servers"][0]["dir"] if st["servers"] else HOME)
+                aux.append(stop_form(fid, f"Stop {label}?", inst))
+                aform, abox = autostart_box(f"a-{esc(tid)}-server", "server", inst["dir"],
+                                            on=bool(entry))
                 aux.append(aform)
                 btns = (abox
                         + f'<button class="btn sm sec" type="submit" form="{fid}">Stop</button>'
-                        f'<a class="btn sm sec" href="{href}">Open</a>')
+                        f'<a class="btn sm sec" href="{esc(term_href(inst["session"]))}">Open</a>')
                 rows.append(orow(esc(label), esc(server.get("note", "")), btns))
             else:
-                aform, abox = autostart_box(f"a-{esc(tid)}-server", "server", picker=True)
+                if entry:
+                    aform, abox = autostart_box(f"a-{esc(tid)}-server", "server",
+                                                _auto_dir(entry.get("dir")), on=True)
+                else:
+                    aform, abox = autostart_box(f"a-{esc(tid)}-server", "server",
+                                                picker=True, on=False)
                 aux.append(aform)
                 btns = abox
                 if sstate == "exited":
-                    btns += f'<a class="btn sm sec" href="{href}">Open</a>'
-                btns += ('<button class="btn sm sec" type="submit" name="do" '
-                         'value="/tools/server">Start</button>')
-                rows.append(orow(esc(label), esc(server.get("note", "")), btns,
+                    btns += f'<a class="btn sm sec" href="{esc(term_href(st["server_session"]))}">Open</a>'
+                btns += dir_button("/tools/server", "Start")
+                rows.append(orow(esc(label), esc(server.get("note", "")) + on_boot, btns,
                                  hint=("It exited; Open shows why. Start replaces it."
-                                       if sstate == "exited" else "")))
+                                       if sstate == "exited" else ""),
+                                 extra=picker_here()))
 
         if daemon:
             label = daemon.get("label") or "daemon"
@@ -4789,7 +4874,10 @@ class Handler(BaseHTTPRequestHandler):
                 cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
                 if err:
                     return fail(err)
-            return self.launch(auto_name(a.get("label") or tid), cwd, a["cmd"], tid)
+            # Lower-case like every other name serverjack makes (login-<id>,
+            # update, ...): "Pair with phone" -> pair-with-phone, which also
+            # keeps it from sorting above everything in the Sessions list.
+            return self.launch(auto_name((a.get("label") or tid).lower()), cwd, a["cmd"], tid)
 
         if path == "/tools/autostart":
             kind = f.get("kind", "")
