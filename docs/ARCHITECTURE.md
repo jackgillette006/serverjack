@@ -424,6 +424,19 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   edited, and Cancel really leaves the editor; the Keep box decides over a
   typed shortcut name; multi-line commands run line by line. Chromium,
   WebKit's iPhone 14 emulation (and 320px) and Firefox.
+- `pwlayout.py` — the landing page's layout and live behaviour, on Chromium
+  desktop and emulated WebKit iPhones (390 and 320 wide): the dark
+  color-scheme, favicon and status-bar strip, and the terminal's frame
+  staying dark while ttyd loads; session rows (the facts first and whole,
+  real ellipses, per-row accessible names) and shortcut rows (the directory
+  first, in full); Sessions above the fold, 44px touch targets, Windows
+  Contrast state and iOS Larger Text; the ⋯ menus (one at a time, Escape
+  and focus close them, flipped up near the bottom, Rename fitting a narrow
+  phone); the list keeping itself current (sessions ended or started
+  elsewhere, never frozen by focus on Open, a stale Open saying the session
+  has ended while a row renamed in place still opens, an unreachable
+  server, `/s/<gone>`); the footer and ×; and Ctrl+click on Open left to
+  the browser.
 - `pwauth.py` — `SERVERJACK_ALLOW` end-to-end against a second scratch
   instance, with Playwright forging (or withholding) the
   `Tailscale-User-Login` header itself: wrong/missing header is a 403 that

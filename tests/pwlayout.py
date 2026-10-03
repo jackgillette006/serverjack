@@ -454,18 +454,55 @@ with sync_playwright() as p:
         ok("Copy SSH command tapped twice goes back to its label, not 'Copied' for good",
            cp.inner_text().strip() == "Copy SSH command", cp.inner_text())
     mp.keyboard.press("Escape")
-    # Ctrl+click Open: the browser's own new tab on /s/<name>, not our pop-up
-    with mctx.expect_page() as newp:
-        mp.click(f"{row(first)} a.open", modifiers=["Control"])
-    np_ = newp.value
-    try:
-        np_.wait_for_url("**/s/**", timeout=5000)
-    except Exception:
-        pass
-    ok("Ctrl+click on Open opens the plain session page in a new tab, not the pop-out",
-       "/s/" in np_.url and "popout" not in np_.url and mp.url.rstrip("/") == BASE,
-       f"new={np_.url!r} landing={mp.url!r}")
-    np_.close()
+    # Ctrl+click Open: the browser's own new tab on /s/<name>, not our pop-up.
+    # First what our code does with it, deterministically: the page's click
+    # handlers must leave a modified click alone (no preventDefault, no
+    # window.open). A last window listener records that and then stops the
+    # synthetic click from navigating.
+    synth = mp.evaluate(f"""() => {{
+      const a = document.querySelector('{row(first)} a.open'); let opened = 0, prevented = null;
+      const wo = window.open; window.open = function () {{ opened++; return null; }};
+      const last = e => {{ prevented = e.defaultPrevented; e.preventDefault(); }};
+      window.addEventListener('click', last);
+      a.dispatchEvent(new MouseEvent('click', {{bubbles: true, cancelable: true, ctrlKey: true, button: 0}}));
+      window.removeEventListener('click', last); window.open = wo;
+      return [prevented, opened, location.pathname]; }}""")
+    ok("a Ctrl+click on Open is left to the browser (not prevented, no pop-up of ours)",
+       synth == [False, 0, "/"], str(synth))
+    # Then the real thing. Headless Chromium once (in ~40 tries) opened no
+    # tab at all for a trusted Ctrl+click, and once a tab that never loaded
+    # anything (its URL stayed empty); that is the browser's side, so it gets
+    # one retry and is reported as KNOWN if it still opens nothing -- but the
+    # list navigating away, or our pop-out opening, always FAILs.
+    got = None
+    for _ in range(2):
+        try:
+            with mctx.expect_page(timeout=10000) as newp:
+                mp.click(f"{row(first)} a.open", modifiers=["Control"])
+            got = newp.value
+        except Exception:
+            if mp.url.rstrip("/") != BASE:
+                break
+            continue
+        try:
+            got.wait_for_url("**/s/**", timeout=5000)
+        except Exception:
+            pass
+        if got.url in ("", "about:blank"):
+            got.close()
+            got = None
+            continue
+        break
+    if got:
+        ok("Ctrl+click on Open opens the plain session page in a new tab, not the pop-out",
+           "/s/" in got.url and "popout" not in got.url and mp.url.rstrip("/") == BASE,
+           f"new={got.url!r} landing={mp.url!r}")
+        got.close()
+    elif mp.url.rstrip("/") != BASE:
+        ok("Ctrl+click on Open leaves the list where it is", False, f"landing navigated to {mp.url!r}")
+    else:
+        print("  KNOWN Ctrl+click on Open: headless Chromium opened no tab, or one that never "
+              "loaded (twice); the list stayed put and no pop-up of ours opened")
     mctx.close()
 
     # ------------------------------------------- the list keeps current --
