@@ -1152,6 +1152,9 @@ managed-install` runs just that.
 - tmux resizes a session to its most recent client, so a phone attaching
   shrinks the desktop view until the desktop sends a key. That's tmux.
 - Installer and units are Linux + systemd only.
+- On an iPhone the landing page's text follows Settings → Display & Brightness
+  → Text Size (Larger Text); the terminal page's bar and keys don't, and the
+  terminal itself is ttyd's fixed 13px. Pinch to zoom there.
 
 ## Changelog
 

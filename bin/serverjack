@@ -2375,7 +2375,7 @@ def session_facts(s):
     cut it), the window count when there is more than one, and the age. The
     path and command follow it and are what a narrow row gives up first.
     "attached" is aria-hidden because the dot already says it to a screen
-    reader. LAND_JS's facts() rebuilds the same thing in place."""
+    reader. paint() in LAND_JS rebuilds the same thing in place."""
     rest = " · ".join(x for x in (
         f"{s['windows']} windows" if s["windows"] > 1 else "",
         session_age(s["created"])) if x)
@@ -3476,6 +3476,39 @@ details.tool[open] .chev{transform:rotate(180deg)}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;
     transition-duration:.01ms!important}
+}
+/* iOS Larger Text (Dynamic Type). WebKit only scales text that is sized from
+   an -apple-system-* font, never px, and the home-screen app has no aA menu,
+   so on iOS the root takes the reader's body size (17px at the default
+   setting) and the text sizes above are restated against it: calc(Nrem/17)
+   is exactly N px at the default and grows or shrinks with the setting.
+   Gated on -webkit-touch-callout, which only iOS has, so desktop Safari,
+   Chrome, Firefox and Android keep the px rules above untouched. Inputs
+   never drop under 16px (iOS zooms the page on focus below that). Keep this
+   list in step with any text size changed above; the terminal page has its
+   own CSS and stays in px. */
+@supports (font:-apple-system-body) and (-webkit-touch-callout:none){
+  html{font:-apple-system-body}
+  body{font-size:calc(14rem/17)}
+  h1{font-size:calc(20rem/17);line-height:calc(28rem/17)}
+  h1 small{font-size:calc(13rem/17);line-height:calc(20rem/17)}
+  .tagline{font-size:calc(12rem/17)}
+  .sysline,h2,.pill,.ab,.fxt{font-size:calc(11rem/17);line-height:calc(16rem/17)}
+  .sess .name{font-size:calc(15rem/17);line-height:calc(22rem/17)}
+  .sess .name .pill{font-size:calc(10rem/17);line-height:calc(14rem/17)}
+  details.card summary,details.inline summary{font-size:calc(13rem/17);line-height:calc(20rem/17)}
+  .sess .meta,.hint,.note,.foot,.note code,.hint code,details.ddchange summary,.docs,.state{
+    font-size:calc(12rem/17);line-height:calc(18rem/17)}
+  .btn,.err,.flash,.menu-list a,.menu-list button,.menu-list details.ren > summary,.orow .olabel{
+    font-size:calc(13rem/17);line-height:calc(18rem/17)}
+  .btn.wide{font-size:calc(14rem/17)}
+  .btn.sm,.seg .pill{font-size:calc(12rem/17)}
+  label{font-size:calc(12rem/17);line-height:calc(16rem/17)}
+  input,select,textarea,.menu-list details.ren input[type=text]{font-size:max(16px,calc(16rem/17))}
+  .tool .name{font-size:calc(14rem/17);line-height:calc(20rem/17)}
+  .orow .onote{font-size:calc(12rem/17);line-height:calc(17rem/17)}
+  .dirlist{font-size:calc(13rem/17)}
+  @media (min-width:560px){h1{font-size:calc(22rem/17)}}
 }
 """
 

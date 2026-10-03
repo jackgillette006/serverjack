@@ -55,6 +55,7 @@ You are testing a browser-based tmux terminal at https://<your-host>/ on iPhone 
 14b. **Scrolling**: run `seq 1 500` in a session, then drag one finger up and down over the terminal (or use the mouse wheel on a desktop). The pane's history scrolls, tmux's copy-mode position shows top right, and scrolling back to the bottom leaves copy mode. A mouse drag on a desktop still selects text.
 14c. In a session with two windows (`tmux new-window`), tap the active tab: the window list opens as a comfortable, readable sheet with 44px rows, and picking one switches. Nothing overflows sideways.
 14d. In the home-screen app, scroll the session list up and down: nothing ever shows under the clock and battery (a solid strip stays behind the status bar). Tap ⋯ → Rename on a session and tap the text box: the page must not zoom in. On a 375px or smaller iPhone (mini, SE) the open menu, with Rename unfolded, fits on screen.
+14e. Settings → Display & Brightness → Text Size: drag it two steps larger and reopen the home-screen app. The landing page's text is larger (nothing scrolls sideways); at the default size it looks exactly as before. Tapping any text box still doesn't zoom the page. The terminal page is unchanged by the setting.
 15. ☰ goes back to the list; ✕ closes: in a pop-out it closes the window, in a tab it goes back to the list. The session keeps running either way (kill it from its menu on the landing page).
 Report PASS/FAIL per step and the iOS version.
 

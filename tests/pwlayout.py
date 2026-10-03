@@ -254,6 +254,46 @@ with sync_playwright() as p:
     ok("install commands in notes wrap at spaces, not mid-word", wrap == ["normal", "anywhere"], str(wrap))
     c.close()
 
+    # ------------------------------- iOS Larger Text (Dynamic Type, F57) --
+    # Emulated WebKit has neither -apple-system-body nor -webkit-touch-callout,
+    # so the iOS-only @supports block never applies here. Lift its rules out
+    # of the CSSOM and apply them with a chosen root size instead: at 17px
+    # (iOS's default) nothing may move, larger must grow and still fit.
+    RULES = """() => { for (const sh of document.styleSheets) for (const r of sh.cssRules)
+      if (r.conditionText && r.conditionText.includes('apple-system-body'))
+        return [...r.cssRules].map(x => x.cssText).join('\\n'); return null; }"""
+    SNAP = """() => [...document.querySelectorAll('body *')].filter(e => e.offsetParent)
+      .map(e => { const s = getComputedStyle(e); return [parseFloat(s.fontSize), parseFloat(s.lineHeight) || 0]; })"""
+    c = phone(p, wk)
+    pg = c.new_page()
+    pg.goto(f"{BASE}/")
+    pg.locator("#startform details.inline > summary").tap()
+    for d in pg.query_selector_all("details.tool"):
+        pg.evaluate("d => d.open = true", d)
+    rules = pg.evaluate(RULES)
+    ok("the page carries an iOS-only Larger Text block", bool(rules) and "rem" in (rules or ""))
+    before = pg.evaluate(SNAP)
+    pg.add_style_tag(content=(rules or "") + "\nhtml{font-size:17px}")
+    after = pg.evaluate(SNAP)
+    moved = [i for i, (x, y) in enumerate(zip(before, after)) if abs(x[0] - y[0]) > .01 or abs(x[1] - y[1]) > .01]
+    ok("at iOS's default text size every font size and line height is unchanged",
+       len(before) == len(after) and not moved, f"{len(moved)} of {len(before)} differ")
+    c.close()
+    for w, root in ((390, 25.5), (320, 25.5), (390, 14)):
+        c = phone(p, wk, w, 700)
+        pg = c.new_page()
+        pg.goto(f"{BASE}/")
+        pg.add_style_tag(content=(rules or "") + "\nhtml{font-size:%spx}" % root)
+        pg.wait_for_timeout(150)
+        g = pg.evaluate("""() => [document.documentElement.scrollWidth, innerWidth,
+          parseFloat(getComputedStyle(document.body).fontSize),
+          Math.min(...[...document.querySelectorAll('input:not([type=checkbox]):not([type=radio]):not([type=hidden]),textarea')]
+            .map(e => parseFloat(getComputedStyle(e).fontSize)))]""")
+        ok(f"{w}px, text at {root / 17:.0%}: the text follows it and the page never scrolls sideways",
+           g[0] <= g[1] and abs(g[2] - 14 * root / 17) < .1, str(g))
+        ok(f"{w}px, text at {root / 17:.0%}: no input under 16px (iOS would zoom on focus)", g[3] >= 16, str(g))
+        c.close()
+
     # ------------------------------------------ per-row accessible names --
     page.goto(f"{BASE}/")
     names = page.evaluate("""() => ({
