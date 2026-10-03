@@ -486,17 +486,28 @@ with sync_playwright() as p:
        page.locator("#dir").get_attribute("placeholder"))
 
     page.click("details.ddchange summary")
-    page.fill("#dd_dir", "~/projects")
-    # Submit the form itself: the picker's suggestion list (opened by the
-    # fill, its reply racing this line) can sit over Save and swallow a
-    # click -- a picker behaviour of its own, not what this check is about.
+    # The picker's suggestion list, opened by the fill, can sit over Save and
+    # swallow the click when its reply lands late (dir-picker finding F23).
+    # Wait for that reply and dismiss the list the way a person would, then
+    # press the real Save. Once F23 is fixed the Escape can go.
+    with page.expect_response(lambda r: "/api/dirs" in r.url):
+        page.fill("#dd_dir", "~/projects")
+    page.wait_for_timeout(150)
+    if page.locator('form[action="/prefs"] .dirlist').is_visible():
+        page.press("#dd_dir", "Escape")
     with page.expect_navigation():
-        page.eval_on_selector('form[action="/prefs"]', "f => f.requestSubmit()")
+        page.click('form[action="/prefs"] button[type=submit]')
     page.wait_for_load_state()
     ok("saving redirects back with a confirmation note",
        page.locator(".flash").count() == 1
        and "Default directory: ~/projects" in page.locator(".flash").inner_text(),
        page.locator(".flash").inner_text() if page.locator(".flash").count() else "no .flash shown")
+    # ...at the Start card it was saved from, which is below the session
+    # list when sessions lead the page: not at the top of the page.
+    at = page.evaluate("""() => { const h = document.getElementById('start'), r = h.getBoundingClientRect();
+        return {next: h.nextElementSibling && h.nextElementSibling.className, top: r.top, h: innerHeight}; }""")
+    ok("...placed under the Start a session heading, which the page lands on",
+       at["next"] == "flash" and 0 <= at["top"] < at["h"] - 120, str(at))
     ok("the picker placeholder now names the new default",
        (page.locator("#dir").get_attribute("placeholder") or "").startswith("~/projects "),
        page.locator("#dir").get_attribute("placeholder"))
