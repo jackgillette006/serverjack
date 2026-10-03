@@ -1711,7 +1711,11 @@ def update_available():
 # after a restart.
 
 def _auto_dir(d):
-    return os.path.realpath(os.path.expanduser(d or HOME))
+    d = os.path.expanduser(d or HOME)
+    try:
+        return os.path.realpath(d)
+    except ValueError:                  # an embedded NUL byte (a hand-edited file)
+        return d
 
 
 def load_autostart():
@@ -3982,7 +3986,9 @@ def tool_card(t, st, open_=False):
                 btns = (abox
                         + f'<button class="btn sm sec" type="submit" form="{fid}">Stop</button>'
                         f'<a class="btn sm sec" href="{esc(term_href(inst["session"]))}">Open</a>')
-                rows.append(orow(esc(label), esc(server.get("note", "")), btns))
+                # The ticked box is the one entry, which may name another
+                # directory than the one it runs in now: say which.
+                rows.append(orow(esc(label), esc(server.get("note", "")) + on_boot, btns))
             else:
                 if entry:
                     aform, abox = autostart_box(f"a-{esc(tid)}-server", "server",
@@ -4921,10 +4927,18 @@ class Handler(BaseHTTPRequestHandler):
             if kind == "daemon" and not (t.get("daemon") or {}).get("start"):
                 return fail(f"No daemon is configured for {t['label']}.")
             cwd = HOME
-            if kind == "server":
+            if kind == "server" and f.get("on"):
                 cwd, err = resolve_dir(f.get("dir"), "")
                 if err:
                     return fail(err)
+            elif kind == "server":
+                # Unticking only forgets an entry, so it must neither need the
+                # directory nor create it: the row for a directory that is gone
+                # (deleted, a drive not mounted) exists so it can be unticked.
+                if "\0" in (f.get("dir") or ""):
+                    return fail("Not a directory.")
+                cwd = os.path.join(default_dir(),
+                                   os.path.expanduser((f.get("dir") or "").strip()))
             set_autostart(tid, kind, cwd, bool(f.get("on")),
                           per_dir=bool((t.get("server") or {}).get("per_dir")))
             return self.redirect("/")

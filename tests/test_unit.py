@@ -1820,6 +1820,93 @@ class ToolCardTests(unittest.TestCase):
         self.assertIn('form="a-oc-server" name="on" value="1" checked', out)
         self.assertNotIn('data-picker="1"', out)
 
+    def test_a_running_single_server_names_the_directory_it_starts_in_at_boot(self):
+        # Running in one directory, the boot entry for another: the ticked
+        # box alone read as "this one comes back at boot".
+        tool = {"id": "oc", "label": "OpenCode",
+                "server": {"label": "Server", "cmd": "opencode serve", "session": "opencode-serve",
+                           "note": "n"}}
+        tmp = tempfile.mkdtemp(prefix="sj-unit-boot-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        mod.set_autostart("oc", "server", tmp, True, per_dir=False)
+        live = [{"session": "oc-server", "dir": "~/projects/game", "state": "on"}]
+        out = mod.tool_card(tool, dict(self.st(live, "on"), id="oc"))
+        self.assertIn('form="a-oc-server" name="on" value="1" checked', out)
+        self.assertIn(f"n Starts at boot in <code>{tmp}</code>.", out)
+        self.assertIn(">Stop</button>", out)
+
+
+class _ToolRouteStub:
+    """Handler.do_tool() needs only redirect() and fail() from its instance."""
+
+    def __init__(self):
+        self.redirected = self.failed = None
+
+    def redirect(self, url):
+        self.redirected = url
+
+    def fail(self, msg, status=400, tid=""):
+        self.failed = (msg, status)
+
+
+class AutostartUntickTests(unittest.TestCase):
+    """The row for a boot directory that is gone says "Untick to forget it".
+    The untick went through resolve_dir(), which re-created a deleted
+    directory, and failed with 400 (keeping the entry) when it couldn't --
+    a project on a drive that is not mounted."""
+
+    def setUp(self):
+        self.tool = {"id": "cc", "label": "Claude",
+                     "server": {"label": "S", "cmd": "c", "session": "cc-remote", "per_dir": True}}
+        self.tmp = tempfile.mkdtemp(prefix="sj-unit-untick-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.p1 = mock.patch.object(mod, "find_tool", lambda tid: self.tool if tid == "cc" else None)
+        self.p2 = mock.patch.object(mod, "tool_state", lambda t, names=None: {"servers": []})
+        self.p1.start()
+        self.p2.start()
+        mod.save_autostart([])
+
+    def tearDown(self):
+        self.p1.stop()
+        self.p2.stop()
+        mod.save_autostart([])
+
+    def post(self, **form):
+        stub = _ToolRouteStub()
+        mod.Handler.do_tool(stub, "/tools/autostart", dict(id="cc", kind="server", **form))
+        return stub
+
+    def test_unticking_a_deleted_directory_forgets_it_without_re_creating_it(self):
+        gone = os.path.join(self.tmp, "deleted-proj")
+        mod.save_autostart([{"tool": "cc", "kind": "server", "dir": gone}])
+        stub = self.post(dir=gone)
+        self.assertEqual((stub.redirected, stub.failed), ("/", None))
+        self.assertEqual(mod.load_autostart(), [])
+        self.assertFalse(os.path.exists(gone))
+
+    def test_unticking_a_directory_that_cannot_be_created_still_forgets_it(self):
+        gone = "/proc/sj-unit-not-mounted/proj"
+        mod.save_autostart([{"tool": "cc", "kind": "server", "dir": gone},
+                            {"tool": "cc", "kind": "server", "dir": self.tmp}])
+        stub = self.post(dir=gone)
+        self.assertEqual((stub.redirected, stub.failed), ("/", None))
+        self.assertEqual([e["dir"] for e in mod.load_autostart()], [os.path.realpath(self.tmp)])
+
+    def test_a_nul_byte_in_the_directory_is_an_error_not_a_crash(self):
+        mod.save_autostart([{"tool": "cc", "kind": "server", "dir": self.tmp}])
+        stub = self.post(dir="a\0b")
+        self.assertEqual(stub.failed[1], 400)
+        self.assertEqual(len(mod.load_autostart()), 1)
+        self.assertEqual(mod._auto_dir("a\0b"), "a\0b")
+
+    def test_ticking_still_checks_the_directory(self):
+        stub = self.post(dir="/proc/sj-unit-not-mounted/proj", on="1")
+        self.assertEqual(stub.failed[1], 400)
+        self.assertEqual(mod.load_autostart(), [])
+        stub = self.post(dir=self.tmp, on="1")
+        self.assertEqual(stub.redirected, "/")
+        self.assertEqual([e["dir"] for e in mod.load_autostart()], [os.path.realpath(self.tmp)])
+
 
 class AutostartSingleServerTests(unittest.TestCase):
     def tearDown(self):
