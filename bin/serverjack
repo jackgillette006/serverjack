@@ -42,7 +42,8 @@ tapping it opens a window list.
 
 Routes
     GET  /                     the landing page; ?done=<what>&n=<name> shows a
-                               one-shot note after an in-place action,
+                               one-shot note after an in-place action (and
+                               ?ended=<name> "that session has ended"),
                                ?edit_sc=<id> opens a shortcut in the editor
     POST /                     303 to GET /, same query (WebKit reloads an error
                                page whose URL the page script reset as a POST
@@ -3543,7 +3544,7 @@ FLOWS_JS = r"""
 
   if (history.replaceState) {
     var q = new URLSearchParams(location.search);
-    ['done', 'n', 'open', 'k', 'dir_note'].forEach(function (k) { q.delete(k); });
+    ['done', 'n', 'open', 'k', 'dir_note', 'note', 'ended'].forEach(function (k) { q.delete(k); });
     // The editor's state is the page's, whatever the URL said: an edit that
     // came back with an error keeps it, a shortcut that is gone drops it.
     var ed = document.querySelector('#addsc input[name=id]');
@@ -4784,17 +4785,25 @@ def wants_agent_card(t, st):
 # stopped. Each of those POSTs answers with a redirect to
 # /?done=<what>&n=<name>[&open=<tool id>]#<section>, never a bare "/", so the
 # page comes back at the row or card the action was on, with the card open,
-# saying what happened. The sentence is built here from fixed templates and
-# is never echoed from the URL (a crafted link can't make the page say
-# anything it wouldn't say anyway). The page script moves the note next to
-# what it is about and strips these parameters from the address bar, so a
-# reload or Back doesn't show it again -- the URL carries it because this
-# app keeps no cookies or server-side session.
+# saying what happened. The page script moves the note next to what it is
+# about and strips these parameters from the address bar, so a reload or Back
+# doesn't show it again -- the URL carries it because this app keeps no
+# cookies or server-side session.
+#
+# What a crafted link can do with that: the sentence around the name is a
+# fixed template; the name inside its quotes (a session, a shortcut, a
+# folder) does come from the URL, escaped (text, never markup) and capped.
+# And a note is shown only while it is still true (_done_true): "Renamed to
+# x" and "Saved/Updated shortcut x" need x to exist, "Killed x", "x has
+# ended" and "stopped x" need session x to be gone and x to be a name a
+# session could have. "Removed shortcut x" and start at boot's folder are
+# not checked (labels needn't be unique), so a link can still put made-up
+# words inside those quotes.
 
 def _done_at(done, tid=""):
     """The element id a ?done= note belongs next to (also the redirect's
     #fragment): a section heading, a tool card, or "" for the top."""
-    if done in ("killed", "renamed"):
+    if done in ("killed", "renamed", "ended"):
         return "sessions"
     if done.startswith("sc-"):
         return "shortcuts"
@@ -4813,10 +4822,32 @@ def done_url(done, n="", tid="", kind=""):
     return url + (f"#{quote(at, safe='')}" if at else "")
 
 
+def _session_name_shaped(n):
+    """Could n be a session's name at all? validate_name()'s character rules,
+    without asking tmux whether it is taken -- and without its 60-character
+    cap, which only holds for names typed in: serverjack makes longer ones
+    itself (auto_name()'s -2 after a 60-character base, a per-directory
+    server's <session>-<folder>), and tmux takes any length."""
+    return (bool(n) and n == n.strip() and not n.startswith("$")
+            and not any(c in n for c in ":.\t\n\0"))
+
+
+def _done_true(done, n):
+    """Is what a ?done= note would say about n still so? See above."""
+    if done in ("killed", "ended", "server-stop", "renamed"):
+        return _session_name_shaped(n) and session_exists(n) == (done == "renamed")
+    if done in ("sc-saved", "sc-updated"):
+        return any((x.get("label") or x["cmd"]) == n for x in load_shortcuts())
+    return True
+
+
 def done_note(done, n="", tid="", kind=""):
     """(sentence, element id it belongs next to) for a ?done= redirect, or
-    ("", "") for anything unknown."""
-    n = (n or "")[:120]
+    ("", "") for anything unknown or no longer true."""
+    n = n or ""
+    if not _done_true(done, n):
+        return "", ""
+    n = n[:120]
     t = find_tool(tid) if tid else None
     tool = (t.get("label") or t["id"]) if t else ""
     part = (t.get(kind) or {}) if t and kind in ("server", "daemon") else {}
@@ -4827,6 +4858,8 @@ def done_note(done, n="", tid="", kind=""):
         "sc-saved": f"Saved shortcut “{n}”.",
         "sc-updated": f"Updated shortcut “{n}”.",
         "sc-removed": f"Removed shortcut “{n}”.",
+        # Where a terminal tab or link to a session that is gone lands.
+        "ended": f"Session “{n}” has ended.",
         # From the saved prefs, not the URL: a stale link can't claim an old default.
         "dir": f"Default directory: {_dir_show(default_dir())}",
     }
@@ -5230,13 +5263,16 @@ class Handler(BaseHTTPRequestHandler):
             # ?done=: an in-place action's one-shot confirmation (see
             # done_note()). ?dir_note= is the older spelling /prefs used,
             # still understood -- its text is no longer echoed, though.
+            # ?ended=<name> is short for ?done=ended&n=<name>.
             # ?edit_sc=<id>: open Add a shortcut as that shortcut's editor.
             q = parse_qs(urlparse(self.path).query)
 
             def arg(key):
                 return (q.get(key) or [""])[0]
-            done = arg("done") or ("dir" if arg("dir_note") else "")
-            note, at = done_note(done, arg("n"), arg("open"), arg("k"))
+            done = (arg("done") or ("dir" if arg("dir_note") else "")
+                    or ("ended" if arg("ended") else ""))
+            n = arg("ended") if done == "ended" and not arg("n") else arg("n")
+            note, at = done_note(done, n, arg("open"), arg("k"))
             kw = {}
             sid = arg("edit_sc")
             if sid:

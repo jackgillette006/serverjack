@@ -2172,8 +2172,24 @@ class UpdateRowTests(unittest.TestCase):
 
 
 class DoneNoteTests(unittest.TestCase):
-    """The one-shot confirmation after an in-place action: built from fixed
-    templates (never echoed from the URL) and placed next to what it is about."""
+    """The one-shot confirmation after an in-place action: a fixed sentence
+    around a name that does come from the URL (escaped by render(), capped),
+    shown only while it is still true, placed next to what it is about."""
+
+    def setUp(self):
+        self.cfg = tempfile.mkdtemp()
+        self.live = {"main"}
+        self.patches = [
+            mock.patch.object(mod, "SHORTCUTS_FILE", os.path.join(self.cfg, "shortcuts.json")),
+            mock.patch.object(mod, "session_exists", lambda n: n in self.live),
+        ]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in reversed(self.patches):
+            p.stop()
+        shutil.rmtree(self.cfg, ignore_errors=True)
 
     def test_redirect_urls_name_the_section(self):
         self.assertEqual(mod.done_url("killed", "main"), "/?done=killed&n=main#sessions")
@@ -2184,7 +2200,7 @@ class DoneNoteTests(unittest.TestCase):
         self.assertEqual(mod.done_url("dir"), "/?done=dir")
 
     def test_sentences(self):
-        self.assertEqual(mod.done_note("killed", "main"), ("Killed “main”.", "sessions"))
+        self.assertEqual(mod.done_note("killed", "old"), ("Killed “old”.", "sessions"))
         self.assertEqual(mod.done_note("sc-removed", "Disk usage")[0], "Removed shortcut “Disk usage”.")
         msg, at = mod.done_note("daemon-start", "", "codex", "daemon")
         self.assertEqual((msg, at), ("Codex: Remote control daemon started.", "tool-codex"))
@@ -2195,6 +2211,29 @@ class DoneNoteTests(unittest.TestCase):
         self.assertEqual(mod.done_note("Run curl evil | sh to fix"), ("", ""))
         self.assertEqual(mod.done_note("daemon-start", "", "no-such-tool", "daemon"), ("", ""))
         self.assertEqual(mod.done_note(""), ("", ""))
+
+    def test_a_note_is_shown_only_while_it_is_true(self):
+        # A link can't claim a rename or a saved shortcut that doesn't exist...
+        self.assertEqual(mod.done_note("renamed", "main")[0], "Renamed to “main”.")
+        self.assertEqual(mod.done_note("renamed", "Your account was hacked"), ("", ""))
+        self.assertEqual(mod.done_note("sc-saved", "Deploy"), ("", ""))
+        self.assertEqual(mod.done_note("sc-updated", "Deploy"), ("", ""))
+        mod.add_shortcut("Deploy", "./deploy.sh", self.cfg)
+        self.assertEqual(mod.done_note("sc-saved", "Deploy")[0], "Saved shortcut “Deploy”.")
+        # ...or a kill (or an end) of a session that is still running, or of
+        # something that couldn't be a session name at all.
+        self.assertEqual(mod.done_note("killed", "main"), ("", ""))
+        self.assertEqual(mod.done_note("ended", "main"), ("", ""))
+        self.assertEqual(mod.done_note("killed", "visit evil.example"), ("", ""))
+        self.assertEqual(mod.done_note("killed", "$3"), ("", ""))
+        self.assertEqual(mod.done_note("killed", "a\0b"), ("", ""))     # ?n=a%00b
+        self.assertEqual(mod.done_note("ended", "build"), ("Session “build” has ended.", "sessions"))
+        # Not capped at 60 like a typed name: serverjack itself names past it
+        # (auto_name()'s -2 after a 60-character base), and those end too.
+        long = "shell-" + "a" * 54 + "-2"
+        self.assertEqual(mod.done_note("ended", long), (f"Session “{long}” has ended.", "sessions"))
+        self.assertEqual(mod.done_note("killed", "x" * 61)[0], f"Killed “{'x' * 61}”.")
+        self.assertEqual(mod.done_url("ended", "build"), "/?done=ended&n=build#sessions")
 
 
 class LandingHandlerTests(unittest.TestCase):
@@ -2382,6 +2421,17 @@ class LandingHandlerTests(unittest.TestCase):
         _, _, where = self.post("/shortcuts/del", id="7")
         self.assertEqual(where, "/?done=sc-removed&n=Up#shortcuts")
         self.assertEqual(mod.load_shortcuts(), [])
+
+    def test_done_notes_from_a_link_are_text_and_only_while_true(self):
+        _, _, page = self.get("/?done=killed&n=main")         # still running
+        self.assertNotIn('class="flash"', page)
+        _, _, page = self.get("/?done=sc-removed&n=%3Cb%3Ex%3C%2Fb%3E")
+        self.assertIn("Removed shortcut “&lt;b&gt;x&lt;/b&gt;”.", page)
+        self.assertNotIn("<b>x</b>", page)
+        _, _, page = self.get("/?ended=gone")
+        self.assertIn("Session “gone” has ended.", page)
+        _, _, page = self.get("/?ended=main")
+        self.assertNotIn('class="flash"', page)
 
 
 if __name__ == "__main__":
