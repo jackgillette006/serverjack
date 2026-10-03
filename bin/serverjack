@@ -4764,7 +4764,14 @@ APP_JS = r"""
     var tries = 0;
     (function f() {
       var ta = textarea();
-      if (ta) { ta.focus(); body.classList.remove('conn'); }
+      if (ta) {
+        // Firefox ignores focus() on an element inside the frame while this
+        // page holds focus (a clicked button) unless the frame's own window
+        // is focused first; typing then went nowhere. Kept synchronous: iOS
+        // only raises the keyboard for a focus() made inside the tap itself.
+        try { frame.contentWindow.focus(); } catch (e) {}
+        ta.focus(); body.classList.remove('conn');
+      }
       else if (tries++ < 40) setTimeout(f, 100); else body.classList.remove('conn');
     })();
   }
