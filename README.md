@@ -308,6 +308,16 @@ only log in to the server -- the scheme has no way to carry a command),
 A session serverjack started as an agent's background server (see
 [Agent servers](#agent-servers)) carries a small **server** tag.
 
+The list keeps itself current without a reload: it re-reads the sessions
+every 15 seconds while the page is on screen and again whenever you come back
+to it (switching tabs, reopening the home-screen app), so the attached dots,
+the ages, and sessions started or ended somewhere else stay right -- which
+matters most on a desktop, where the list tab stays open while sessions pop
+out. Opening a session that has ended in the meantime says so instead of
+loading an error page; `/s/<name>` for a name that is gone sends you back to
+the list with a one-line note (or, in a pop-out window, shows a small
+"session ended" page with a Close button).
+
 Rename unfolds a small text box in place, focused, with the old name
 selected; the same rules as a new session apply, so tmux's forbidden
 characters (`:` and `.`), a leading `$` (tmux reads that as a session id) and

@@ -267,6 +267,22 @@ and this project uses [Semantic Versioning](https://semver.org/).
 - **Ctrl/Cmd/Shift-click on Open** gets the browser's own new tab or window
   on the normal session page, instead of our pop-up (or, on "Open here",
   instead of navigating the list away).
+- **The session list keeps itself current.** It was a snapshot from page
+  load: on a desktop, where the list tab stays open while sessions pop out,
+  and in the home-screen app, which resumes without reloading, sessions
+  killed or started elsewhere, attached dots and ages all went stale, and
+  Open on a session that had ended loaded a full copy of the landing page
+  with an error at `/s/<name>` (in a 1000x650 pop-up on desktop). The list
+  now re-reads the sessions every 15 seconds while visible and whenever the
+  page comes back, patching rows in place (never under an open menu), says
+  so when serverjack can't be reached, and Open on a session it knows has
+  ended shows a note instead. `/s/<name>` for a gone session redirects to the
+  list with a one-line note, or in a pop-out shows a small "session ended"
+  page with a Close button.
+- **The session you just left no longer shows as "attached".** The list was
+  rendered while the old page's terminal connection was still closing, so
+  every round trip marked that session attached; a second look a second
+  after load corrects it.
 - `/favicon.ico` answers with the app icon instead of a 404 on every desktop
   visit, and a client that hangs up mid-response (a phone locking, a tab
   closing) no longer leaves a `BrokenPipeError` traceback in the journal.
