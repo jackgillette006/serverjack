@@ -260,9 +260,13 @@ directory, how many windows, and how long it has been there. **Open** attaches
 (a pop-out window on a desktop, the same tab on a phone). The ⋯ menu has
 *Open here*, *Pop out*, the two SSH hand-offs, **Rename**, and *Kill session*.
 
+A session serverjack started as an agent's background server (see
+[Agent servers](#agent-servers)) carries a small **server** tag.
+
 Rename unfolds a small text box in place; the same rules as a new session
 apply, so tmux's forbidden characters (`:` and `.`) and a name something else
-already has are refused with the reason. Renaming a session leaves a browser
+already has are refused with the reason. Renaming a server's session is fine:
+its agent card still finds it. Renaming a session leaves a browser
 sitting on the old `/s/<name>` without a session. That is harmless: the page
 notices within 15 seconds that the name is gone and moves itself to another
 session, exactly as it does when a session is killed.
@@ -290,8 +294,10 @@ server).
 
 It's an **accordion**: one collapsed row per tool that still needs something,
 so it doesn't grow past what's actually unfinished. The row itself is the
-summary — tool name, state, and a pill for any server or daemon that is up —
-and tapping it opens the body while closing whichever row was open (native
+summary — tool name, state, and one pill per server or daemon, which for a
+per-directory server counts its instances ("Remote Control server: 2 running ·
+1 exited"; the open row lists each with its directory) — and tapping it opens
+the body while closing whichever row was open (native
 `<details name="agent">`, no JavaScript). serverjack never parses the tool's
 output; every button just launches a command in a tmux session and shows you
 the terminal.
@@ -304,15 +310,24 @@ A row is in one of three states:
    a device code, which is fine to read and tap in a phone browser.
 3. **Ready, with something to run in the background** — one **option row**
    per server, daemon or extra action: its label, a one-line note on how it
-   differs from the others, and the button. They end with a quiet
-   "Log in / switch account". A tool that's ready with nothing else to
-   configure (Gemini CLI, by default) has no row here at all.
+   differs from the others, and the button. A row whose button needs a
+   directory — starting a server, an action with `"dir": true` — has a
+   **Directory** picker of its own, and Enter in it presses that row's button
+   and nothing else; a card where nothing needs one (Codex) has no picker.
+   They end with a quiet "Log in / switch account". A tool that's ready with
+   nothing else to configure (Gemini CLI, by default) has no row here at all.
+
+The state on a card is current: installed is checked on every page load, and
+right after a Log in or Install finishes the card says so — no waiting for a
+cache. The logged-in check is otherwise remembered for a minute and refreshed
+in the background, so a slow or hung CLI (`claude auth status` with no
+network) never holds up the page; such a check gives up after 5 seconds.
 
 Background servers, per tool:
 
 | Tool | Server / daemon |
 |---|---|
-| Claude Code | **Remote Control server**: `claude remote-control`, started in the directory you pick, in a tmux session named `claude-remote-<dir>`. No local chat — the Claude app starts sessions here on demand, several at once. One server per project directory, so the row lists every running one with its directory and Start adds another; prints a QR code, gives up after ~10 minutes without network |
+| Claude Code | **Remote Control server**: `claude remote-control`, started in the directory you pick, in a tmux session named `claude-remote-<dir>` (`-2`, `-3`… when another directory has the same name). No local chat — the Claude app starts sessions here on demand, several at once. One server per project directory, so the card lists every one with its directory and Start adds another — or, for a directory that already has one running, says so and leaves it alone; prints a QR code, gives up after ~10 minutes without network |
 | Codex | **Pair with phone**: `codex remote-control pair`, prints a short-lived pairing code, plus a **Remote control daemon**: `codex remote-control start` / `stop` (status from `~/.codex/app-server-daemon/app-server.pid`). The ChatGPT app connects to the daemon and opens Codex sessions in any directory on this machine |
 | OpenCode | **Server for the mobile app**: `opencode serve` in tmux session `opencode-serve`. Binds 127.0.0.1:4096 by default; override `cmd` in `tools.json` to reach it over Tailscale |
 | GitHub Copilot CLI | — |
@@ -338,7 +353,9 @@ daemon commands, and every session serverjack starts.
 
 ### Start at boot
 
-Every server and daemon option row has a small **start at boot** checkbox. Tick
+Every server and daemon option row has a small **start at boot** checkbox. For
+a per-directory server (Claude's) that means the row of each server you have
+started, since the entry is for that directory; the Start row has none. Tick
 it and the thing is recorded in `~/.config/serverjack/autostart.json`:
 
 ```json
@@ -358,7 +375,12 @@ every decision is logged to `journalctl --user -u serverjack`.
 
 Stopping something from the page **removes** its entry, so a deliberate stop
 does not come back after the next restart. Starting something does not add one
-unless you tick the box.
+unless you tick the box, and ticking one does not start anything now.
+
+A saved directory with nothing running in it keeps a row of its own on the
+card, "Starts at boot; not running now", with the box ticked — untick it there
+to forget the entry, or press Start. A server that only runs once (OpenCode's)
+has one entry at most, and its row says which directory it starts in.
 
 ## Why this and not X
 
@@ -878,7 +900,7 @@ unrecognized `id` is appended as a new tool.
 | `run` | interactive command; having one is what makes the tool a radio in Start a session (missing means the tool can only be installed/logged in below) |
 | `run_note` | unused now, kept for compatibility with an existing `tools.json` — Start a session doesn't show a per-tool note |
 | `paths` | extra directories (may use `~`) to look for `bin` in, on top of `PATH` |
-| `server` | `{label, cmd, session, note, per_dir}` — long-running command kept in a named tmux session; `per_dir: true` means one per project directory, sessions named `<session>-<dir>`, each listed with its directory |
+| `server` | `{label, cmd, session, note, per_dir}` — long-running command kept in a named tmux session; `per_dir: true` means one per project directory, sessions named `<session>-<dir>` (`-2` when the name is taken), each listed with its directory. serverjack marks the sessions it starts (tmux session options `@sj_server`/`@sj_dir`) and finds them by that, not by name: a renamed server is still yours, and an interactive session that happens to share the prefix is never taken for one |
 | `daemon` | `{label, start, stop, pidfile, note}` — self-daemonizing command with start/stop and a pidfile for status |
 | `actions` | list of `{label, cmd, note, dir}` extra option rows; `note` is the one-liner beside it, `"dir": true` gives it the directory picker |
 
@@ -1030,6 +1052,11 @@ uid 65534, 0 and 101 (including `/term/`), that an unknown `Host:` gets 421, and
 that the terminal's WebSocket accepts a same-origin and refuses a foreign
 origin through the proxy; another starts a throwaway instance with an
 `autostart.json` pointing at a fake server to prove it comes up on its own.
+`pwagents` starts instances of its own with fake agent servers (`sleep`) and
+drives the agent cards: a server started from its card reads running and a
+second Start leaves it alone, two same-named directories get a server each, a
+renamed server is still found, start-at-boot entries are visible and
+untickable, and a login that finishes shows up at once.
 `docs/MANUAL-TESTS.md` is a checklist for real devices; iOS Safari's
 soft-keyboard behavior is only verifiable there.
 

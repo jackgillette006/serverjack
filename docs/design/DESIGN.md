@@ -99,6 +99,11 @@ tube warm-up on page load, a collapse-to-a-line when leaving through one of our
 own controls, a scanline sweep while the terminal connects, an almost invisible
 flicker/roll on the page background, and a static phosphor glow on the wordmark.
 
+The collapse must never become the screen's resting state: if the next page has
+not arrived shortly after it (a slow server, a dropped network), the old page
+comes back. A home-screen app has no loading bar, so a blank screen held until
+the response arrives reads as a hang.
+
 Rules:
 
 - **Opacity and transform only.** Those are the properties a compositor can
