@@ -1,11 +1,20 @@
 """Terminal input: the soft-key row, its Ctrl latch, Paste/Copy and focus.
 
 Every check reads what the terminal really received off the tmux pane. The
-suite makes its own scratch sessions (pwinput, pwinput2, pwinput-gone) and
-kills them at the end, so it does not disturb run.sh's "pwtest". A "raw
+suite makes its own scratch sessions (pwinput, pwinput2, pwinput-gone,
+pwscroll) and kills them at the end, so it does not disturb run.sh's
+"pwtest". A "raw
 logger" is `cat -v` with the tty's line editing, signals and echo off, so
 each byte the page sends shows up as one visible token (ESC as ^[, 0x1c as
 ^\\, DEL as ^?).
+
+The second half is scrolling, the clipboard and two screens on one session:
+typing after a wheel or a swipe (here or on the other device) runs as typed
+instead of going to tmux's copy mode; Ctrl+wheel never reaches the program;
+wheel travel per row; tmux mouse mode toggled under an open page; the
+selection dropped by a scroll, copies without tmux's padding, Ctrl+C after a
+copy, Ctrl+Shift+C; the Paste key's bracketed paste (Firefox included); the
+leave prompt; and which screen gets the session's size.
 
 Engines: Chromium desktop (mouse and keyboard), Chromium Pixel 7 (real touch
 gestures through CDP: swipes and holds, which Playwright's WebKit cannot
@@ -119,6 +128,60 @@ def inside(page, sel):
     """the element's box lies wholly inside the viewport, without scrolling anything"""
     return page.evaluate("""s => { const r = document.querySelector(s).getBoundingClientRect();
       return r.width > 0 && r.left >= 0 && r.right <= innerWidth + 0.5; }""", sel)
+
+
+SC = "pwscroll"            # scrolling, clipboard, two screens
+HAS_SEL = "document.getElementById('frame').contentWindow.term.hasSelection()"
+TERM_SIZE = "(t => [t.cols, t.rows])(document.getElementById('frame').contentWindow.term)"
+# What happened to the next wheel / Ctrl+Shift+C keydown in the frame: a window
+# capture listener sees the event first, and reads defaultPrevented once the
+# page's own handlers are done with it.
+WATCH = """kind => { const w = document.getElementById('frame').contentWindow; window.__seen = [];
+  w.addEventListener(kind, e => { if (kind === 'keydown' && e.code !== 'KeyC') return;
+    setTimeout(() => window.__seen.push(e.defaultPrevented), 0); }, true); }"""
+
+
+def mode(name=SC):
+    """(pane_in_mode, scroll_position, serverjack's copy-mode mark)"""
+    out = tmux("display", "-p", "-t", f"={name}:", "#{pane_in_mode}\t#{scroll_position}\t#{@serverjack_scrolled}")
+    return tuple((out.stdout.rstrip("\n").split("\t") + ["", "", ""])[:3])
+
+
+def window(name=SC):
+    return tmux("display", "-p", "-t", f"={name}:", "#{window_width}x#{window_height}").stdout.strip()
+
+
+def history(name=SC, n=300):
+    fresh(name)
+    shell(f"clear; seq 1 {n}", name)
+    time.sleep(0.6)
+
+
+def cell_h(page):
+    return page.evaluate("""(() => { const f = document.getElementById('frame'), t = f.contentWindow.term;
+      return f.contentDocument.querySelector('.xterm-screen').getBoundingClientRect().height / t.rows; })()""")
+
+
+def over_term(page):
+    box = page.locator("#frame").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    return box
+
+
+def ran(token, name=SC):
+    """`echo hello <token>` ran as typed: its output line is there, and no
+    fragment of it ran as a command of its own"""
+    out = pane(name)
+    return any(line.strip() == "hello " + token for line in out.splitlines()) and "not found" not in out
+
+
+def row_y(page, needle, name=SC):
+    """page y of the (last) row of the pane that contains needle"""
+    rows = pane(name).split("\n")
+    i = max(n for n, r in enumerate(rows) if needle in r and not r.startswith("$"))
+    box = page.locator("#frame").bounding_box()
+    h = cell_h(page)
+    return box["y"] + h * i + h / 2
 
 
 def dispatch_tap(page, sel, **up):
@@ -469,8 +532,265 @@ try:
         ok("leaving for the session list closes the view", moved and not page.locator("#screen").is_visible(),
            where())
         b.close()
+
+        # ================================================================
+        # Scrolling, the clipboard and two screens on one session
+        # ================================================================
+        mk(SC)
+        for bt in ("chromium", "firefox", "webkit"):
+            print(bt + " desktop, scrolling and clipboard:")
+            b = getattr(p, bt).launch()
+            ctx = b.new_context(viewport={"width": 1280, "height": 800},
+                                **({"permissions": ["clipboard-read", "clipboard-write"]} if bt == "chromium" else {}))
+            page = ctx.new_page()
+            page.on("pageerror", lambda e: print("   [pageerror]", e))
+            # The page asks before it is left (below). Navigations made by the
+            # test itself say yes; while the prompt is under test, it is
+            # recorded and answered "stay".
+            asked, guard = [], [False]
+
+            def on_dialog(d):
+                if not guard[0]:
+                    return d.accept()
+                asked.append(d.type)
+                d.dismiss()
+            page.on("dialog", on_dialog)
+            open_term(page, SC, keys=False)
+
+            # Typing while scrolled back goes to the program, not to tmux's
+            # copy mode (which ate "echo " and ran "hello ...").
+            history()
+            over_term(page)
+            page.mouse.wheel(0, -(cell_h(page) * 10 + 2)); time.sleep(0.7)
+            ok("a wheel of 10 rows' travel scrolls tmux 10 lines", mode()[:2] == ("1", "10"), mode())
+            tok = "WHEEL" + bt[:2].upper()
+            page.keyboard.type(f"echo hello {tok}"); page.keyboard.press("Enter")
+            ok("typing while scrolled back leaves copy mode and runs the line as typed",
+               wait_for(lambda: ran(tok)) and mode()[0] == "0", pane(SC)[-240:])
+
+            # Esc only leaves the scrollback; Ctrl+wheel (and a pinch) is the
+            # browser's zoom and never reaches the program.
+            fresh(SC)
+            shell("seq 1 100; stty -icanon -isig -iexten -echo -ixon -icrnl; cat -v", SC)
+            wait_for(lambda: cmd(SC) == "cat"); time.sleep(0.4)
+            over_term(page)
+            page.mouse.wheel(0, -(cell_h(page) * 3 + 2)); time.sleep(0.6)
+            page.keyboard.press("Escape"); time.sleep(0.5)
+            ok("Esc leaves the scrollback and sends nothing on", mode()[0] == "0" and logged(SC).endswith("100"),
+               (mode(), logged(SC)[-40:]))
+            page.evaluate(WATCH, "wheel")
+            page.keyboard.down("Control")
+            page.mouse.wheel(0, -120); time.sleep(0.3); page.mouse.wheel(0, 120); time.sleep(0.3)
+            page.keyboard.up("Control"); time.sleep(0.4)
+            seen = page.evaluate("window.__seen")
+            ok("Ctrl+wheel sends nothing to the program and isn't scrolled", logged(SC).endswith("100")
+               and mode()[0] == "0", (mode(), logged(SC)[-40:]))
+            ok("...and is left to the browser (not cancelled, so it zooms)", seen and not any(seen), seen)
+            page.keyboard.type("k"); time.sleep(0.4)
+            ok("...and typing still arrives", logged(SC).endswith("100\nk"), logged(SC)[-40:])
+
+            # tmux mouse mode changed under the open page: the wheel follows it.
+            history(n=100)
+            tmux("set-option", "-t", f"={SC}:", "mouse", "on")
+            page.reload(); open_term(page, SC, keys=False)
+            tmux("set-option", "-t", f"={SC}:", "mouse", "off"); time.sleep(1.0)
+            over_term(page)
+            page.mouse.wheel(0, -(cell_h(page) * 4 + 2)); time.sleep(0.7)
+            scrolled = mode()
+            tmux("send-keys", "-t", f"={SC}:", "-X", "cancel"); time.sleep(0.3)
+            ok("mouse turned off while open: the wheel scrolls (no arrow keys typed)",
+               scrolled[0] == "1" and pane(SC).rstrip().endswith("$"), (scrolled, pane(SC)[-60:]))
+            tmux("set-option", "-t", f"={SC}:", "mouse", "on"); time.sleep(1.0)
+            page.mouse.wheel(0, -(cell_h(page) * 4 + 2)); time.sleep(0.7)
+            ok("mouse turned on while open: tmux scrolls it itself (no serverjack mark)",
+               mode()[0] == "1" and mode()[2] == "", mode())
+            tmux("send-keys", "-t", f"={SC}:", "-X", "cancel")
+            tmux("set-option", "-u", "-t", f"={SC}:", "mouse")
+
+            # A scroll moves the text under xterm's selection (it stayed on the
+            # same screen cells, over other lines): it is dropped.
+            fresh(SC)
+            shell("clear; for i in $(seq 1 300); do echo row-$i; done", SC); time.sleep(0.8)
+            box = page.locator("#frame").bounding_box()
+            page.mouse.click(box["x"] + 30, row_y(page, "row-280"), click_count=3, delay=60); time.sleep(0.3)
+            had = page.evaluate(HAS_SEL)
+            over_term(page); page.mouse.wheel(0, -200); time.sleep(0.8)
+            left = page.evaluate(HAS_SEL) and page.evaluate("document.getElementById('frame').contentWindow.term.getSelection()")
+            ok("a selection is dropped when the page scrolls tmux", had and not left, (had, left))
+            tmux("send-keys", "-t", f"={SC}:", "-X", "cancel")
+
+            # Ctrl+Shift+C copies, and is never the browser's (DevTools' picker).
+            # Not in WebKit: its user agent says Mac, where Cmd copies.
+            if bt != "webkit":
+                rawlog(SC)
+                page.evaluate(WATCH, "keydown")
+                page.keyboard.press("Control+Shift+C"); time.sleep(0.4)
+                ok("Ctrl+Shift+C with nothing selected: kept from the browser, nothing typed",
+                   page.evaluate("window.__seen") == [True] and logged(SC) == "",
+                   (page.evaluate("window.__seen"), logged(SC)))
+
+            # The Paste key: one bracketed paste, also in Firefox (it used to be empty there).
+            fresh(SC)
+            shell("printf '\\e[?2004h'; stty -icanon -isig -iexten -echo -ixon -icrnl; clear; cat -v", SC)
+            wait_for(lambda: cmd(SC) == "cat"); time.sleep(0.4)
+            page.evaluate("Object.defineProperty(navigator, 'clipboard', { configurable: true, "
+                          "value: { readText: () => Promise.resolve('echo L1\\necho L2') } })")
+            page.click("#keysbtn"); time.sleep(0.2)
+            page.click("#paste"); time.sleep(0.8)
+            ok("the Paste key pastes once, bracketed, newlines as Enter",
+               logged(SC) == "^[[200~echo L1^Mecho L2^[[201~", repr(logged(SC)))
+            page.click("#keysbtn"); time.sleep(0.2)
+
+            # Leaving: Ctrl+W (a close the page can't see) asks first; serverjack's own exits don't.
+            open_term(page, SC, keys=False)
+            page.keyboard.type("x"); time.sleep(0.2)
+            guard[0] = True
+            page.click(f"#tabs .tab[data-name='{S2}']"); page.wait_for_timeout(800)
+            page.click(f"#tabs .tab[data-name='{SC}']"); page.wait_for_timeout(800)
+            page.click("#bar a.ib"); page.wait_for_url(f"{BASE}/", timeout=5000)
+            guard[0] = False
+            open_term(page, SC, keys=False)
+            page.keyboard.type("x"); time.sleep(0.2)
+            guard[0] = True
+            page.click("#close"); page.wait_for_url(f"{BASE}/", timeout=5000)
+            ok("switching sessions, the logo and x leave without asking", asked == [], asked)
+            guard[0] = False
+            open_term(page, SC, keys=False)
+            page.keyboard.type("x"); time.sleep(0.2)
+            guard[0] = True
+            keeper = ctx.new_page()
+            page.close(run_before_unload=True); keeper.wait_for_timeout(1000)
+            ok("closing the tab (what Ctrl+W does) asks first", asked == ["beforeunload"] and not page.is_closed(), asked)
+            b.close()
+
+        # Clipboard detail where the clipboard can be read (Chromium).
+        print("chromium desktop, copying:")
+        b = p.chromium.launch()
+        page = b.new_context(viewport={"width": 1280, "height": 800},
+                             permissions=["clipboard-read", "clipboard-write"]).new_page()
+        page.on("pageerror", lambda e: print("   [pageerror]", e))
+        open_term(page, SC, keys=False)
+        fresh(SC)
+        shell("clear; printf 'PADDED_LINE      \\n'", SC); time.sleep(0.6)
+        box = page.locator("#frame").bounding_box()
+        page.mouse.click(box["x"] + 30, row_y(page, "PADDED_LINE"), click_count=3, delay=60); time.sleep(0.3)
+        raw = page.evaluate("document.getElementById('frame').contentWindow.term.getSelection()")
+        page.evaluate("navigator.clipboard.writeText('')")
+        page.keyboard.press("Control+c"); time.sleep(0.5)
+        clip = page.evaluate("navigator.clipboard.readText()")
+        ok("copied lines lose the trailing spaces drawn on screen", raw.startswith("PADDED_LINE ")
+           and clip == "PADDED_LINE", (raw, clip))
+        shell("clear; echo SHIFTCOPY", SC); time.sleep(0.6)
+        page.mouse.click(box["x"] + 30, row_y(page, "SHIFTCOPY"), click_count=3, delay=60); time.sleep(0.3)
+        page.evaluate("navigator.clipboard.writeText('')")
+        page.evaluate(WATCH, "keydown")
+        page.keyboard.press("Control+Shift+C"); time.sleep(0.5)
+        ok("Ctrl+Shift+C copies the selection, kept from the browser",
+           page.evaluate("navigator.clipboard.readText()") == "SHIFTCOPY" and page.evaluate("window.__seen") == [True],
+           (page.evaluate("navigator.clipboard.readText()"), page.evaluate("window.__seen")))
+        ok("...and drops the selection, as Ctrl+C does", not page.evaluate(HAS_SEL))
+        b.close()
+
+        # ---------------------------------- two screens on one session
+        print("two screens (chromium desktop + webkit iphone 14):")
+        bd, bw = p.chromium.launch(), p.webkit.launch()
+        desk = bd.new_context(viewport={"width": 1280, "height": 800}).new_page()
+        desk.on("pageerror", lambda e: print("   [desk pageerror]", e))
+        dev = dict(p.devices["iPhone 14"]); dev.pop("default_browser_type", None)
+        phone = bw.new_context(**dev).new_page()
+        phone.on("pageerror", lambda e: print("   [phone pageerror]", e))
+        phone.on("dialog", lambda d: d.accept())          # its reload below, after typing
+        history()
+        open_term(desk, SC, keys=False)
+        open_term(phone, SC, keys=False)
+        dsize, psize = desk.evaluate(TERM_SIZE), phone.evaluate(TERM_SIZE)
+        ok("the phone attaching takes the window (tmux: latest client)", window() == "%dx%d" % tuple(psize),
+           (window(), psize))
+        ok("both pages say the session is also open on another screen",
+           wait_for(lambda: not desk.locator("#screens").is_hidden() and not phone.locator("#screens").is_hidden(), 8)
+           and "another screen" in (desk.get_attribute("#screens", "aria-label") or ""))
+        land = bd.new_page(); land.goto(f"{BASE}/")
+        meta = land.locator(f".sess:has(a.open[data-name={SC}]) .meta").inner_text()
+        ok("the landing row says how many screens", "attached on 2 screens" in meta, meta)
+        land.close()
+
+        # Copy mode entered from the phone is left before the desktop's typing.
+        phone.evaluate(f"fetch('/api/scroll', {{ method: 'POST', body: new URLSearchParams({{ name: '{SC}', lines: 10 }}) }})")
+        wait_for(lambda: mode()[0] == "1")
+        ok("the phone's scroll puts the shared pane in copy mode", mode() == ("1", "10", "1"), mode())
+        time.sleep(2.5)                                   # the desktop's poll while it has focus
+        desk.keyboard.type("echo hello DESKTOP"); desk.keyboard.press("Enter")
+        ok("...and the desktop's next line still runs as typed", wait_for(lambda: ran("DESKTOP")), pane(SC)[-240:])
+        phone.evaluate(f"fetch('/api/scroll', {{ method: 'POST', body: new URLSearchParams({{ name: '{SC}', lines: 5 }}) }})")
+        wait_for(lambda: mode()[0] == "1"); time.sleep(0.6)
+        phone.keyboard.type("echo hello PHONE"); phone.keyboard.press("Enter")
+        ok("typing on the phone right after its own scroll runs as typed", wait_for(lambda: ran("PHONE")), pane(SC)[-240:])
+        tmux("copy-mode", "-t", f"={SC}:"); time.sleep(2.5)      # prefix-[ in some client: the user's copy mode
+        desk.keyboard.type("z"); time.sleep(0.6)
+        ok("copy mode the user entered themselves is left alone", mode()[0] == "1" and mode()[2] == "", mode())
+        tmux("send-keys", "-t", f"={SC}:", "-X", "cancel")
+
+        # The screen you engage with takes the size back; no key is sent.
+        rawlog(SC)
+        phone.reload(); open_term(phone, SC, keys=False)          # phone attached last: it has the size
+        wait_for(lambda: window() == "%dx%d" % tuple(phone.evaluate(TERM_SIZE)))
+        box = desk.locator("#frame").bounding_box()
+        desk.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        ok("clicking in the desktop's terminal gives it the size back",
+           wait_for(lambda: window() == "%dx%d" % tuple(dsize)), (window(), dsize))
+        phone.tap("#screens")
+        ok("tapping the screens cue on the phone takes it for the phone",
+           wait_for(lambda: window() == "%dx%d" % tuple(phone.evaluate(TERM_SIZE))), window())
+        desk.wait_for_timeout(1100)
+        desk.evaluate("window.dispatchEvent(new Event('focus'))")
+        ok("the desktop window taking focus takes it back", wait_for(lambda: window() == "%dx%d" % tuple(dsize)), window())
+        ok("...and none of that typed anything", logged(SC) == "", repr(logged(SC)))
+        phone.context.close()
+        ok("with the phone gone the cue goes too", wait_for(lambda: desk.locator("#screens").is_hidden(), 8))
+        bd.close(); bw.close()
+
+        # 320px: the cue appearing keeps the current tab in view.
+        bs, bw = p.chromium.launch(), p.webkit.launch()
+        other = bs.new_page(); open_term(other, SC, keys=False)
+        dev = dict(p.devices["iPhone SE"]); dev.pop("default_browser_type", None)
+        page = bw.new_context(**dev).new_page()
+        open_term(page, SC)
+        shown = wait_for(lambda: not page.locator("#screens").is_hidden(), 8)
+        # how much of the current tab's width the strip shows
+        inview = page.evaluate("""(() => { const t = document.querySelector('#tabs .tab.on').getBoundingClientRect(),
+          s = document.getElementById('tabs').getBoundingClientRect();
+          return (Math.min(t.right, s.right) - Math.max(t.left, s.left)) / t.width; })()""")
+        ok("320px: the cue shows and the current tab stays in view", shown and inview > 0.95, (shown, inview))
+        page.screenshot(path="shots/pwinput-320-screens.png")
+        bs.close(); bw.close()
+
+        # ------------------------- Pixel 7: a real swipe, then a predicted word
+        print("chromium pixel 7, swipe then type:")
+        b = p.chromium.launch()
+        dev = dict(p.devices["Pixel 7"]); dev.pop("default_browser_type", None)
+        ctx = b.new_context(**dev)
+        page = ctx.new_page()
+        page.on("pageerror", lambda e: print("   [pageerror]", e))
+        cdp = ctx.new_cdp_session(page)
+        open_term(page, SC)
+        history()
+        fb = page.locator("#frame").bounding_box()
+        x, y0 = fb["x"] + fb["width"] / 2, fb["y"] + fb["height"] * 0.3
+        h = cell_h(page)
+        cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y0}]})
+        for i in range(1, 13):
+            time.sleep(0.016)
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x, "y": y0 + (h * 12 + 4) * i / 12}]})
+        cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+        time.sleep(0.8)
+        ok("a 12-row swipe scrolls 12 lines", mode()[:2] == ("1", "12"), mode())
+        page.keyboard.insert_text("echo hello SWIPED"); time.sleep(0.1)
+        page.keyboard.press("Enter")
+        ok("a word arriving as text (prediction, dictation) right after runs as typed",
+           wait_for(lambda: ran("SWIPED")) and mode()[0] == "0", pane(SC)[-240:])
+        b.close()
 finally:
-    for n in (S, S2, GONE):
+    for n in (S, S2, GONE, SC):
         tmux("kill-session", "-t", f"={n}")
 
 if fails:
