@@ -243,7 +243,9 @@ Naming the session is optional — leave it blank and it is named for the type
 and directory instead (a shell in `~/projects/3d-lab` becomes `shell-3d-lab`,
 `claude` in `~/projects/game` becomes `claude-game`; a command names it after
 what it runs, skipping `sudo`/`env`/`nice` and their options, so
-`sudo -u postgres psql` becomes `psql`).
+`sudo -u postgres psql` becomes `psql`). The **+** in a terminal's bar opens
+the same choice as a small panel (a bottom sheet on a phone), with the same
+rules; Escape, Cancel, **+** again or a tap in the terminal closes it.
 
 A multi-line command runs line by line, as it would in a terminal. If
 something is refused — a name already taken, a folder that isn't one — the
@@ -288,8 +290,11 @@ extracted by hand has neither `serverjack-ctl` nor `git pull` to run.
 
 The unit restart either path ends in is fine from inside the browser: the
 unit is `KillMode=process`, so the tmux server and this session outlive the
-restart, and the page reconnects to the same session as soon as the new
-process is listening.
+restart, and the page reconnects to the same session on its own a few
+seconds after the new process is listening — no tap, no Enter. (The same
+happens for any restart of serverjack or ttyd, and for a phone that wakes
+before its network is back: the page retries with a short backoff until
+serverjack and ttyd both answer, then reloads the terminal.)
 
 ## Sessions
 
@@ -326,19 +331,31 @@ the field. Renaming a server's session is fine: its agent card still finds
 it. Kill and Rename both happen in place — the row goes or changes, the
 agent card of a server whose session it was is redrawn to match, and
 nothing else on the page (a half-typed Start card, the scroll position)
-moves. Renaming a session leaves a browser
-sitting on the old `/s/<name>` without a session. That is harmless: the page
-notices within 15 seconds that the name is gone and moves itself to another
-session, exactly as it does when a session is killed.
+moves. A browser that has the session open
+somewhere else follows the rename: within 15 seconds (at once when you switch
+back to it) its tab, URL and title show the new name, and the terminal stays
+attached.
+
+When the session you are looking at ends — you typed `exit`, or it was
+killed elsewhere — the page notices straight away and takes you to the
+session list, which says “… has ended”; a pop-out window just closes. It
+never moves you to some other session on its own, so nothing you type next
+can land somewhere you did not pick.
 
 ### tmux windows
 
 The bar's tabs are *sessions*. Windows live inside a session, and when the one
-you are looking at has more than one the active tab gains a small count badge
-(`pwtest · 2/3`). Tapping the active tab opens a compact list of the windows —
-index, name, and the command running in each, with the current one marked —
-and tapping one selects it. With a single window the active tab does nothing,
-as before.
+you are looking at has more than one the active tab gains a small badge with
+the window count and a caret (`pwtest · 3 ▾`). Tapping the active tab opens a
+compact list of the windows — tmux's own index, the name, and the command
+running in each, with the current one marked — and tapping one selects it.
+The list is fetched fresh when it opens, so a window switched or made from
+another device or with a tmux key shows up correctly. With a single window
+the active tab does nothing, as before.
+
+Tabs that don't fit scroll sideways — a swipe on a phone, the mouse wheel on
+a desktop — and the edge with more tabs past it fades out. A long session
+name is cut short with an ellipsis; the full name is in the tab's tooltip.
 
 Selecting a window is a tmux operation, not a browser one, so **every client
 attached to that session moves with you** — the phone and the desktop are
@@ -743,7 +760,11 @@ Flags (all optional):
 tmux pane's history: the page asks serverjack, which puts the pane into
 copy mode and moves it, leaving copy mode again at the bottom. Nothing in
 your tmux config is touched, and a mouse drag still selects text. If a
-session has `mouse on`, tmux gets the wheel directly instead.
+session has `mouse on`, tmux gets the wheel directly instead. Because tmux
+keeps the history, the terminal's own (xterm.js) scrollback is set to 0
+(unless you set one with `-t scrollback=` in `TTYD_EXTRA_ARGS`) and its
+scrollbar hidden: there is never anything for it to scroll, and the grid
+gets the full width of the window.
 
 The value flags write into `~/.config/serverjack/env` — they set the
 initial value when the file is created, and rewrite just that line if you pass
@@ -941,7 +962,7 @@ Works, with four things to know first:
 | `SERVERJACK_TERM_THEME` | unset (on) | `off` (or `0`/`no`/`false`) skips the default terminal color theme (built from the app's own tokens and passed to ttyd as a `-t theme=...` server option), leaving ttyd's stock xterm.js look. A `-t theme=...` (or `--client-option[=]theme=...`) of your own in `TTYD_EXTRA_ARGS` is detected automatically and also skips it, so your theme is what applies -- no need to set this too |
 | `SERVERJACK_TMUX_STATUS` | `off` | sessions opened from the page get tmux's status line turned off (the bar shows tabs and window count instead); `on` leaves tmux alone |
 | `SERVERJACK_SSH` | `auto` | `user@host` for the SSH menu items (tailnet DNS name if Tailscale is up, else hostname); `off` hides them |
-| `SERVERJACK_FX` | unset (on) | `off` (or `0`/`no`/`false`) turns the CRT effects off by default; each browser can still flip them with the **CRT fx** toggle |
+| `SERVERJACK_FX` | unset (on) | `off` (or `0`/`no`/`false`) turns the CRT effects off by default; each browser can still flip them with the **CRT fx** toggle in the landing page's footer |
 | `SERVERJACK_CONFIG` | `~/.config/serverjack` | config directory override |
 | `SERVERJACK_AUTOSTART_DELAY` | `15` | seconds after startup before `autostart.json` is acted on |
 
@@ -1086,7 +1107,8 @@ on that Unix socket, inside a `0700` directory, and serverjack forwards
 everything under `SERVERJACK_TERM` to it — request line with the prefix
 stripped, headers verbatim (so ttyd's own origin check still sees the real
 `Host` and `Origin`), then raw bytes in both directions once the WebSocket
-upgrade succeeds. If ttyd is down you get a 502 page saying so, in the frame.
+upgrade succeeds. If ttyd is down you get a 502 page saying so, in the frame,
+and the page keeps retrying and puts the terminal back once ttyd answers.
 
 (In `SERVERJACK_LISTEN=unix` mode serverjack's own backend is
 `$XDG_RUNTIME_DIR/serverjack/web.sock` instead of the port.)
