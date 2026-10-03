@@ -122,6 +122,12 @@ result() {
 echo "== ttyd wrapper security (host-side)"
 bash ./security-wrapper.sh
 
+# bin/tmux-attach.sh's status line / fill-character bookkeeping: put back
+# exactly what was there when the last page leaves, and no page undoing
+# another's. Its own private tmux server; no browser, no ttyd.
+echo "== tmux-attach.sh restore (host-side)"
+python3 ./attach_restore.py
+
 # Plain unittest against bin/serverjack's pure(ish) helpers -- no server, no
 # browser, imports the file with importlib since it has no .py suffix. Runs
 # before anything else starts so a broken helper fails fast.

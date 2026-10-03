@@ -554,7 +554,6 @@ and this project uses [Semantic Versioning](https://semver.org/).
   was to type something into the session. The screen you use now takes the
   size back when you click or tap in its terminal or return to the page,
   without sending a key.
-
 - **Terminal colours.** Grey hint text (SGR 90: shell autosuggestions, CLI
   hint lines, htop's quieter columns) was 2.29:1 on the dark background,
   darker than stock ttyd, and `ls -l` drew setuid files (`sudo`, `passwd`)
@@ -593,8 +592,12 @@ and this project uses [Semantic Versioning](https://semver.org/).
   turned its status line off for good, so "Copy SSH command" later opened a
   tmux with no window list or session name. It is still off for every
   client while a page has the session open (tmux can't hide it for one
-  client only), but goes back to your own setting the moment the last page
-  leaves -- also for an SSH client that stayed attached.
+  client only), but goes back to what it was the moment the last page
+  leaves -- also for an SSH client that stayed attached, and also when it
+  was a `status` you had set on that session yourself, which is kept as
+  it was. A session an older version opened still has that version's
+  `status off` and can't be told apart from one you set; `tmux set-option
+  -u -t <name> status` clears it.
 - **Phone and desktop on one session:** when the phone takes the window,
   the desktop shows it in its corner with blank space around it instead of
   a screen full of tmux's `·` dots (tmux 3.3 or newer; put back when the

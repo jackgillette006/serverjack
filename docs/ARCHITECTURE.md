@@ -206,21 +206,31 @@ only for running by hand.
 The attach is `-T RGB` when tmux takes that flag (3.2 and newer; probed
 with `tmux -T RGB -V`, since an older tmux refuses to start with it), so tmux
 passes 24-bit colour to xterm.js instead of rounding it to 256 colours —
-for this client only. Two session cosmetics are set for as long as a page
-has the session open, each marked by a session user option
-(`@serverjack_status`, `@serverjack_fill`) so only they are ever undone:
-`status off` (in the same tmux command as the attach) unless
+for this client only. Two cosmetics are set for as long as a page has the
+session open: `status off` on the session unless
 `SERVERJACK_TMUX_STATUS=on`, and `fill-character ' '` on every window,
 plus an indexed `after-new-window[73]` hook for windows made meanwhile
-(tmux 3.3+). The attach is deliberately **not** `exec`'d: when the page
-goes, ttyd hangs up the process group, a `HUP` trap keeps the script alive
-past the tmux client, and `restore()` unsets both — unless another page
-still has the session, which it recognises as a tmux client whose parent
-process is a `tmux-attach.sh` (or, for a page attached by an older version
-that did `exec`, `ttyd`). SSH and console clients don't count, so they get
-plain tmux back the moment the last page leaves. (A session-level
-`client-detached` hook can't do this: tmux 3.5a runs that hook with no
-session context, so a session's own hook never fires.)
+(tmux 3.3+; the fill applies whatever `SERVERJACK_TMUX_STATUS` says). What
+was there before is saved first, in user options: `@serverjack_status` on
+the session and `@serverjack_fill` on each window, `u` for nothing set or
+`=<value>` for a value of the user's own. The attach is deliberately
+**not** `exec`'d: when the page goes, ttyd hangs up the process group, a
+`HUP` trap keeps the script alive past the tmux client, and `restore()`
+puts the saved values back (a value the user changed while the page was
+open is left as it is) — unless another page still has the session.
+
+Pages are counted, not guessed: `@serverjack_pages` lists the pid of each
+copy of `tmux-attach.sh` with the session open, added before its attach and
+removed by its `restore()`; a pid that is no longer a running
+`tmux-attach.sh` (killed outright) is dropped. A client whose parent is
+`ttyd` itself also counts: a page attached by an older version that
+`exec`'d tmux. SSH and console clients don't count, so they get their usual
+tmux back the moment the last page leaves. All of this reading and writing
+happens under one `flock` (`<runtime dir>/serverjack/attach.lock`, held for
+a few tmux calls at a time, given up on after 3 s), so a page opening just
+as another closes can't have its settings undone by the other's restore.
+(A session-level `client-detached` hook can't do this: tmux 3.5a runs that
+hook with no session context, so a session's own hook never fires.)
 
 Sessions the page starts with a command (`create_session()`) are created
 detached, at tmux's default 80x24, a moment before the browser attaches.
@@ -550,6 +560,17 @@ validation.
 `ttyd` on `PATH` that just records its argv: proves the exact argv for
 safe `TTYD_EXTRA_ARGS`, that unsafe ones never reach exec, and that an
 existing non-socket file at the `ttyd.sock` path is left untouched.
+
+**`attach_restore.py`** (host-side) runs `bin/tmux-attach.sh` itself on
+ptys against a private tmux server, hung up by process group the way ttyd
+does it: a `status` or `fill-character` the user set survives a page
+visit, a change made while the page is open is kept, the first of two
+pages leaving changes nothing, a page opening while another closes keeps
+its settings (eighteen handovers at 0-50 ms offsets), a page killed
+outright doesn't block the next restore, a page hung up during its setup is
+never attached (it used to leave an unseen client attached for good), and
+`SERVERJACK_TMUX_STATUS=on` leaves the status line alone. No UTF-8 locale,
+on purpose.
 
 **`tests/run.sh`** itself also drives: Host-header validation (bad Host on
 `/`, `/healthz`, `/term/` all 421); the peer-uid check (`docker run --user

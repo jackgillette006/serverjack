@@ -173,7 +173,8 @@ Configuration is by environment variables (see install.sh / README):
 Runtime dir: $XDG_RUNTIME_DIR/serverjack (fallback /tmp/serverjack-$UID/
 serverjack), created 0700 by whichever of serverjack / serverjack-ttyd starts
 first, and refused if it is not a real directory owned by us with mode 0700 --
-see safe_dir(). It holds ttyd.sock always, and web.sock in unix mode.
+see safe_dir(). It holds ttyd.sock always, web.sock in unix mode, and
+attach.lock (tmux-attach.sh's lock, an empty file).
 
 ttyd has no idea who is on the other end of its socket and no notion of a user,
 so it is never reachable directly: it binds ttyd.sock inside that 0700

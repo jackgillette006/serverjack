@@ -1061,7 +1061,7 @@ Works, with four things to know first:
 | `SERVERJACK_TERM` | `/term/` | URL path serverjack serves the terminal on (proxying it to ttyd's socket) |
 | `TTYD_EXTRA_ARGS` | unset | optional ttyd client options, shell-parsed as data with no expansion (e.g. `-t macOptionIsMeta=true`, see [Mac and iPad keyboards](#scrolling-copying-and-keys)). Allowed flags: `-t`/`--client-option`, `-T`/`--terminal-type`, `-m`/`--max-clients`, and `-P`/`--ping-interval`. Listener, auth, command, base-path, origin and write-access flags are refused. A JSON value (e.g. `-t theme={"background":"#123456"}`) needs its inner `"` escaped as `\"` -- the shell-style parsing that keeps this safe also treats a bare `"..."` as quoting syntax and strips it, corrupting the JSON otherwise. serverjack's own client options come first, so a `-t` of yours for the same key wins: it passes `disableResizeOverlay=true` (no `COLSxROWS` pill over the terminal on every resize), `fontFamily=Consolas,Liberation Mono,Menlo,monospace` (ttyd's default minus `Courier`, which Android draws as a serif typewriter face) and, with the default theme only, `minimumContrastRatio=4.5` |
 | `SERVERJACK_TERM_THEME` | unset (on) | `off` (or `0`/`no`/`false`) skips the default terminal color theme (built from the app's own tokens and passed to ttyd as a `-t theme=...` server option, with `-t minimumContrastRatio=4.5` so text stays readable on any background a program picks -- see [DESIGN.md](docs/design/DESIGN.md#terminal-theme)), leaving ttyd's stock xterm.js look. A `-t theme=...` (or `--client-option[=]theme=...`) of your own in `TTYD_EXTRA_ARGS` is detected automatically and also skips it, so your theme is what applies -- no need to set this too |
-| `SERVERJACK_TMUX_STATUS` | `off` | while a page has a session open, tmux's status line is turned off (the bar shows tabs and window count instead). tmux has no per-client status line, so an SSH client attached at the same time loses it too; it comes back as soon as the last page leaves the session. `on` leaves tmux alone |
+| `SERVERJACK_TMUX_STATUS` | `off` | while a page has a session open, tmux's status line is turned off (the bar shows tabs and window count instead). tmux has no per-client status line, so an SSH client attached at the same time loses it too; when the last page leaves the session it goes back to what it was, including a `status` you set on that session yourself. `on` leaves the status line alone; the blank padding around a smaller client's window (`fill-character`, see [Architecture](#architecture)) comes and goes either way |
 | `SERVERJACK_SSH` | `auto` | `user@host` for the SSH menu items (tailnet DNS name if Tailscale is up, else hostname); `off` hides them |
 | `SERVERJACK_FX` | unset (on) | `off` (or `0`/`no`/`false`) turns the CRT effects off by default; each browser can still flip them with the **CRT fx** toggle in the landing page's footer |
 | `SERVERJACK_CONFIG` | `~/.config/serverjack` | config directory override |
@@ -1225,8 +1225,9 @@ attaches as a 24-bit colour client (tmux 3.2 or newer; an older tmux gives it
 the 256-colour palette), and sessions started from the page get
 `COLORTERM=truecolor` so programs know they may use it. While any page has a
 session open, its tmux status line is off and a smaller client's window is
-padded with blanks rather than `·` dots; both go back to your own tmux
-settings when the last page leaves.
+padded with blanks rather than `·` dots; both go back to exactly what they
+were when the last page leaves, a value you set on that session or window
+yourself included.
 
 The units use `KillMode=process` on purpose: if the browser is the first thing
 to create a tmux session after boot, the tmux server is a child of the unit,
