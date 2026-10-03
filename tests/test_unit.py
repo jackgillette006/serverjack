@@ -2544,6 +2544,21 @@ class PageChromeTests(unittest.TestCase):
         self.assertNotIn("<small>serverjack</small>", page)
         self.assertNotIn("<small>serverjack</small>", mod.render_deny("x@y"))
 
+    def test_deny_page_without_identity_says_so(self):
+        # 127.0.0.1, an SSH forward or an untrusted proxy carry no login: that
+        # is usually the owner, who must not be told they are someone else.
+        page = mod.render_deny("")
+        self.assertIn("No Tailscale identity", page)
+        self.assertIn("tailscale serve", page)
+        self.assertNotIn("another tailnet user", page)
+        self.assertNotIn("nobody", page)
+
+    def test_deny_page_with_a_wrong_login_names_it_escaped(self):
+        page = mod.render_deny("<mallory>@example.com")
+        self.assertIn("another tailnet user", page)
+        self.assertIn("&lt;mallory&gt;@example.com", page)
+        self.assertNotIn("<mallory>", page)
+
     def test_client_hangup_mid_response_is_swallowed(self):
         stub = mock.Mock(close_connection=False)
         for exc in (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):

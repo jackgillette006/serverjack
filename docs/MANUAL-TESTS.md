@@ -132,6 +132,11 @@ Then test each of the three states. The easiest way to see all three is on a mac
    reads "This serverjack belongs to another tailnet user. You are signed in as
    …", with your real login — and it must **not** name the allowed login.
    `/healthz` still answers `ok` (health checks carry no identity).
+2b. Still with that login set, open `http://127.0.0.1:7680/` on the server
+   itself (or over an SSH port-forward). No Tailscale identity reaches it that
+   way, so the 403 reads "No Tailscale identity reached this serverjack" and
+   points at the `tailscale serve` address -- it must not say "another tailnet
+   user".
 3. With that wrong login still set, open `https://<host>/term/?arg=<a session
    name>` directly. You get the same 403 page, not a terminal, and no new
    client shows up in `tmux ls` (`session_attached` does not go up). This is

@@ -219,6 +219,12 @@ and this project uses [Semantic Versioning](https://semver.org/).
   tall on desktop, Android and in landscape).
 - **"serverjack serverjack" in the header.** The title next to the wordmark
   defaults to the hostname; when that is also "serverjack" it is now left out.
+- **The 403 page no longer calls you "another tailnet user … signed in as
+  nobody"** when no Tailscale identity reached serverjack at all (opening it
+  on `127.0.0.1`, over an SSH port-forward, or through a proxy that isn't
+  trusted for identity) -- usually the owner. It now says no identity
+  arrived and points at the `tailscale serve` address; a real wrong login
+  still gets the old wording, and the allowed logins are still never named.
 - `/favicon.ico` answers with the app icon instead of a 404 on every desktop
   visit, and a client that hangs up mid-response (a phone locking, a tab
   closing) no longer leaves a `BrokenPipeError` traceback in the journal.
