@@ -1288,10 +1288,21 @@ managed-install` runs just that.
   scrolls to the bottom or presses Esc/`q` (if you leave serverjack's copy
   mode that way and enter your own with prefix `[` before any page has
   looked, a page's next key can leave yours).
-- tmux sizes a session's window to the screen used last. A page takes it
-  back when you use it (see [Scrolling, copying and keys](#scrolling-copying-and-keys)),
+- tmux sizes a window to whichever client was most recently active, and a
+  resize counts: a phone attaching, rotating, or opening and closing its
+  keyboard shrinks the window on the desktop, which then shows it in its
+  top-left corner with blank space around it. A page takes the size back
+  when you use it (see [Scrolling, copying and keys](#scrolling-copying-and-keys)),
   but a phone that rotates or reconnects in the background, or an ssh
-  client that types, still takes it until then.
+  client that types, still takes it until then. That's tmux
+  (`window-size latest`).
+- Emoji built from several code points -- the ones with a VS16 selector
+  (❤️ ⚠️ ✔️), skin tones, ZWJ families -- are two cells wide to tmux (3.5a)
+  but one, or one per part, to ttyd's xterm.js (1.7.7). After a redraw
+  (reopening a session, switching tabs, a resize) the next character can
+  overlap the emoji or the rest of the line sits a column off until it is
+  rewritten. Plain emoji (✅ 😀) and bare ✔ ⚠ are fine. Neither tmux nor ttyd
+  has a setting for it yet.
 - Installer and units are Linux + systemd only.
 - On an iPhone the landing page's text follows Settings → Display & Brightness
   → Text Size (Larger Text); the terminal page's bar and keys don't, and the
