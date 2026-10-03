@@ -192,7 +192,7 @@ request shapes:
 
 `bin/tmux-attach.sh` is ttyd's command (`-a` turns `?arg=` into `$1`). It
 re-checks the runtime directory with its own `check_dir()`, then
-`tmux has-session -t "=$name"` and, on success, `exec tmux attach-session
+`tmux has-session -t "=$name"` and, on success, `tmux attach-session
 -t "=$name"` — no `-d`, so opening from a phone never detaches another
 client. A missing session prints a message and sleeps 20 seconds. The page
 itself never reloads the frame for a session `/api/sessions` doesn't list:
@@ -202,6 +202,25 @@ a tab to the list (`/?ended=<name>`, which says so) and closes a pop-out —
 never attaching some other session on the user's behalf. `bin/tmux-picker.sh` (an fzf menu over the same
 tmux server) is no longer reachable through the web app at all — it's kept
 only for running by hand.
+
+The attach is `-T RGB` when tmux takes that flag (3.2 and newer; probed
+with `tmux -T RGB -V`, since an older tmux refuses to start with it), so tmux
+passes 24-bit colour to xterm.js instead of rounding it to 256 colours —
+for this client only. Two session cosmetics are set for as long as a page
+has the session open, each marked by a session user option
+(`@serverjack_status`, `@serverjack_fill`) so only they are ever undone:
+`status off` (in the same tmux command as the attach) unless
+`SERVERJACK_TMUX_STATUS=on`, and `fill-character ' '` on every window,
+plus an indexed `after-new-window[73]` hook for windows made meanwhile
+(tmux 3.3+). The attach is deliberately **not** `exec`'d: when the page
+goes, ttyd hangs up the process group, a `HUP` trap keeps the script alive
+past the tmux client, and `restore()` unsets both — unless another page
+still has the session, which it recognises as a tmux client whose parent
+process is a `tmux-attach.sh` (or, for a page attached by an older version
+that did `exec`, `ttyd`). SSH and console clients don't count, so they get
+plain tmux back the moment the last page leaves. (A session-level
+`client-detached` hook can't do this: tmux 3.5a runs that hook with no
+session context, so a session's own hook never fires.)
 
 Server-side, every operation goes through the `tmux()` wrapper and a
 machine-parseable `-F` format: `sessions()`/`windows()` list state (with a

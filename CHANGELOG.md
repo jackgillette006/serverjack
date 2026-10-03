@@ -575,6 +575,16 @@ and this project uses [Semantic Versioning](https://semver.org/).
   falls through to its plain monospace. Every other platform keeps exactly
   the font it had. (Worked out from Android's font config; not yet seen on
   a real Android phone.)
+- **SSH: the tmux status line comes back.** Opening a session in the page
+  turned its status line off for good, so "Copy SSH command" later opened a
+  tmux with no window list or session name. It is still off for every
+  client while a page has the session open (tmux can't hide it for one
+  client only), but goes back to your own setting the moment the last page
+  leaves -- also for an SSH client that stayed attached.
+- **Phone and desktop on one session:** when the phone takes the window,
+  the desktop shows it in its corner with blank space around it instead of
+  a screen full of tmux's `·` dots (tmux 3.3 or newer; put back when the
+  last page leaves).
 
 ### Added
 
