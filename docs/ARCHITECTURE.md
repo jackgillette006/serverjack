@@ -455,7 +455,16 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   ttyd or both and proves the terminal comes back with no user action;
   then rename/kill handling, Back after tab switches, the + panel's close
   paths and focus, the tab strip (fades, wheel, polls that change nothing),
-  the refit after load and the hidden scrollbar.
+  the refit after load and the hidden scrollbar; the pop-out window in all
+  three engines (the handle covers no terminal cell, the bar lies over the
+  terminal so `#{window_width}x#{window_height}` never changes, focus stays
+  in the terminal, Escape and a click put it away, × is reachable, window
+  naming and re-opening without a reload), a popped-out session never
+  attached twice (Back, another tab's strip), blocked pop-ups, a
+  touchscreen laptop (Chromium `--touch-events=enabled`) keeping the
+  desktop UI, and a notched iPhone's safe areas — with the insets patched
+  into the page, since emulated WebKit reports 0, and a faked
+  `visualViewport` standing in for the soft keyboard.
 
 **`security_http.py`** (host-side) checks HTTP-parser behavior needing no
 browser: the two `OPEN_PATHS` (and `POST /`, which only redirects) still

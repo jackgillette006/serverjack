@@ -308,7 +308,21 @@ attaches (a pop-out window on a desktop, the same tab on a phone). The ⋯ menu
 has *Open here*, *Pop out*, the two SSH hand-offs (*Copy SSH command*, which
 attaches this session, and *SSH app (login only)*, an `ssh://` link that can
 only log in to the server -- the scheme has no way to carry a command),
-**Rename**, and *Kill session*.
+**Rename**, and *Kill session*. Whether **Open** pops out or stays in the tab
+follows the device's main pointer, so a laptop with a touchscreen is still a
+desktop.
+
+A pop-out window is just the terminal under a slim strip: click the strip to
+show the bar, which opens over the terminal's top rows (so the session is
+never resized by it) and goes away again with Escape, a click in the
+terminal, or picking a tab or window. The window is named after the session
+it shows, so **Open** on that session — or the terminal bar's pop-out button —
+brings the window forward without reloading it, and the browser never
+attaches a session twice by itself: picking a popped-out session's tab in
+another tab focuses its window (or says it is open in one, with *Open here*
+to attach anyway), and **Back** in the tab you popped it out of goes to the
+list. If the browser blocks pop-ups for the site, the session opens in the
+tab instead and the page says why.
 
 A session serverjack started as an agent's background server (see
 [Agent servers](#agent-servers)) carries a small **server** tag.
