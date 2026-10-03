@@ -10,7 +10,9 @@ each byte the page sends shows up as one visible token (ESC as ^[, 0x1c as
 
 The second half is scrolling, the clipboard and two screens on one session:
 typing after a wheel or a swipe (here or on the other device) runs as typed
-instead of going to tmux's copy mode; Ctrl+wheel never reaches the program;
+instead of going to tmux's copy mode, while Esc (key row, keyboard, Ctrl+[,
+vi mode-keys too) only leaves it and PgUp/PgDn page it; Ctrl+wheel never
+reaches the program;
 wheel travel per row; tmux mouse mode toggled under an open page; the
 selection dropped by a scroll, copies without tmux's padding, Ctrl+C after a
 copy, Ctrl+Shift+C; the Paste key's bracketed paste (Firefox included); the
@@ -124,6 +126,15 @@ BLUR_TERM = "document.getElementById('frame').contentDocument.querySelector('.xt
 NO_CLIPBOARD = "Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })"
 
 
+def show_keys(page, want=True, tap=False):
+    """the key row shown (or hidden), whatever it was; True when it was toggled"""
+    if page.locator("#keys").is_visible() == want:
+        return False
+    (page.tap if tap else page.click)("#keysbtn")
+    time.sleep(0.3)
+    return True
+
+
 def inside(page, sel):
     """the element's box lies wholly inside the viewport, without scrolling anything"""
     return page.evaluate("""s => { const r = document.querySelector(s).getBoundingClientRect();
@@ -139,6 +150,13 @@ TERM_SIZE = "(t => [t.cols, t.rows])(document.getElementById('frame').contentWin
 WATCH = """kind => { const w = document.getElementById('frame').contentWindow; window.__seen = [];
   w.addEventListener(kind, e => { if (kind === 'keydown' && e.code !== 'KeyC') return;
     setTimeout(() => window.__seen.push(e.defaultPrevented), 0); }, true); }"""
+
+
+# A wheel over the terminal, dispatched in the frame: the page's own scroll
+# path (the one a swipe takes too), in an engine Playwright can't swipe in.
+PHONE_WHEEL = """dy => { const f = document.getElementById('frame'), w = f.contentWindow;
+  f.contentDocument.querySelector('.xterm-screen').dispatchEvent(
+    new w.WheelEvent('wheel', { deltaY: dy, deltaMode: 0, bubbles: true, cancelable: true })); }"""
 
 
 def mode(name=SC):
@@ -578,6 +596,39 @@ try:
             page.keyboard.press("Escape"); time.sleep(0.5)
             ok("Esc leaves the scrollback and sends nothing on", mode()[0] == "0" and logged(SC).endswith("100"),
                (mode(), logged(SC)[-40:]))
+            # ...also under `mode-keys vi`, where copy mode's own Esc only
+            # clears the selection; and Ctrl+[ is the same byte as Esc.
+            tmux("set-option", "-w", "-t", f"={SC}:", "mode-keys", "vi")
+            page.mouse.wheel(0, -(cell_h(page) * 3 + 2)); time.sleep(0.6)
+            page.keyboard.press("Escape"); time.sleep(0.5)
+            ok("...also under mode-keys vi", mode()[0] == "0" and logged(SC).endswith("100"), (mode(), logged(SC)[-40:]))
+            tmux("set-option", "-wu", "-t", f"={SC}:", "mode-keys")
+            page.mouse.wheel(0, -(cell_h(page) * 3 + 2)); time.sleep(0.6)
+            page.keyboard.press("Control+BracketLeft"); time.sleep(0.5)
+            ok("...and Ctrl+[ does the same", mode()[0] == "0" and logged(SC).endswith("100"), (mode(), logged(SC)[-40:]))
+            # PgUp/PgDn, on the key row or the keyboard, page the scrollback
+            # instead of leaving it; PgDn at the bottom leaves it, and
+            # serverjack's mark goes with it.
+            toggled = show_keys(page)
+            over_term(page)
+            page.mouse.wheel(0, -(cell_h(page) * 3 + 2)); time.sleep(0.6)
+            page.click("#keys [data-k=PageUp]"); time.sleep(0.5)
+            up1 = mode()
+            page.keyboard.press("PageUp"); time.sleep(0.5)
+            up2 = mode()
+            ok("PgUp on the key row and the keyboard pages further back, sending nothing",
+               up1[0] == up2[0] == "1" and 3 < int(up1[1] or 0) < int(up2[1] or 0) and logged(SC).endswith("100"),
+               (up1, up2, logged(SC)[-40:]))
+            for _ in range(6):
+                if mode()[0] != "1":
+                    break
+                page.click("#keys [data-k=PageDown]"); time.sleep(0.4)
+            ok("PgDn pages back down and leaves at the bottom, sending nothing",
+               mode()[0] == "0" and logged(SC).endswith("100"), (mode(), logged(SC)[-40:]))
+            ok("...and serverjack's mark goes with it", wait_for(lambda: mode()[2] == "", 2.5), mode())
+            if toggled:
+                show_keys(page, False)
+            over_term(page)
             page.evaluate(WATCH, "wheel")
             page.keyboard.down("Control")
             page.mouse.wheel(0, -120); time.sleep(0.3); page.mouse.wheel(0, 120); time.sleep(0.3)
@@ -721,14 +772,45 @@ try:
         time.sleep(2.5)                                   # the desktop's poll while it has focus
         desk.keyboard.type("echo hello DESKTOP"); desk.keyboard.press("Enter")
         ok("...and the desktop's next line still runs as typed", wait_for(lambda: ran("DESKTOP")), pane(SC)[-240:])
-        phone.evaluate(f"fetch('/api/scroll', {{ method: 'POST', body: new URLSearchParams({{ name: '{SC}', lines: 5 }}) }})")
-        wait_for(lambda: mode()[0] == "1"); time.sleep(0.6)
+        # ...and straight after it, before the desktop's next look at the pane
+        # (every 2 s) could tell it (G11): with another screen on the
+        # session, its first key after a while waits for one more look.
+        for delay in (0.3, 1.0):
+            time.sleep(1)                                 # a hand moving to the phone and back
+            phone.evaluate(f"fetch('/api/scroll', {{ method: 'POST', body: new URLSearchParams({{ name: '{SC}', lines: 10 }}) }})")
+            wait_for(lambda: mode()[0] == "1", 3)
+            time.sleep(delay)
+            tok = f"QUICK{int(delay * 10)}"
+            desk.keyboard.type(f"echo hello {tok}"); desk.keyboard.press("Enter")
+            ok(f"...even typed {delay}s after the phone's scroll", wait_for(lambda: ran(tok)) and mode()[0] == "0",
+               pane(SC)[-240:])
+        # The phone's own scroll, through the page (the same path as a swipe),
+        # and typing straight after it: held until copy mode is left.
+        phone.evaluate(PHONE_WHEEL, -(5 * cell_h(phone) + 2))
+        wait_for(lambda: mode()[0] == "1", 3)
+        scrolled = mode()
         phone.keyboard.type("echo hello PHONE"); phone.keyboard.press("Enter")
-        ok("typing on the phone right after its own scroll runs as typed", wait_for(lambda: ran("PHONE")), pane(SC)[-240:])
+        ok("typing on the phone right after its own scroll runs as typed",
+           scrolled[0] == "1" and wait_for(lambda: ran("PHONE")) and mode()[0] == "0", (scrolled, pane(SC)[-240:]))
         tmux("copy-mode", "-t", f"={SC}:"); time.sleep(2.5)      # prefix-[ in some client: the user's copy mode
         desk.keyboard.type("z"); time.sleep(0.6)
         ok("copy mode the user entered themselves is left alone", mode()[0] == "1" and mode()[2] == "", mode())
         tmux("send-keys", "-t", f"={SC}:", "-X", "cancel")
+
+        # The key row's Esc after a scroll only leaves the scrollback: it is
+        # how a phone gets back, and sent on it would interrupt an agent.
+        fresh(SC)
+        shell("seq 1 100; stty -icanon -isig -iexten -echo -ixon -icrnl; cat -v", SC)
+        wait_for(lambda: cmd(SC) == "cat"); time.sleep(0.4)
+        toggled = show_keys(phone, tap=True)
+        phone.evaluate(PHONE_WHEEL, -(4 * cell_h(phone) + 2))
+        wait_for(lambda: mode()[0] == "1", 3); time.sleep(0.4)
+        scrolled = mode()
+        phone.tap("#keys [data-k=Escape]"); time.sleep(0.8)
+        ok("the phone's key-row Esc after a scroll leaves it and sends nothing on",
+           scrolled[0] == "1" and mode()[0] == "0" and logged(SC).endswith("100"), (scrolled, mode(), logged(SC)[-40:]))
+        if toggled:
+            show_keys(phone, False, tap=True)
 
         # The screen you engage with takes the size back; no key is sent.
         rawlog(SC)
@@ -777,17 +859,31 @@ try:
         fb = page.locator("#frame").bounding_box()
         x, y0 = fb["x"] + fb["width"] / 2, fb["y"] + fb["height"] * 0.3
         h = cell_h(page)
-        cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y0}]})
-        for i in range(1, 13):
-            time.sleep(0.016)
-            cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x, "y": y0 + (h * 12 + 4) * i / 12}]})
-        cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
-        time.sleep(0.8)
+
+        def swipe_down(rows):
+            """a finger dragged down over the terminal: scrolls back <rows> lines"""
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y0}]})
+            for i in range(1, 13):
+                time.sleep(0.016)
+                cdp.send("Input.dispatchTouchEvent", {"type": "touchMove",
+                                                      "touchPoints": [{"x": x, "y": y0 + (h * rows + 4) * i / 12}]})
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+            time.sleep(0.8)
+        swipe_down(12)
         ok("a 12-row swipe scrolls 12 lines", mode()[:2] == ("1", "12"), mode())
         page.keyboard.insert_text("echo hello SWIPED"); time.sleep(0.1)
         page.keyboard.press("Enter")
         ok("a word arriving as text (prediction, dictation) right after runs as typed",
            wait_for(lambda: ran("SWIPED")) and mode()[0] == "0", pane(SC)[-240:])
+        # Back from a swipe with the key row's Esc: nothing reaches the program.
+        fresh(SC)
+        shell("seq 1 100; stty -icanon -isig -iexten -echo -ixon -icrnl; cat -v", SC)
+        wait_for(lambda: cmd(SC) == "cat"); time.sleep(0.4)
+        swipe_down(5)
+        scrolled = mode()
+        page.tap("#keys [data-k=Escape]"); time.sleep(0.8)
+        ok("the key row's Esc after a swipe leaves the scrollback and sends nothing on",
+           scrolled[0] == "1" and mode()[0] == "0" and logged(SC).endswith("100"), (scrolled, mode(), logged(SC)[-40:]))
         b.close()
 finally:
     for n in (S, S2, GONE, SC):

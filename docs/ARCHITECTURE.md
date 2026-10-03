@@ -216,7 +216,8 @@ client count in one `display-message`; `leave_scroll()` (POST `/api/scroll`
 `cancel=1`) cancels only marked copy mode, which the terminal page does
 before sending anything typed while scrolled back (it holds the input until
 the cancel is answered, since keys travel over ttyd's WebSocket and could
-overtake it). The same state lets the page nudge its terminal one row
+overtake it; Esc is dropped once the cancel has left copy mode, and
+PgUp/PgDn are let through to copy mode). The same state lets the page nudge its terminal one row
 smaller and back when you engage with it on a session another screen has
 sized, which tmux's `window-size latest` counts as this client's resize;
 `screen_text()` backs `/api/screen` and the
@@ -421,7 +422,9 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   a real swipe runs as typed, Ctrl+wheel never reaches the program, wheel
   travel per measured row, tmux mouse mode toggled under an open page, the
   selection dropped by a scroll, trimmed copies, Ctrl+Shift+C, the Paste
-  key's bracketed paste in all three engines, and the leave prompt. And two
+  key's bracketed paste in all three engines, Esc and PgUp/PgDn while
+  scrolled back (key row, keyboard, Ctrl+[, vi mode-keys), and the leave
+  prompt. And two
   screens on one session (Chromium desktop plus WebKit iPhone): the other
   device's scroll left before the desktop's typing, the screens cue and
   landing count, and the engaged screen taking the size back without a

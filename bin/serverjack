@@ -4890,8 +4890,11 @@ APP_JS = r"""
     return ev;
   }
   function sendKey(key, mods) {
-    if (hold(function () { sendKey(key, mods); })) return;
     mods = mods || {};
+    var again = function () { sendKey(key, mods); }, plain = !mods.ctrl && !mods.shift && !mods.alt;
+    var paging = plain ? pageKeys(key, again) : '';
+    if (paging === 'later') return;
+    if (!paging && (plain && key === 'Escape' ? holdEsc(again) : hold(again))) return;
     fireKey({ key: key, ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift, altKey: !!mods.alt },
             KEYS[key] || key.toUpperCase().charCodeAt(0));
   }
@@ -4922,7 +4925,8 @@ APP_JS = r"""
     var low = ch.toLowerCase(), b = ctrlByte(ch), w = frame.contentWindow;
     if (low >= 'a' && low <= 'z') { sendKey(low, { ctrl: true }); return true; }
     if (b === null) return false;
-    if (hold(function () { ctrlSend(ch); })) return true;
+    var again = function () { ctrlSend(ch); };
+    if (b === '\x1b' ? holdEsc(again) : hold(again)) return true;   // Ctrl+[ is Esc
     try { if (w.term && typeof w.term.input === 'function') { w.term.input(b, true); return true; } } catch (e) {}
     sendKey(ch, { ctrl: true }); return true;
   }
@@ -5007,6 +5011,10 @@ APP_JS = r"""
         if (!e.shiftKey && k === 'c' && copySelection(d)) { e.preventDefault(); e.stopPropagation(); return; }
       }
       holdKey(e);
+    }, true);
+    // after the one above: a real key is typing, for unsure()
+    d.addEventListener('keydown', function (e) {
+      if (e.isTrusted && !MOD_ONLY.test(e.key || 'Unidentified')) typedAt = Date.now();
     }, true);
     // WebKit also fires keypress for Ctrl+V; xterm would turn it into ^V.
     d.addEventListener('keypress', function (e) {
@@ -5112,43 +5120,91 @@ APP_JS = r"""
   // mode you entered with prefix-[); while it is marked, the page holds what
   // is typed, has it left (POST cancel=1), then sends what it held, in
   // order. The cancel is HTTP and keys go over ttyd's WebSocket, so a key
-  // let through at once could still overtake it. Esc is let through: it
-  // leaves copy mode by itself.
-  var sjScrolled = false, leaving = null, heldInput = [], draining = false;
-  function holding() { return !draining && (!!leaving || sjScrolled || scrollQ !== 0 || !!scrollBusy); }
-  // Run fn once copy mode is left; true when it was held for that.
+  // let through at once could still overtake it. Esc and PgUp/PgDn are the
+  // exceptions (holdEsc(), pageKeys()).
+  // Another screen's scroll is only known from the last look at the pane
+  // (pollState(), every 2 s while focused), so keys typed in between went to
+  // copy mode after all. So with another screen on the session, the first
+  // key after a pause in typing -- moving from the phone to the desktop is
+  // one -- is held while the pane is looked at once more (unsure(),
+  // leaveScroll()): a round trip on that key, and only while another screen
+  // has the session open.
+  var sjScrolled = false, leaving = null, heldInput = [], draining = false, typedAt = 0, others = 0;
+  function unsure() { return others > 0 && Date.now() - typedAt > 400; }
+  function holding() { return !draining && (!!leaving || sjScrolled || scrollQ !== 0 || !!scrollBusy || unsure()); }
+  // Run fn once copy mode is left; true when it was held for that. fn is
+  // told whether serverjack's copy mode was actually there to leave.
   function hold(fn) {
-    if (!holding()) return false;
+    if (!holding()) { typedAt = Date.now(); return false; }
     heldInput.push(fn);
     if (!leaving) leaving = leaveScroll();
     return true;
   }
   function leaveScroll() {
-    var name = cur, done = false;
+    var name = cur, done = false, left = false, look = unsure();
     function release() {
-      if (done) return; done = true; leaving = null;
+      if (done) return; done = true; leaving = null; typedAt = Date.now();
       var q = heldInput; heldInput = []; draining = true;
-      try { q.forEach(function (fn) { try { fn(); } catch (e) {} }); } finally { draining = false; }
+      try { q.forEach(function (fn) { try { fn(left); } catch (e) {} }); } finally { draining = false; }
     }
     setTimeout(release, 3000);              // never hold input for good (serverjack unreachable)
     return settleScroll().then(function () {
+      if (sjScrolled || !look || name !== cur) return;
+      return fetch('/api/scroll?name=' + encodeURIComponent(name), { cache: 'no-store' })   // another screen's?
+        .then(function (r) { return r.json(); })
+        .then(function (j) { if (name === cur && j && !j.error) sjScrolled = !!j.scrolled; });
+    }).then(function () {
       if (!sjScrolled || name !== cur) return;
-      return fetch('/api/scroll', { method: 'POST', body: new URLSearchParams({ name: name, cancel: '1' }) });
+      return fetch('/api/scroll', { method: 'POST', body: new URLSearchParams({ name: name, cancel: '1' }) })
+        .then(function (r) { return r.json(); }).then(function (j) { left = !!(j && j.cancelled); });
     }).then(function () { if (name === cur) sjScrolled = false; }, function () {}).then(release);
+  }
+  // Esc (or Ctrl+[, the same byte) while scrolled back only leaves the
+  // scrollback, through the cancel above, and is not sent on: it would
+  // interrupt an agent. Copy mode's own Esc is not relied on, since under
+  // `mode-keys vi` it only clears the selection. An Esc typed after other
+  // held input, or with no copy mode left to leave, goes on as usual.
+  function holdEsc(again) {
+    if (!holding()) return false;
+    if (heldInput.length) return hold(again);
+    return hold(function (left) { if (!left) again(); });
+  }
+  // PgUp/PgDn while scrolled back keep paging the scrollback (copy mode's own
+  // keys) instead of leaving it. 'pass': let the key reach copy mode;
+  // 'later': a scroll is still on its way, so again() presses the key once
+  // it is answered; '' for anything else.
+  var pagedT = null;
+  function pageKeys(key, again) {
+    if ((key !== 'PageUp' && key !== 'PageDown') || leaving || draining) return '';
+    if (scrollQ || scrollBusy) {
+      var name = cur; settleScroll().then(function () { if (name === cur) again(); }); return 'later';
+    }
+    if (!sjScrolled) return '';
+    clearSel();                             // the text moves under xterm's selection
+    // PgDn at the bottom ends copy mode by itself: re-read the state soon
+    // after, so serverjack's mark doesn't outlive it
+    if (key === 'PageDown') {
+      clearTimeout(pagedT); pagedT = setTimeout(function () { pollState(false); }, 400);
+    }
+    return 'pass';
   }
   var MOD_ONLY = /^(Shift|Control|Alt|AltGraph|Meta|OS|Super|Hyper|CapsLock|NumLock|ScrollLock|Fn|FnLock|Dead|Unidentified|Process|Compose)$/;
   function holdKey(e) {
     if (!holding() || e.isComposing || e.keyCode === 229 || e.metaKey || MOD_ONLY.test(e.key || 'Unidentified')) return;
     if ((e.ctrlKey && (e.key || '').toLowerCase() === 'v') || (e.shiftKey && e.key === 'Insert')) return;   // a paste: held as one
-    // Esc only leaves copy mode (it would interrupt an agent if it were sent on)
-    if (e.key === 'Escape' && !leaving) return;
+    var k = e.key, plain = !e.ctrlKey && !e.altKey && !e.shiftKey;
+    var paging = plain ? pageKeys(k, function () { sendKey(k); }) : '';
+    if (paging === 'pass') return;          // xterm sends it on, to copy mode
     e.preventDefault(); e.stopPropagation();
+    if (paging === 'later') return;
     // A character goes as typed text (Option's composed character on a Mac,
     // AltGr's elsewhere); anything else is pressed again for xterm to translate.
     var altGr = !!(e.getModifierState && e.getModifierState('AltGraph'));
-    var ch = e.key.length === 1 && (altGr || (!e.ctrlKey && (!e.altKey || isMac))) ? e.key : null;
-    var init = { key: e.key, code: e.code, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey }, code = e.keyCode;
-    hold(function () { if (ch !== null) typeText(ch); else fireKey(init, code); });
+    var ch = k.length === 1 && (altGr || (!e.ctrlKey && (!e.altKey || isMac))) ? k : null;
+    var init = { key: k, code: e.code, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey }, code = e.keyCode;
+    var again = function () { if (ch !== null) typeText(ch); else fireKey(init, code); };
+    var esc = (plain && k === 'Escape') || (e.ctrlKey && !e.altKey && !e.shiftKey && k === '[');
+    if (esc) holdEsc(again); else hold(again);
   }
   // text as if typed (no paste brackets around it)
   function typeText(s) {
@@ -5171,6 +5227,7 @@ APP_JS = r"""
         if (name !== cur || !j || j.error) return;
         MOUSE = !!j.mouse;
         if (gen === scrollGen && !scrollBusy && !scrollQ && !leaving) sjScrolled = !!j.scrolled;
+        others = Math.max(0, (j.clients || 0) - 1);
         paintScreens(j.clients || 0);
         if (claim) claimSize(j);
       }).catch(function () {});
@@ -5524,7 +5581,7 @@ APP_JS = r"""
   function resetInput() {
     disarm(); swallowInput = false; endPress(); closeScreen(false);
     // nothing typed for the old session, or about its copy mode, carries over
-    heldInput = []; sjScrolled = false; scrollQ = 0; wheelAcc = 0; paintScreens(0);
+    heldInput = []; sjScrolled = false; scrollQ = 0; wheelAcc = 0; others = 0; paintScreens(0);
   }
 
   // ---- iOS: the soft keyboard doesn't shrink the layout viewport, so track
@@ -5563,6 +5620,7 @@ APP_JS = r"""
   document.addEventListener('click', function (e) {
     if (e.target && e.target.closest && e.target.closest('#close, #popout, #bar a[href]')) goingAway();
   }, true);
+
 
   // ---- session tabs
   function pageUrl(name) { return '/s/' + encodeURIComponent(name) + (POP ? '?popout=1' : ''); }
