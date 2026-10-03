@@ -331,6 +331,85 @@ and this project uses [Semantic Versioning](https://semver.org/).
   visit, and a client that hangs up mid-response (a phone locking, a tab
   closing) no longer leaves a `BrokenPipeError` traceback in the journal.
 
+- **The terminal reconnects by itself** after serverjack or ttyd restarts,
+  including the built-in *Update serverjack*. Before, ttyd's single
+  immediate retry landed inside the restart and failed, and the terminal sat
+  on "Press ⏎ to Reconnect" until you pressed Enter -- which a phone's key
+  row doesn't have. Now the page notices, waits for serverjack and ttyd to
+  answer (retrying after 0, 1, 2, 4, 8, then every 10 seconds, and at once
+  when the page comes back to the foreground or the network returns) and
+  reloads the terminal, typically within a few seconds. The same covers a
+  phone that wakes before its Wi-Fi or Tailscale is back.
+- **"The terminal isn't answering" page recovers on its own.** A frame that
+  loaded while ttyd was down used to stay on that page until you switched
+  tabs, and told a home-screen app with no reload button to "reload this
+  page". It now goes back to the terminal as soon as ttyd answers, has a
+  Retry button, and inside the terminal page drops its second header and
+  tucks the systemctl hints behind a fold.
+- **A session that ends no longer drops you into another one.** When the
+  open session exited or was killed elsewhere, the page sat on a dead
+  terminal for up to 15 seconds and then quietly attached the alphabetically
+  first session -- with the keyboard in it, so the next line you typed ran
+  there. Now the end is noticed at once: a tab goes to the session list,
+  which says “… has ended”, and a pop-out window closes.
+- **A rename made elsewhere is followed.** The tab, the address bar and the
+  title switch to the new name and the terminal stays attached, instead of
+  the page treating the renamed session as gone. (`/api/sessions` now
+  includes tmux's `id` for each session.)
+- **Back after switching tabs** moved only the terminal frame to the
+  previous session while the bar, the URL, Copy and the window list stayed
+  on the new one -- so keystrokes went to a session the bar didn't show.
+  Switching tabs no longer adds history entries, so Back leaves the
+  terminal page.
+- **The + panel can be dismissed properly.** It has a Cancel button, closes
+  when you click or tap in the terminal, and + shows when it is open.
+  Escape, Cancel and + put the keyboard back in the terminal; before,
+  Escape left focus nowhere (typing was lost), and closing with + on
+  Windows/Linux left focus on the + button, where the next Space reopened
+  the panel and Enter started a stray session.
+- **The + panel no longer insists on a name for agents**, and no longer
+  stays stuck requiring one after you started an agent and came back for a
+  shell: like the Start card, the name is optional for every type. Its
+  placeholder and button now match the Start card ("Start").
+- A **double tap on Start** in the + panel started two sessions on a slow
+  link. The button now reads "Starting…" and ignores taps until the first
+  request is answered.
+- The + panel's sheet on a phone is opaque, so the key row no longer shows
+  through it, and the CRT fx toggle is gone from it (a display setting
+  doesn't belong in the new-session form; it stays in the landing page's
+  footer).
+- **Tab strip.** Tabs past either edge are now signalled by a fade on that
+  edge instead of hard-cut slivers that read like other session names; a
+  plain mouse wheel scrolls the strip sideways on a desktop; long session
+  names are cut with an ellipsis (full name in the tooltip) so one tab can't
+  fill a phone's strip; the active tab and its window badge are scrolled
+  fully into view once the badge appears; and the 15-second poll no longer
+  rebuilds an unchanged strip -- it used to snap a strip you were scrolling
+  back to the active tab and drop keyboard focus from a focused tab or
+  window-list row.
+- **Window badge and list.** The badge shows the window count and a caret
+  (`· 3 ▾`) instead of a 1-based position that disagreed with tmux's
+  0-based indexes in the list; the active tab says it opens a menu
+  (`aria-haspopup`/`aria-expanded`); and the list is fetched fresh when it
+  opens, so a window switched or created from another device or with a tmux
+  key is shown correctly at once instead of up to 15 seconds later.
+- **The terminal fills its frame from the start.** ttyd sized the grid
+  before switching to its WebGL renderer, so a desktop got a dead band down
+  the right (19 fewer columns at 1280px) and a phone 3-4 fewer columns until
+  something resized it, and the session reflowed the first time the phone
+  keyboard opened. The page now refits once the renderer is in, and turns
+  off xterm's own scrollback (tmux keeps the history), which stops it
+  reserving a 15px scrollbar strip.
+- On desktop browsers with classic scrollbars (Chrome and Edge on Windows),
+  a light, never-scrollable scrollbar no longer runs down the right edge of
+  the terminal.
+- Touch devices: no more `Cannot read properties of null (reading
+  'appendChild')` console error on many terminal loads.
+- Accessibility: the current session's tab is marked `aria-current`, the
+  terminal frame has a title naming the session, the window list is a menu
+  with arrow-key navigation, and the + panel's error is announced
+  (`role=alert`).
+
 ### Changed
 
 - **"Save as a shortcut": naming it is enough.** A name typed into the panel
@@ -352,6 +431,17 @@ and this project uses [Semantic Versioning](https://semver.org/).
   shortcut. The empty Shortcuts hint says "No saved shortcuts yet" (the
   built-in Update row is right above it) and is a line, not a second card.
 - Shortcut rows wrap a long command instead of cutting it off.
+
+- Phones and tablets no longer show × in the terminal's bar: it did exactly
+  what the logo does (back to the list; the session keeps running), read
+  like "kill", and took a quarter of the tab strip on a small phone. It
+  stays on desktops and in pop-outs. The logo now plays the same CRT
+  power-off as × did.
+- In a short landscape window (a phone on its side) the bar and the key row
+  are denser (36px and 32px tall instead of 44px and 40px), giving the
+  terminal its rows back; targets keep their 44px width.
+- `docs/MANUAL-TESTS.md`: the steps for ×, the pop-out logo, rename,
+  reconnect and the window badge match the UI again.
 
 ### Added
 

@@ -181,8 +181,12 @@ request shapes:
    present again), ttyd→client on the calling thread. Either side closing
    triggers a shutdown of the other; the reader thread is joined with a
    5-second timeout. No idle timeout on the upstream socket
-   (`up.settimeout(None)`) — a terminal is meant to sit idle for hours;
-   ttyd's own reconnect and the browser handle a dropped network path.
+   (`up.settimeout(None)`) — a terminal is meant to sit idle for hours.
+   A dropped connection (this process or ttyd restarting, a phone's network
+   going away) is the page's job: ttyd's client retries exactly once and
+   then waits for an Enter, so `app.js` watches the frame for that state, or
+   for the 502 page, and reloads the frame once `/api/sessions` and
+   `/term/token` both answer, backing off 0, 1, 2, 4, 8, then every 10 s.
 
 ## tmux integration
 
@@ -190,9 +194,12 @@ request shapes:
 re-checks the runtime directory with its own `check_dir()`, then
 `tmux has-session -t "=$name"` and, on success, `exec tmux attach-session
 -t "=$name"` — no `-d`, so opening from a phone never detaches another
-client. A missing session prints a message and sleeps 20 seconds (long
-enough that the page's 15-second `/api/sessions` poll has already moved
-the browser elsewhere). `bin/tmux-picker.sh` (an fzf menu over the same
+client. A missing session prints a message and sleeps 20 seconds. The page
+itself never reloads the frame for a session `/api/sessions` doesn't list:
+it matches sessions by tmux's `#{session_id}`, so it follows a rename
+without touching the frame, and when the session has really ended it sends
+a tab to the list (`/?ended=<name>`, which says so) and closes a pop-out —
+never attaching some other session on the user's behalf. `bin/tmux-picker.sh` (an fzf menu over the same
 tmux server) is no longer reachable through the web app at all — it's kept
 only for running by hand.
 
@@ -443,6 +450,12 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   doesn't name the real owner; the allowed header attaches an actual tmux
   client; a raw WebSocket handshake with no header is refused with no new
   client spawned — proving identity covers the proxied terminal too.
+- `pwchrome.py` — the terminal page's chrome and connection: it asks
+  `tests/restartable.sh` (run.sh's fourth instance) to restart serverjack,
+  ttyd or both and proves the terminal comes back with no user action;
+  then rename/kill handling, Back after tab switches, the + panel's close
+  paths and focus, the tab strip (fades, wheel, polls that change nothing),
+  the refit after load and the hidden scrollbar.
 
 **`security_http.py`** (host-side) checks HTTP-parser behavior needing no
 browser: the two `OPEN_PATHS` (and `POST /`, which only redirects) still

@@ -18,22 +18,24 @@ Open it in Chrome (with the Claude in Chrome extension) or do the steps by hand.
 5. Type `echo COPYTEST` Enter. Drag-select the word COPYTEST in the output with the mouse. Press Ctrl+C. Then click in the terminal, type `echo ` and press Ctrl+V, then Enter. Expect "COPYTEST" echoed back. (Copy with a selection must NOT interrupt anything.)
 6. Copy some text from another app, click the terminal, press Ctrl+V. It pastes. Ctrl+Shift+V also pastes.
 7. Click another tab in the bar. The terminal switches; the URL changes to /s/<name>. Click back.
-8. Press + in the bar, try to create a session with the same name "t-desktop". An inline error appears. Escape closes the panel.
-9. On the home page, Open pops the session out into a separate small window with only the terminal (a ⋯ button in its top-right corner shows/hides the bar) and the home page stays. Clicking Open again for the same session refocuses that window instead of opening another. ☰ inside the pop-out closes it.
-9a. In the ⋯ menu of a session, tap **Rename**. A small text box unfolds in place with the current name in it, selected, and (on a phone) the keyboard up. Change it and Save: the row shows the new name without the page reloading, and `tmux ls` agrees. Try renaming it to the name of another session — refused with the reason right under the field, the menu still open and your text still in it — and to `a.b`, which the box itself refuses before sending. Nothing is renamed. If you had a second tab open on the old session, it should move itself to another session within ~15 seconds (its session name no longer exists).
+8. Press + in the bar (it lights up while the panel is open), try to create a session with the same name "t-desktop". An inline error appears. Escape closes the panel and you can type in the terminal straight away. Open it again and close it with Cancel, with + again, and by clicking in the terminal: each closes it and typing still reaches the terminal (no new session appears).
+9. On the home page, Open pops the session out into a separate small window with only the terminal (a ⋯ button in its top-right corner shows/hides the bar) and the home page stays. Clicking Open again for the same session refocuses that window instead of opening another. The logo inside the pop-out (show the bar with ⋯ first) closes it.
+9a. In the ⋯ menu of a session, tap **Rename**. A small text box unfolds in place with the current name in it, selected, and (on a phone) the keyboard up. Change it and Save: the row shows the new name without the page reloading, and `tmux ls` agrees. Try renaming it to the name of another session — refused with the reason right under the field, the menu still open and your text still in it — and to `a.b`, which the box itself refuses before sending. Nothing is renamed. If you had a second tab open on that session, it follows the rename within ~15 seconds (at once when you switch to it): the tab, the address bar and the title show the new name, and the terminal is still attached. Now kill a session you have open in another tab: that tab goes to the session list, which says the session has ended — it never switches you to a different session.
 9b. In the ⋯ menu of a session: "Open here" opens it in this tab; "Copy SSH command" copies an `ssh -t ... tmux attach` line that works in a terminal; "SSH app (login only)" launches your SSH client logged in to the server (not attached to the session) if one is installed.
 9c. From an in-tab session, ↗ pops it out and this tab goes back to the list (you are not attached twice).
 9d. Leave the list tab open (the one you just clicked Open in) and, from another terminal, `tmux kill-session -t <one>` and `tmux new -d -s t-live`. Within ~15 seconds (at once if you switch away and back) the killed row is gone and t-live is listed, with no reload. A popped-out session's dot turns green ("attached") in the list.
-10. Press ✕ in the bar, confirm. You are moved to another session (or the list if none).
+10. Press × in the bar (no confirm). You go back to the session list; the session keeps running.
 11. Resize the browser window. The terminal reflows (tmux status bar stays at the bottom).
-12. Reload the page while in a session. You reconnect into the same session with its history intact.
-13. In the session's terminal run `tmux new-window`. The active tab in the bar grows a small `· 2/2` badge. Click the ACTIVE tab (not another one): a compact list of the windows opens, showing index, name and command, with the current one marked. Pick the other one — the terminal switches and the menu closes. Press Escape with it open: it closes. `tmux kill-window` back to one window; the badge disappears and clicking the active tab does nothing.
+12. Reload the page while in a session. You reconnect into the same session with its history intact. Switch tabs twice, then press the browser's Back: you leave the terminal page (the tab bar, the address bar and the terminal never disagree about which session you are in).
+13. In the session's terminal run `tmux new-window`. The active tab in the bar grows a small `· 2 ▾` badge. Click the ACTIVE tab (not another one): a compact list of the windows opens, showing tmux's index, name and command, with the current one marked. Pick the other one — the terminal switches and the menu closes. Press Escape with it open: it closes. `tmux kill-window` back to one window; the badge disappears and clicking the active tab does nothing.
+14. With more sessions than fit in the bar, the edge with more tabs past it fades out, and the mouse wheel over the tabs scrolls them sideways. Scroll them, wait 20 seconds: they stay where you left them.
+15. `systemctl --user restart serverjack serverjack-ttyd` with a session open. Within a few seconds of the units being back the terminal is live again by itself — no Enter, no reload — and typing reaches the same session.
 Report PASS/FAIL per step plus browser name and OS.
 
 ## Mac (Safari and Chrome)
 
 Same steps as Desktop, but copy/paste uses Cmd+C / Cmd+V (native). Ctrl+C is always interrupt on Mac.
-Also check: 13. In Safari, ↗ pop-out gives a window without the address bar.
+Also check: 16. In Safari, ↗ pop-out gives a window without the address bar.
 
 ## iPhone (Safari)
 
@@ -45,7 +47,7 @@ You are testing a browser-based tmux terminal at https://<your-host>/ on iPhone 
 5. Type `sleep 30` Return, tap ^C in the key row. The sleep stops.
 6. Tap Esc, ↑, ↓, Tab: no crash; ↑ recalls the previous command in bash.
 7. Tap Ctrl, then type `c` on the keyboard: acts like Ctrl+C (interrupts a `sleep 30`). Tap Ctrl then `l`: screen clears.
-8. Lock the phone for a minute, unlock, return to Safari. The terminal reconnects to the same session on its own (a brief "reconnecting" is fine).
+8. Lock the phone for a minute, unlock, return to Safari. The terminal reconnects to the same session on its own within a few seconds, with no tap and no Return (a brief "reconnecting" or "Press ⏎ to Reconnect" that goes away by itself is fine). Repeat with Wi-Fi off while locked, then on again after unlocking.
 9. Switch to another app and back. Same as 8.
 10. Rotate to landscape and back. Terminal reflows.
 11. Double-tap and pinch on the terminal: does it zoom the page? (Report; not necessarily a fail.)
@@ -56,7 +58,7 @@ You are testing a browser-based tmux terminal at https://<your-host>/ on iPhone 
 14c. In a session with two windows (`tmux new-window`), tap the active tab: the window list opens as a comfortable, readable sheet with 44px rows, and picking one switches. Nothing overflows sideways.
 14d. In the home-screen app, scroll the session list up and down: nothing ever shows under the clock and battery (a solid strip stays behind the status bar). Tap ⋯ → Rename on a session and tap the text box: the page must not zoom in. On a 375px or smaller iPhone (mini, SE) the open menu, with Rename unfolded, fits on screen.
 14e. Settings → Display & Brightness → Text Size: drag it two steps larger and reopen the home-screen app. The landing page's text is larger (nothing scrolls sideways); at the default size it looks exactly as before. Tapping any text box still doesn't zoom the page. The terminal page is unchanged by the setting.
-15. ☰ goes back to the list; ✕ closes: in a pop-out it closes the window, in a tab it goes back to the list. The session keeps running either way (kill it from its menu on the landing page).
+15. The logo goes back to the list; there is no × on a phone (it only repeated the logo). The session keeps running (kill it from its menu on the landing page). Tap + : the sheet is opaque over the key row, and Cancel, + again or a tap on the terminal closes it.
 Report PASS/FAIL per step and the iOS version.
 
 ## Directory picker (iPhone; what emulation can't prove)
@@ -160,10 +162,11 @@ Then test each of the three states. The easiest way to see all three is on a mac
    `SERVERJACK_HOSTS=that.domain` in the env file and restart, or every request
    is a 421.
 3. `systemctl --user stop serverjack-ttyd`, then reload a session page: the
-   frame shows a **502 "The terminal isn't answering"** page naming the socket,
-   not a blank frame or a hang. The rest of the page still works and the tmux
-   session is untouched. `systemctl --user start serverjack-ttyd` and reload;
-   the terminal comes back.
+   frame shows a compact **502 "The terminal isn't answering"** page naming
+   the socket (with a Retry button), not a blank frame or a hang. The rest of
+   the page still works and the tmux session is untouched.
+   `systemctl --user start serverjack-ttyd` and do nothing: within about ten
+   seconds the frame is a live terminal again on its own.
 4. `tailscale serve status` lists **one** mount for your HTTPS port, `/`. If a
    `/term` mount is still there, re-run `bash install.sh` — it takes it down
    and says so.
