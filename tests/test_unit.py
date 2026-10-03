@@ -656,6 +656,28 @@ class TermThemeTests(unittest.TestCase):
         finally:
             mod.TERM_THEME_JSON = old
 
+    def test_every_text_color_is_readable_on_the_background(self):
+        # 4.5:1 (WCAG AA) for every slot a program draws text in. brightBlack
+        # was #3f5148, 2.29:1 -- the grey of shell autosuggestions, CLI hint
+        # lines and htop's quieter columns. `black` is exempt: it is a
+        # near-background tone by design (DESIGN.md), and the
+        # minimumContrastRatio that bin/serverjack-ttyd passes with the
+        # theme lifts black-on-background text on its own.
+        def lum(hexcolor):
+            def lin(c):
+                c /= 255
+                return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+            r, g, b = (lin(c) for c in mod._hex_rgb(hexcolor))
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        t = mod._term_theme()
+        bg = lum(t["background"])
+        for key, value in t.items():
+            if key in ("background", "cursorAccent", "black") or not value.startswith("#"):
+                continue
+            ratio = (max(lum(value), bg) + 0.05) / (min(lum(value), bg) + 0.05)
+            with self.subTest(key=key, value=value):
+                self.assertGreaterEqual(ratio, 4.5)
+
 
 class TtydExtraArgsThemeTests(unittest.TestCase):
     """_ttyd_extra_args_has_theme()/_ttyd_extra_args_env(): a user's own ttyd

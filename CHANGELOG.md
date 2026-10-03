@@ -555,6 +555,16 @@ and this project uses [Semantic Versioning](https://semver.org/).
   size back when you click or tap in its terminal or return to the page,
   without sending a key.
 
+- **Terminal colours.** Grey hint text (SGR 90: shell autosuggestions, CLI
+  hint lines, htop's quieter columns) was 2.29:1 on the dark background,
+  darker than stock ttyd, and `ls -l` drew setuid files (`sudo`, `passwd`)
+  and sticky directories as light grey on an equally light red or blue,
+  1.35:1 and 1.14:1 -- next to unreadable. The grey is now 4.56:1, and ttyd
+  is told to keep every character at 4.5:1 or better against its own cell
+  (`minimumContrastRatio=4.5`, sent only with the default theme), which also
+  fixes text on white backgrounds and grey text under the selection in
+  Chrome and Edge. Dim (SGR 2) text is still dim, by design.
+
 ### Added
 
 - A quiet screens count in the terminal bar while a session is open on more

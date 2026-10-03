@@ -157,9 +157,19 @@ fi
 # to starting ttyd without a generated theme rather than refusing to start
 # the terminal at all -- explicit `if` on the assignment, not a bare
 # command substitution, so `set -e` doesn't abort this script on it.
+#
+# minimumContrastRatio=4.5 rides along with the generated theme (and only
+# with it, so SERVERJACK_TERM_THEME=off or a theme of your own stays stock
+# ttyd): xterm.js then lightens any foreground that would land under 4.5:1
+# against its own cell's background. The palette passes on --bg-primary by
+# itself, but a few standard pairs of two palette colours can't -- `ls`
+# paints setuid files white-on-red and sticky dirs white-on-blue, and text
+# on a white background is light-on-light -- and neither can grey text on
+# the selection highlight. 4.5 is VS Code's default. It does not touch SGR 2
+# "dim" text, which is meant to be faint (see docs/design/DESIGN.md).
 theme_args=()
 if theme_json=$(python3 "$here/serverjack" --print-theme); then
-  [[ -n $theme_json ]] && theme_args=(-t "theme=$theme_json")
+  [[ -n $theme_json ]] && theme_args=(-t "theme=$theme_json" -t minimumContrastRatio=4.5)
 else
   echo "serverjack-ttyd: --print-theme failed -- starting without a generated theme" >&2
 fi

@@ -40,11 +40,12 @@ theme_json=$(env SERVERJACK_TERM_THEME= TTYD_EXTRA_ARGS= python3 ../bin/serverja
 
 # baseline: a plain invocation (no SERVERJACK_TERM_THEME, no
 # TTYD_EXTRA_ARGS). baseline_no_theme: the same minus the generated
-# -t theme=... -- what SERVERJACK_TERM_THEME=off, or a TTYD_EXTRA_ARGS that
-# already sets its own theme, is expected to produce instead.
+# -t theme=... and the -t minimumContrastRatio=4.5 that only ever comes with
+# it -- what SERVERJACK_TERM_THEME=off, or a TTYD_EXTRA_ARGS that already
+# sets its own theme, is expected to produce instead.
 baseline_no_theme=(-i "$runtime/serverjack/ttyd.sock" -W -a -O
                     -t titleFixed=security-test -t disableLeaveAlert=true)
-baseline=("${baseline_no_theme[@]}" -t "theme=$theme_json" "$attach")
+baseline=("${baseline_no_theme[@]}" -t "theme=$theme_json" -t minimumContrastRatio=4.5 "$attach")
 baseline_no_theme+=("$attach")
 
 # Compares an argv (by nameref) against an expected array, element by
