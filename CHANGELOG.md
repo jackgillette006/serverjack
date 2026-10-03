@@ -292,6 +292,22 @@ and this project uses [Semantic Versioning](https://semver.org/).
   rendered while the old page's terminal connection was still closing, so
   every round trip marked that session attached; a second look a second
   after load corrects it.
+- **Bigger touch targets.** On touch screens the disclosures ("Save as a
+  shortcut", "Starts in … · change", "Add a shortcut"), the Shell/agent
+  chips, the save checkbox's label, Docs, the CRT toggle, the rename box and
+  its Save, and the agent cards' small buttons are now at least 44px tall
+  (some were 18-24px). "Start at boot" -- which acts the moment it is
+  ticked -- gets a 44px label and is kept clear of the Stop/Start button
+  next to it. "Starts in … · change" is the small muted footnote it was
+  always meant to be (its style lost to a more specific rule), and the CRT
+  toggle meets text contrast.
+- **Windows Contrast themes** no longer hide which Start choice is selected
+  or erase the status dots (both were drawn only with colours and
+  backgrounds that a contrast theme replaces).
+- The command box's example fits its two rows on 320-360px phones
+  ("Optional command, e.g. sudo apt install ffmpeg"), and install commands in
+  an agent card's notes wrap at spaces instead of mid-word
+  (`curl -fsSL http` / `s://...`).
 - `/favicon.ico` answers with the app icon instead of a 404 on every desktop
   visit, and a client that hangs up mid-response (a phone locking, a tab
   closing) no longer leaves a `BrokenPipeError` traceback in the journal.

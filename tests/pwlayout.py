@@ -208,6 +208,52 @@ with sync_playwright() as p:
            geo[1] <= geo[2] and geo[3] >= 3, str(geo))
         c.close()
 
+    # ------------------------------------- touch targets on a phone (F73) --
+    c = phone(p, wk)
+    pg = c.new_page()
+    pg.goto(f"{BASE}/")
+    pg.locator("#startform details.inline > summary").tap()
+    for d in pg.query_selector_all("details.tool"):
+        pg.evaluate("d => d.open = true", d)
+    sizes = pg.evaluate("""() => {
+      const h = sel => [...document.querySelectorAll(sel)].filter(e => e.offsetParent)
+        .map(e => Math.round(e.getBoundingClientRect().height));
+      return {summaries: h('details.card > summary, details.inline > summary'),
+              pills: h('.seg .pill'), save: h('.save'), docs: h('.docs'), ab: h('.ab'),
+              sm: h('.btn.sm'), fxt: h('.foot .fxt')}; }""")
+    small = {k: v for k, v in sizes.items() if any(x < 44 for x in v)}
+    ok("every tappable control on the landing page is at least 44px tall on touch",
+       not small and sizes["summaries"] and sizes["pills"] and sizes["fxt"], str(small or sizes))
+    c.close()
+
+    # ---------------------------- forced colours: state survives (F56) --
+    fctx = b.new_context(viewport={"width": 1280, "height": 800}, forced_colors="active")
+    fp = fctx.new_page()
+    fp.goto(f"{BASE}/")
+    fc = fp.evaluate("""() => { const bg = e => getComputedStyle(e).backgroundColor;
+      const on = document.querySelector('.seg .pill:has(input:checked)'),
+            off = document.querySelector('.seg .pill:not(:has(input:checked))'),
+            dot = document.querySelector('.sess .dot'), page = getComputedStyle(document.body).backgroundColor;
+      return {on: bg(on), off: off ? bg(off) : null, dot: bg(dot), page: page}; }""")
+    ok("Windows Contrast: the selected Start choice looks different from the others",
+       fc["off"] is None or fc["on"] != fc["off"], str(fc))
+    ok("Windows Contrast: status dots are still drawn", fc["dot"] not in (fc["page"], "rgba(0, 0, 0, 0)"), str(fc))
+    fctx.close()
+
+    # -------------------------- command box and install notes (F74) --
+    c = b.new_context(viewport={"width": 320, "height": 700})
+    pg = c.new_page()
+    pg.goto(f"{BASE}/")
+    pg.add_style_tag(content=MONO)
+    fits = pg.evaluate("""() => { const t = document.getElementById('cmd'); t.value = t.placeholder;
+      const r = t.scrollHeight <= t.clientHeight + 1; t.value = ''; return [r, t.placeholder]; }""")
+    ok("320px: the command box's example fits its two rows (nothing cut in half)", fits[0], str(fits))
+    wrap = pg.evaluate("""() => { const c = document.createElement('code'), n = document.createElement('p');
+      n.className = 'note'; n.appendChild(c); document.body.appendChild(n); const s = getComputedStyle(c);
+      const r = [s.wordBreak, s.overflowWrap]; n.remove(); return r; }""")
+    ok("install commands in notes wrap at spaces, not mid-word", wrap == ["normal", "anywhere"], str(wrap))
+    c.close()
+
     # ------------------------------------------ per-row accessible names --
     page.goto(f"{BASE}/")
     names = page.evaluate("""() => ({
