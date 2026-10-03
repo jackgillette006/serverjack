@@ -1275,26 +1275,41 @@ def session_idle(name):
 # rename-session, so a server is still found after a rename, two project
 # directories with the same basename get two servers, and an interactive
 # session that merely happens to be called claude-remote-<x> is never taken
-# for one -- or stopped by the card's Stop.
+# for one -- or stopped by the card's Stop. A third, @sj_pane, holds the id
+# of the pane the server runs in: a window opened beside it (prefix+c, the
+# window tabs) or a split becomes the session's *active* pane, and a server
+# judged by that plain shell read as exited -- so Start, Remove and
+# autostart replaced a live server.
 
-SERVER_MARK, SERVER_DIR_MARK = "@sj_server", "@sj_dir"
+SERVER_MARK, SERVER_DIR_MARK, SERVER_PANE_MARK = "@sj_server", "@sj_dir", "@sj_pane"
 
 
 def server_panes():
-    """sessions(), cut down to what the agent cards need: each session's
-    name, its active pane's command, pid and directory, and the server
-    marks. [] when no tmux server is running."""
-    fmt = "\t".join(["#{session_name}", "#{pane_current_command}", "#{pane_pid}",
+    """Every tmux session, cut down to what the agent cards need: its name,
+    the server marks, and the command, pid and directory of the pane that
+    matters -- a marked server's own pane (@sj_pane), wherever the active one
+    is, else the session's first pane (an older server's, or a session's
+    original one). "gone": the marked pane no longer exists, i.e. the server
+    is not running whatever the rest of the session does.
+    [] when no tmux server is running."""
+    fmt = "\t".join(["#{session_name}", "#{pane_id}", "#{pane_current_command}", "#{pane_pid}",
                      "#{pane_current_path}", "#{" + SERVER_MARK + "}",
-                     "#{" + SERVER_DIR_MARK + "}"])
-    r = tmux("list-sessions", "-F", fmt)
-    out = []
+                     "#{" + SERVER_DIR_MARK + "}", "#{" + SERVER_PANE_MARK + "}"])
+    r = tmux("list-panes", "-a", "-F", fmt)
+    out, by_name = [], {}
     if r.returncode != 0:
         return out
+    # Sessions in order, each one's windows and panes in index order: the
+    # first line of a session is its first pane.
     for line in r.stdout.splitlines():
-        name, cmd, pid, path, mark, mdir = (line.split("\t") + [""] * 6)[:6]
-        out.append({"name": name, "cmd": cmd, "pid": pid, "path": path,
-                    "mark": mark, "mark_dir": unquote(mdir)})
+        name, pane, cmd, pid, path, mark, mdir, mpane = (line.split("\t") + [""] * 8)[:8]
+        s = by_name.get(name)
+        if s is None:
+            s = by_name[name] = {"name": name, "cmd": cmd, "pid": pid, "path": path,
+                                 "mark": mark, "mark_dir": unquote(mdir), "gone": bool(mpane)}
+            out.append(s)
+        if mpane and pane == mpane:
+            s.update(cmd=cmd, pid=pid, path=path, gone=False)
     return out
 
 
@@ -1329,7 +1344,8 @@ def server_instances(tool, panes):
         else:
             continue
         out.append({"session": p["name"], "dir": _dir_show(d) if d else "~",
-                    "state": "exited" if pane_exited(p["cmd"], p["pid"]) else "on"})
+                    "state": ("exited" if p.get("gone") or pane_exited(p["cmd"], p["pid"])
+                              else "on")})
     return out
 
 
@@ -1358,7 +1374,8 @@ def start_server(tool, cwd):
     name = auto_name(server_session_name(server, cwd))
     err = create_command_session(name, cwd, server["cmd"],
                                  marks={SERVER_MARK: tool["id"],
-                                        SERVER_DIR_MARK: quote(cwd, safe="/")})
+                                        SERVER_DIR_MARK: quote(cwd, safe="/")},
+                                 pane_mark=SERVER_PANE_MARK)
     return name, err, err is None
 
 
@@ -1575,13 +1592,16 @@ def command_args(cmd):
             'rc=$?; echo; echo "[exited with status $rc]"; exec bash -l']
 
 
-def create_command_session(name, cwd, cmd, marks=None):
+def create_command_session(name, cwd, cmd, marks=None, pane_mark=None):
     """A session that runs one command in front of a login shell. marks:
     tmux user options to set on it in the same tmux call, so no listing
-    ever sees the session without them (see start_server())."""
+    ever sees the session without them (see start_server()). pane_mark: a
+    user option set to the new pane's id, the pane the command runs in."""
     extra = []
     for key, value in (marks or {}).items():
         extra += [";", "set-option", "-t", f"={name}:", key, value]
+    if pane_mark:
+        extra += [";", "set-option", "-F", "-t", f"={name}:", pane_mark, "#{pane_id}"]
     r = tmux("new-session", "-d", "-s", name, "-c", cwd, "-e", f"PATH={TOOL_PATH}",
              *command_args(cmd), *extra)
     if r.returncode != 0:

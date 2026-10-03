@@ -233,9 +233,12 @@ list out over a `ThreadPoolExecutor` so rendering costs about one login check,
 not one per tool.
 
 Server instances are the sessions serverjack started for a tool's `server`:
-`start_server()` creates them with two tmux session options, `@sj_server`
-(tool id) and `@sj_dir` (percent-encoded directory), in the same tmux call;
-`server_instances()` reads them back via `server_panes()`. Options survive
+`start_server()` creates them with tmux session options, `@sj_server`
+(tool id), `@sj_dir` (percent-encoded directory) and `@sj_pane` (the id of
+the pane the server runs in), in the same tmux call; `server_instances()`
+reads them back via `server_panes()`, a `list-panes -a` that judges each
+server by its own pane, not the session's active one (a window opened
+beside it is a plain shell that would read as exited). Options survive
 `rename-session`, so identity never depends on the name (`<session>-<dir>`,
 made unique with `auto_name()`). An unmarked session from an older version is
 adopted only if it has that version's name and its `SERVERJACK_CMD` is the

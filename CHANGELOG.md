@@ -19,7 +19,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
   server itself, a running server reads running with Stop and Open, and a
   second Start says "already running" and leaves it alone. Servers started
   by 1.5.0 that are still up are recognised as running too. `/api/status`
-  counts them again.
+  counts them again. A server is judged by its own pane, so opening a
+  second window in its session (prefix+c, the window tabs) or splitting it
+  no longer makes it read "exited" either.
 - **Servers are found by what they are, not by their name.** serverjack
   marks the sessions it starts as servers (tmux session options) and finds
   them by that. Two project directories with the same name

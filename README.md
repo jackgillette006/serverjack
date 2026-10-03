@@ -900,7 +900,7 @@ unrecognized `id` is appended as a new tool.
 | `run` | interactive command; having one is what makes the tool a radio in Start a session (missing means the tool can only be installed/logged in below) |
 | `run_note` | unused now, kept for compatibility with an existing `tools.json` — Start a session doesn't show a per-tool note |
 | `paths` | extra directories (may use `~`) to look for `bin` in, on top of `PATH` |
-| `server` | `{label, cmd, session, note, per_dir}` — long-running command kept in a named tmux session; `per_dir: true` means one per project directory, sessions named `<session>-<dir>` (`-2` when the name is taken), each listed with its directory. serverjack marks the sessions it starts (tmux session options `@sj_server`/`@sj_dir`) and finds them by that, not by name: a renamed server is still yours, and an interactive session that happens to share the prefix is never taken for one |
+| `server` | `{label, cmd, session, note, per_dir}` — long-running command kept in a named tmux session; `per_dir: true` means one per project directory, sessions named `<session>-<dir>` (`-2` when the name is taken), each listed with its directory. serverjack marks the sessions it starts (tmux session options `@sj_server`/`@sj_dir`/`@sj_pane`) and finds them by that, not by name: a renamed server is still yours, an interactive session that happens to share the prefix is never taken for one, and a window you open beside a server doesn't make it read as exited |
 | `daemon` | `{label, start, stop, pidfile, note}` — self-daemonizing command with start/stop and a pidfile for status |
 | `actions` | list of `{label, cmd, note, dir}` extra option rows; `note` is the one-liner beside it, `"dir": true` gives it the directory picker |
 
