@@ -253,6 +253,20 @@ and this project uses [Semantic Versioning](https://semver.org/).
   session's menu but opened the same bare `ssh://user@host` for all of them;
   an `ssh://` link cannot carry `tmux attach`, so the label now says what it
   does (Copy SSH command is the one that attaches).
+- **One ⋯ menu at a time, and Escape closes it.** Opening a second row's menu
+  left the first one open underneath (so the "Kill session" you saw could
+  belong to a different row), Escape did nothing, tabbing out left the menu
+  covering the next rows, and a half-typed rename was still there next time.
+  Now opening one closes the others, Escape closes Rename and then the menu
+  and puts focus back on its ⋯, focus or a press outside closes it, and a
+  closed menu always reopens with Rename folded and the real name in it.
+- **A menu near the bottom of the screen opens upward** (or scrolls itself
+  into view when there is no room either way) instead of opening off-screen
+  so the tap looked like it did nothing; an open menu's ⋯ now looks pressed.
+- **"Copy SSH command" tapped twice no longer sticks on "Copied".**
+- **Ctrl/Cmd/Shift-click on Open** gets the browser's own new tab or window
+  on the normal session page, instead of our pop-up (or, on "Open here",
+  instead of navigating the list away).
 - `/favicon.ico` answers with the app icon instead of a 404 on every desktop
   visit, and a client that hangs up mid-response (a phone locking, a tab
   closing) no longer leaves a `BrokenPipeError` traceback in the journal.

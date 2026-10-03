@@ -3345,6 +3345,12 @@ details.card[open] summary::before,details.inline[open] summary::before{content:
 }
 @media (pointer:coarse){.menu-list details.ren > summary{min-height:44px}}
 @keyframes sj-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+/* no room below: LAND_JS flips it above its row */
+.menu-list.up{top:auto;bottom:calc(100% + 4px);animation-name:sj-up}
+@keyframes sj-up{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+/* the ⋯ shows that its menu is open (hover alone said nothing once the
+   pointer left, and nothing at all on touch) */
+.menu[open] > summary{background:var(--surface);color:var(--text-primary)}
 body.touch .desktop-only{display:none}
 
 /* agents: one exclusive accordion, one collapsed row per tool */
@@ -3491,6 +3497,9 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
   document.addEventListener('click', function (e) {{
     var a = e.target.closest('a.open, a[data-open=popout]'); var menu = e.target.closest('details.menu');
     if (a) {{
+      // Ctrl/Cmd/Shift/Alt-click (or a non-primary button): the browser's own
+      // new tab or window on the link's real href, not our pop-up.
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button) return;
       var name = a.dataset.name || a.closest('.sess').querySelector('a.open').dataset.name;
       var wantPop = a.dataset.open === 'popout' || (!touch && !a.dataset.open);
       if (wantPop && popout('/s/' + encodeURIComponent(name) + '?popout=1', name)) e.preventDefault();
@@ -3500,12 +3509,20 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     }}
     var c = e.target.closest('[data-copy]');
     if (c) {{
-      var t = c.dataset.copy, l = c.querySelector('.lbl') || c, old = l.textContent;
-      var done = function () {{ l.textContent = 'Copied'; setTimeout(function () {{ l.textContent = old; }}, 1200); }};
+      // The label to go back to is read once: reading it on every click made
+      // a second tap inside the 1.2s save "Copied" as the label for good.
+      var t = c.dataset.copy, l = c.querySelector('.lbl') || c;
+      if (!l.dataset.label) l.dataset.label = l.textContent;
+      var done = function () {{
+        clearTimeout(l._sjt); l.textContent = 'Copied';
+        l._sjt = setTimeout(function () {{ l.textContent = l.dataset.label; }}, 1200);
+      }};
       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, function () {{ prompt('Copy this:', t); }});
       else prompt('Copy this:', t);
       return;
     }}
+    // ssh:// hands off to another app: close the menu so the tap shows.
+    if (menu && e.target.closest('a[data-open=ssh]')) {{ menu.removeAttribute('open'); return; }}
     if (!menu) document.querySelectorAll('details.menu[open]').forEach(function (d) {{ d.removeAttribute('open'); }});
   }});
   // "start at boot": the checkbox lives in an option row but belongs (form=)
@@ -3554,8 +3571,117 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 }})();
 </script>
 <script>{dirpick_js}</script>
+<script>{land_js}</script>
 <script>{flows_js}</script>
 </main></body></html>
+"""
+
+# The landing page's ⋯ menus, as their own plain (not .format()-ed) script:
+#  - one open at a time (also native: <details name="sj-menu">), and closing
+#    one folds Rename and puts the original name back;
+#  - Escape closes the innermost open part (Rename, then the menu) and gives
+#    focus back to its summary; focus moving out of a menu closes it, and so
+#    does a press anywhere outside it (pointerdown: iOS does not deliver a
+#    tap on plain page background as a click on document);
+#  - a menu that would open below the bottom of the screen opens upward
+#    instead, or scrolls itself into view when there is no room either way.
+LAND_JS = r"""
+(function () {
+  'use strict';
+  function visibleBottom() {
+    var vv = window.visualViewport;
+    return vv ? vv.offsetTop + vv.height : innerHeight;
+  }
+  function visibleTop() {
+    var vv = window.visualViewport, sb = document.getElementById('sbbg');
+    return (vv ? vv.offsetTop : 0) + (sb ? sb.offsetHeight : 0);
+  }
+  // Downward if it fits, else upward if that fits, else down and scrolled in.
+  // again: an open menu changed size (Rename unfolding, an error under its
+  // field). It keeps its direction then -- a flip moved the field the user
+  // just tapped across the screen, and replayed the entrance animation (a
+  // blink) -- and is scrolled into view instead. Only an upward list that
+  // has grown above the page itself, where no scrolling reaches it, turns
+  // downward, without the animation.
+  function place(d, again) {
+    var list = d.querySelector('.menu-list');
+    if (!list) return;
+    if (again) {
+      if (list.classList.contains('up')) {
+        if (list.getBoundingClientRect().top >= visibleTop() + 8) return;
+        list.scrollIntoView({ block: 'nearest' });
+        if (list.getBoundingClientRect().top >= visibleTop()) return;
+        list.style.animation = 'none';
+        list.classList.remove('up');
+      }
+      list.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    list.style.animation = '';
+    list.classList.remove('up');
+    var r = list.getBoundingClientRect();
+    if (r.bottom <= visibleBottom() - 8) return;
+    var cb = (list.offsetParent || d).getBoundingClientRect();
+    if (cb.top - 4 - r.height >= visibleTop() + 8) { list.classList.add('up'); return; }
+    list.scrollIntoView({ block: 'nearest' });
+  }
+  // An open menu re-placed whenever its size changes, whatever changed it.
+  var ro = window.ResizeObserver ? new ResizeObserver(function (es) {
+    es.forEach(function (en) {
+      var d = en.target.closest('details.menu');
+      if (d && d.open) place(d, true);
+    });
+  }) : null;
+  function reset(ren) {
+    var i = ren.querySelector('input[name=new]');
+    if (i) i.value = i.defaultValue;
+  }
+  document.addEventListener('toggle', function (e) {   // toggle doesn't bubble
+    var d = e.target;
+    if (!d.matches) return;
+    if (d.matches('details.menu')) {
+      var list = d.querySelector('.menu-list');
+      if (d.open) {
+        document.querySelectorAll('details.menu[open]').forEach(function (o) {
+          if (o !== d) o.open = false;
+        });
+        place(d);
+        if (ro && list) ro.observe(list);
+      } else {
+        var ren = d.querySelector('details.ren');
+        if (ren) { ren.open = false; reset(ren); }
+        if (list) {
+          if (ro) ro.unobserve(list);
+          list.classList.remove('up'); list.style.animation = '';
+        }
+      }
+    } else if (d.matches('details.ren')) {
+      if (!d.open) reset(d);
+      var m = d.closest('details.menu');
+      if (m && m.open) place(m, true);
+    }
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' || e.defaultPrevented) return;
+    var a = document.activeElement;
+    var d = (a && a.closest && a.closest('details.ren[open]')) || document.querySelector('details.menu[open]');
+    if (!d) return;
+    d.open = false;
+    var s = d.querySelector('summary');
+    if (s) s.focus();
+  });
+  document.addEventListener('focusout', function (e) {
+    var d = e.target.closest && e.target.closest('details.menu[open]');
+    // No relatedTarget: an iOS tap, a confirm() or an app switch -- not "left".
+    if (d && e.relatedTarget && !d.contains(e.relatedTarget)) d.open = false;
+  });
+  document.addEventListener('pointerdown', function (e) {
+    var inside = e.target.closest && e.target.closest('details.menu');
+    document.querySelectorAll('details.menu[open]').forEach(function (d) {
+      if (d !== inside) d.open = false;
+    });
+  });
+})();
 """
 
 START_CARD = """<h2>Start a session</h2>
@@ -3935,7 +4061,7 @@ SESSION_CARD = """<div class="card sess" data-session="{name}" data-created="{cr
     <div class="name" title="{name}"><span class="dot{on}" role="img" aria-label="{state}" title="{state}"></span><span class="nm">{name}</span>{tag}</div>
     <div class="meta split"><span class="facts">{facts}</span><span class="where">&nbsp;&middot; {cmd} &middot; {path}</span></div>
   </div>
-  <details class="menu">
+  <details class="menu" name="sj-menu">
     <summary class="btn ghost icon" title="More actions for {name}" aria-label="More actions for {name}">{dots}</summary>
     <div class="menu-list">
       <a href="{href}" data-open="here">{i_here}<span>Open here</span></a>
@@ -5140,7 +5266,7 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
                   f'{esc(flash)}</div>') if flash else ""
     return PAGE.format(css=CSS, error=flash_html + err, body=body, title=esc(TITLE), glyph=I_LOGO,
                        title_small=title_small(),
-                       pwa_links=PWA_LINKS, dirpick_js=DIRPICK_JS, flows_js=FLOWS_JS,
+                       pwa_links=PWA_LINKS, dirpick_js=DIRPICK_JS, land_js=LAND_JS, flows_js=FLOWS_JS,
                        sysline=system_line(), fx_class=FX_CLASS, version=esc(VERSION))
 
 
