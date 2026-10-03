@@ -231,7 +231,179 @@ with sync_playwright() as p:
         ok(f"{w}px: ...and the rename box is 16px, so iOS doesn't zoom on focus",
            box[5] >= 16, str(box[5]))
         c.close()
+
+    # ------------------------------------------------- ⋯ menu behaviour --
+    print("chromium desktop, menus:")
+    mctx = b.new_context(viewport={"width": 1280, "height": 800},
+                         permissions=["clipboard-read", "clipboard-write"])
+    mp = mctx.new_page()
+    mp.on("pageerror", lambda e: print("   [pageerror]", e))
+    mp.goto(f"{BASE}/")
+    rows_sel = ".sess[data-session]"
+    first, second = mp.eval_on_selector_all(rows_sel, "els => els.slice(0, 2).map(e => e.dataset.session)")
+
+    def row(n):
+        return f'.sess[data-session="{n}"]'
+
+    def open_menus():
+        return mp.eval_on_selector_all("details.menu[open]", "els => els.map(e => e.closest('.sess').dataset.session)")
+    mp.click(f"{row(second)} details.menu > summary")
+    mp.click(f"{row(first)} details.menu > summary")
+    mp.wait_for_timeout(150)
+    ok("opening a second row's ⋯ closes the first (one menu at a time)",
+       open_menus() == [first], str(open_menus()))
+    mp.keyboard.press("Escape")
+    mp.wait_for_timeout(100)
+    ok("Escape closes the menu and puts focus back on its ⋯",
+       open_menus() == [] and mp.evaluate(
+           f"document.activeElement === document.querySelector('{row(first)} details.menu > summary')"),
+       str(open_menus()))
+    # Rename typed into, then abandoned: reopening shows it folded, original name
+    mp.click(f"{row(first)} details.menu > summary")
+    mp.click(f"{row(first)} details.ren > summary")
+    mp.fill(f'{row(first)} form[action="/rename"] input[name=new]', "half-typed")
+    mp.keyboard.press("Escape")
+    mp.wait_for_timeout(100)
+    ok("Escape inside Rename folds Rename first, leaving the menu open",
+       open_menus() == [first] and mp.locator(f"{row(first)} details.ren[open]").count() == 0)
+    mp.mouse.click(5, 5)
+    mp.wait_for_timeout(100)
+    mp.click(f"{row(first)} details.menu > summary")
+    ren_state = mp.evaluate(f"""() => {{ const r = document.querySelector('{row(first)} details.ren');
+      return [r.open, r.querySelector('input[name=new]').value]; }}""")
+    ok("reopening the menu shows Rename folded with the original name",
+       ren_state == [False, first], str(ren_state))
+    # keyboard: tabbing out of the menu closes it
+    mp.keyboard.press("Escape")
+    mp.focus(f"{row(first)} details.menu > summary")
+    mp.keyboard.press("Enter")
+    for _ in range(12):
+        mp.keyboard.press("Tab")
+        if not mp.evaluate(f"document.querySelector('{row(first)} details.menu').contains(document.activeElement)"):
+            break
+    mp.wait_for_timeout(100)
+    ok("tabbing out of an open menu closes it", open_menus() == [], str(open_menus()))
+    # Copy SSH command tapped twice: the label must come back
+    mp.click(f"{row(first)} details.menu > summary")
+    cp = mp.locator(f"{row(first)} [data-copy]")
+    if cp.count():
+        cp.click()
+        mp.wait_for_timeout(300)
+        cp.click()
+        mp.wait_for_timeout(1700)
+        ok("Copy SSH command tapped twice goes back to its label, not 'Copied' for good",
+           cp.inner_text().strip() == "Copy SSH command", cp.inner_text())
+    mp.keyboard.press("Escape")
+    # Ctrl+click Open: the browser's own new tab on /s/<name>, not our pop-up
+    with mctx.expect_page() as newp:
+        mp.click(f"{row(first)} a.open", modifiers=["Control"])
+    np_ = newp.value
+    try:
+        np_.wait_for_url("**/s/**", timeout=5000)
+    except Exception:
+        pass
+    ok("Ctrl+click on Open opens the plain session page in a new tab, not the pop-out",
+       "/s/" in np_.url and "popout" not in np_.url and mp.url.rstrip("/") == BASE,
+       f"new={np_.url!r} landing={mp.url!r}")
+    np_.close()
+    mctx.close()
+
+    # -------------------------- a menu near the bottom of the screen (F65) --
+    print("webkit iphone, menus near the bottom:")
+    for w, h in ((390, 664), (844, 390)):
+        c = phone(p, wk, w, h)
+        pg = c.new_page()
+        pg.goto(f"{BASE}/")
+        last = pg.eval_on_selector_all(".sess[data-session]", "els => els[els.length - 1].dataset.session")
+        # put the last row's bottom edge at the bottom of the screen
+        pg.evaluate(f"""() => {{ const r = document.querySelector('.sess[data-session="{last}"]');
+          window.scrollBy(0, r.getBoundingClientRect().bottom - innerHeight + 2); }}""")
+        pg.wait_for_timeout(150)
+        pg.locator(f'.sess[data-session="{last}"] details.menu > summary').tap()
+        pg.wait_for_timeout(400)
+        box = pg.evaluate(f"""() => {{ const l = document.querySelector('.sess[data-session="{last}"] .menu-list')
+          .getBoundingClientRect(); return [l.top, l.bottom, innerHeight]; }}""")
+        ok(f"{w}x{h}: the last row's menu opens fully on screen (flipped up or scrolled in)",
+           box[0] >= 0 and box[1] <= box[2] + 0.5, str(box))
+        if w == 390:
+            pg.screenshot(path="shots/layout-menu-bottom.png")
+        c.close()
     hold.close()
+
+    # ---- an open menu that changes size: Rename, then a refused name (F31) --
+    # The row is put at a known height (main's top padding) so that its menu
+    # fits below on its own but not with Rename open (A), or opens upward and
+    # fits above with Rename open but not with the error too (B, at the top
+    # of the page, where no scroll reaches what is above it).
+    c = phone(p, wk, 390, 664)
+    pg = c.new_page()
+    pg.goto(f"{BASE}/")
+    names = pg.eval_on_selector_all(".sess[data-session]", "els => els.map(e => e.dataset.session)")
+    victim, taken = names[0], names[1]
+    sel = f'.sess[data-session="{victim}"]'
+    LIST = f"(() => {{ const l = document.querySelector('{sel} .menu-list'), r = l.getBoundingClientRect();" \
+           " return {top: r.top, bottom: r.bottom, h: r.height, up: l.classList.contains('up')}; })()"
+
+    def menu_steps(page):
+        page.locator(f"{sel} details.menu > summary").tap()
+        page.wait_for_timeout(250)
+        a = page.evaluate(LIST)
+        page.locator(f"{sel} details.ren summary").tap()
+        page.wait_for_timeout(250)
+        b_ = page.evaluate(LIST)
+        page.fill(f"{sel} input[name=new]", taken)
+        page.locator(f'{sel} form[action="/rename"] button').tap()
+        page.wait_for_selector(f"{sel} .menu-list .err")
+        page.wait_for_timeout(250)
+        return a, b_, page.evaluate(LIST)
+
+    def at(page, top, height):
+        page.set_viewport_size({"width": 390, "height": height})
+        page.evaluate(f"""() => {{ window.scrollTo(0, 0); const m = document.querySelector('main'),
+          r = document.querySelector('{sel}').getBoundingClientRect();
+          m.style.paddingTop = (parseFloat(getComputedStyle(m).paddingTop) + {top} - r.top) + 'px'; }}""")
+        return page.evaluate(f"document.querySelector('{sel}').getBoundingClientRect().height")
+
+    l1, l2, l3 = menu_steps(pg)                    # measured: fresh, with Rename, with the error
+    for case in ("A", "B"):
+        pg.goto(f"{BASE}/")
+        if case == "A":
+            top = l2["h"] + 60
+            row_h = at(pg, top, 664)
+            at(pg, top, int(top + row_h + 4 + l1["h"] + 20))
+        else:
+            top = int(l2["h"] + 12 + (l3["h"] - l2["h"]) / 2)
+            row_h = at(pg, top, 664)
+            at(pg, top, int(top + row_h + 40))
+        pg.locator(f"{sel} details.menu > summary").tap()
+        pg.wait_for_timeout(250)
+        # its own entrance animation over first (a loaded machine runs it late)
+        wait_for(lambda: pg.evaluate(f"""(() => {{ const l = document.querySelector('{sel} .menu-list');
+          return getComputedStyle(l).opacity === '1' && !(l.getAnimations && l.getAnimations().length); }})()"""), 3)
+        fresh = pg.evaluate(LIST)
+        pg.evaluate("""() => { window.__op = []; const t0 = performance.now(), l = document.querySelector('%s .menu-list');
+          (function f() { window.__op.push(parseFloat(getComputedStyle(l).opacity));
+            if (performance.now() - t0 < 300) requestAnimationFrame(f); })(); }""" % sel)
+        pg.locator(f"{sel} details.ren summary").tap()
+        pg.wait_for_timeout(350)
+        ren, ops = pg.evaluate(LIST), pg.evaluate("window.__op")
+        if case == "A":
+            ok("A menu that opened downward stays downward when Rename makes it taller (no jump)",
+               not fresh["up"] and not ren["up"] and ren["bottom"] <= pg.evaluate("innerHeight") + 0.5,
+               str([fresh, ren]))
+        else:
+            ok("An upward menu doesn't blink when Rename opens (no replayed animation)",
+               fresh["up"] and ren["up"] and min(ops or [0]) > 0.9, str([fresh, ren, min(ops or [0])]))
+            pg.fill(f"{sel} input[name=new]", taken)
+            pg.locator(f'{sel} form[action="/rename"] button').tap()
+            pg.wait_for_selector(f"{sel} .menu-list .err")
+            pg.wait_for_timeout(350)
+            err = pg.evaluate(LIST)
+            first = pg.evaluate(f"document.querySelector('{sel} .menu-list a').getBoundingClientRect().top")
+            ok("...and a refused name grows it without pushing Open here off the top of the page",
+               err["top"] >= -0.5 and first >= -0.5 and err["bottom"] <= pg.evaluate("innerHeight") + 0.5,
+               str([l1, l2, l3, fresh, ren, err, first]))
+    c.close()
 
     wk.close()
     b.close()
