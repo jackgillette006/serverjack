@@ -2261,6 +2261,11 @@ class LandingHandlerTests(unittest.TestCase):
         h.do_POST()
         return h.sent
 
+    def get(self, path):
+        h = self.Stub(path)
+        h.do_GET()
+        return h.sent
+
     def test_start_error_keeps_the_typed_directory_and_the_shortcut_tick(self):
         kind, status, page = self.post("/start", what="shell", dir=self.dir, name="main",
                                        cmd="echo hi", save="1", label="")
@@ -2322,12 +2327,46 @@ class LandingHandlerTests(unittest.TestCase):
     def test_post_to_root_redirects_home(self):
         # WebKit reloads a replaceState'd error page as a POST to its new URL.
         self.assertEqual(self.post("/", what="shell", name="main"), ("redirect", 303, "/"))
+        # ...including a refused shortcut edit, whose page sits at /?edit_sc=<id>.
+        self.assertEqual(self.post("/?edit_sc=sc1", label="x", cmd="x"),
+                         ("redirect", 303, "/?edit_sc=sc1"))
 
     def test_prefs_error_is_shown_inside_the_change_form(self):
         _, status, page = self.post("/prefs", dir=os.path.join(self.dir, "missing"))
         self.assertEqual(status, 400)
         dd = page.index('class="inline ddchange"')
         self.assertGreater(page.index("Not a directory"), dd)
+
+    def test_an_edit_of_a_removed_shortcut_comes_back_as_an_add(self):
+        _, status, page = self.post("/shortcuts/add", id="gone-123", label="Deploy",
+                                    cmd="./deploy.sh", dir=self.dir)
+        self.assertEqual(status, 404)
+        self.assertIn("no longer exists", page)
+        self.assertNotIn('value="gone-123"', page)      # not an edit that 404s on every retry
+        self.assertIn(">Add a shortcut<", page)
+        self.assertNotIn(">Edit shortcut<", page)
+        self.assertIn('value="Deploy"', page)
+        self.assertIn("./deploy.sh", page)
+        _, _, where = self.post("/shortcuts/add", label="Deploy", cmd="./deploy.sh", dir=self.dir)
+        self.assertEqual(where, "/?done=sc-saved&n=Deploy#shortcuts")
+
+    def test_a_hand_edited_file_with_numbers_for_text(self):
+        with open(mod.SHORTCUTS_FILE, "w") as f:
+            json.dump([{"id": 7, "label": 42, "cmd": "uptime", "dir": self.dir}], f)
+        kind, status, page = self.get("/")
+        self.assertEqual((kind, status), ("html", 200))
+        self.assertIn("/?edit_sc=7#addsc", page)
+        _, _, page = self.get("/?edit_sc=7")
+        self.assertIn('name="id" value="7"', page)
+        self.assertIn(">Edit shortcut<", page)
+        sc = mod.load_shortcuts()[0]
+        self.assertEqual(mod.shortcut_session_name(sc, self.dir), "42")
+        _, _, where = self.post("/shortcuts/add", id="7", label="Up", cmd="uptime -p", dir=self.dir)
+        self.assertEqual(where, "/?done=sc-updated&n=Up#shortcuts")
+        self.assertEqual([(x["id"], x["cmd"]) for x in mod.load_shortcuts()], [("7", "uptime -p")])
+        _, _, where = self.post("/shortcuts/del", id="7")
+        self.assertEqual(where, "/?done=sc-removed&n=Up#shortcuts")
+        self.assertEqual(mod.load_shortcuts(), [])
 
 
 if __name__ == "__main__":

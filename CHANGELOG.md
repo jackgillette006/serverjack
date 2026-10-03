@@ -238,7 +238,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 - **Edit a shortcut.** A pencil on each saved shortcut opens it in the
   shortcut form; *Save changes* replaces it in place, same position in the
-  list. The built-in Update row has none.
+  list, and *Cancel* puts the form back to Add a shortcut. A reload keeps
+  the editor open; if the shortcut was removed meanwhile (another tab), what
+  you typed comes back as a new shortcut to save. The built-in Update row
+  has none.
 
 ## 1.5.0 - 2026-09-16
 
