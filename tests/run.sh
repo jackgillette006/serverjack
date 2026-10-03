@@ -168,7 +168,7 @@ printf '%s\n' "PS1='serverjack-test\$ '" > "$TEST_HOME/bashrc"
 printf -v session_shell 'exec env HOME=%q bash --noprofile --rcfile %q -i' \
   "$TEST_HOME" "$TEST_HOME/bashrc"
 
-# A throwaway config dir with two fake agents, so the agent-card tests are
+# A throwaway config dir with fake agents, so the agent-card tests are
 # deterministic and never touch a real coding CLI or the user's shortcuts.
 CFG=$RUN_ROOT/cfg
 mkdir -m 700 "$CFG"
@@ -194,7 +194,9 @@ cat > "$CFG/tools.json" <<JSON
               {"label": "here", "cmd": "echo HERE_RAN", "dir": true}]},
  {"id": "fake2", "label": "Fake two", "bin": "true", "run": "bash"},
  {"id": "pathfake", "label": "Path fixture", "bin": "pathfake", "run": "pathfake",
-  "paths": ["$TOOLPATH_DIR"]}]
+  "paths": ["$TOOLPATH_DIR"]},
+ {"id": "fakesvc", "label": "Fake service", "bin": "true",
+  "daemon": {"label": "Fake daemon", "start": "true", "stop": "true"}}]
 JSON
 
 # The directory picker's default SERVERJACK_DIRS (~/projects:~/src:~/code:~)
@@ -214,7 +216,7 @@ mkdir -p "$TEST_HOME/projects/ai/3d-lab/scenes"
 # a reason that has nothing to do with the change under test.
 # shellcheck disable=SC2054  # the comma is inside SERVERJACK_TOOLS's value, not an array separator
 common=(HOME="$TEST_HOME" SERVERJACK_LISTEN=tcp SERVERJACK_TITLE=test SERVERJACK_CONFIG="$CFG"
-        SERVERJACK_TOOLS=fake,fake2,pathfake SERVERJACK_TRUST_UIDS=101
+        SERVERJACK_TOOLS=fake,fake2,pathfake,fakesvc SERVERJACK_TRUST_UIDS=101
         SERVERJACK_TERM_THEME= TTYD_EXTRA_ARGS= HOME="$TEST_HOME")
 env "${common[@]}" XDG_RUNTIME_DIR="$RT" SERVERJACK_PORT="$PORT" \
     python3 ../bin/serverjack >shots/web.log 2>&1 & pids+=($!)
@@ -388,7 +390,7 @@ for a in "${explicit_args[@]}"; do
   esac
 done
 [[ ${#suites[@]} -eq 0 && ${#explicit_args[@]} -eq 0 ]] \
-  && suites=(pwtest pwclip pwmobile pwpop pwland pwauth pwwin pwagents pwdirpick)
+  && suites=(pwtest pwclip pwmobile pwpop pwland pwauth pwwin pwagents pwdirpick pwflows)
 for suite in "${suites[@]}"; do
   [[ $suite =~ ^[a-zA-Z0-9_-]+$ && -f $suite.py ]] \
     || { echo "unknown test suite: $suite" >&2; exit 2; }

@@ -241,13 +241,26 @@ yet.
 
 Naming the session is optional — leave it blank and it is named for the type
 and directory instead (a shell in `~/projects/3d-lab` becomes `shell-3d-lab`,
-`claude` in `~/projects/game` becomes `claude-game`).
+`claude` in `~/projects/game` becomes `claude-game`; a command names it after
+what it runs, skipping `sudo`/`env`/`nice` and their options, so
+`sudo -u postgres psql` becomes `psql`).
 
-Tick "Save as a shortcut" (only offered with a Shell command) and it becomes
-a one-tap button in the Shortcuts list for next time. Shortcuts live in
-`~/.config/serverjack/shortcuts.json`. **Add a shortcut** (and the default
-directory) only take a folder that already exists — a typo there is an
-error, not a new empty folder.
+A multi-line command runs line by line, as it would in a terminal. If
+something is refused — a name already taken, a folder that isn't one — the
+card comes back with everything you typed still in it, the directory
+included; a taken name also gets an **Open** button for the session that has
+it. One tap is one submit: while the page waits, Start reads *Starting…* and a
+second tap does nothing.
+
+Open "Save as a shortcut" (only offered with a Shell command) and give the
+shortcut a name, or tick *Keep this command in Shortcuts*, and the command
+becomes a one-tap button in the Shortcuts list for next time. Running it opens
+a session named after the shortcut ("Disk usage" runs as `disk-usage`, then
+`disk-usage-2`). The pencil on a shortcut's row opens it in the shortcut form
+to change its name, command or directory; it keeps its place in the list.
+Shortcuts live in `~/.config/serverjack/shortcuts.json`. **Add a shortcut**
+(and the default directory) only take a folder that already exists — a typo
+there is an error, not a new empty folder.
 
 ### Update serverjack
 
@@ -264,8 +277,10 @@ was installed:
 - **Git checkout**: `cd <the checkout> && git pull --ff-only && bash
   install.sh`, exactly as before.
 
-Either way it runs in an ordinary command session called `update`, so you
-watch it scroll past and are left at a prompt with the result. The row only
+Either way it asks first (it restarts serverjack, so every open terminal
+reconnects), then runs in an ordinary command session called `update`, so you
+watch it scroll past and are left at a prompt with the result. The row shows
+the exact command, with your home directory written as `~`. The row only
 appears when serverjack recognizes this as one of the two — a bare tarball
 extracted by hand has neither `serverjack-ctl` nor `git pull` to run.
 
@@ -284,10 +299,14 @@ directory, how many windows, and how long it has been there. **Open** attaches
 A session serverjack started as an agent's background server (see
 [Agent servers](#agent-servers)) carries a small **server** tag.
 
-Rename unfolds a small text box in place; the same rules as a new session
-apply, so tmux's forbidden characters (`:` and `.`) and a name something else
-already has are refused with the reason. Renaming a server's session is fine:
-its agent card still finds it. Renaming a session leaves a browser
+Rename unfolds a small text box in place, focused, with the old name
+selected; the same rules as a new session apply, so tmux's forbidden
+characters (`:` and `.`), a leading `$` (tmux reads that as a session id) and
+a name something else already has are refused, with the reason right under
+the field. Renaming a server's session is fine: its agent card still finds
+it. Kill and Rename both happen in place — the row goes or changes, and
+nothing else on the page (a half-typed Start card, the scroll position)
+moves. Renaming a session leaves a browser
 sitting on the old `/s/<name>` without a session. That is harmless: the page
 notices within 15 seconds that the name is gone and moves itself to another
 session, exactly as it does when a session is killed.
@@ -377,10 +396,10 @@ daemon commands, and every session serverjack starts.
 Every server and daemon option row has a small **start at boot** checkbox. For
 a per-directory server (Claude's) that means the row of each server you have
 started, since the entry is for that directory; the Start row has none. Tick
-it and the thing is recorded in `~/.config/serverjack/autostart.json` (a
-server's directory has to exist already, as for a shortcut, and a folder name
-in the card's picker means the folder its Start would use). Untick it to
-forget the entry:
+it (the page comes back to that card, open, saying so) and the thing is
+recorded in `~/.config/serverjack/autostart.json` (a server's directory has to
+exist already, as for a shortcut, and a folder name in the card's picker means
+the folder its Start would use). Untick it to forget the entry:
 
 ```json
 [

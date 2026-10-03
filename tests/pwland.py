@@ -278,7 +278,8 @@ with sync_playwright() as p:
     page.click(f"{sel} details.ren summary")
     page.fill(f'{sel} form[action="/rename"] input[name=new]', newname)
     page.click(f'{sel} form[action="/rename"] button[type=submit]')
-    page.wait_for_load_state()
+    # Rename goes through /api/rename and swaps the row in place (no reload).
+    page.wait_for_selector(f'.sess a.open[data-name="{newname}"]')
     ok("Rename in the menu renames the tmux session",
        exists(newname) and not exists(run_sess), f"{run_sess} -> {newname}")
     ok("...and the list shows the new name",
@@ -289,8 +290,8 @@ with sync_playwright() as p:
     page.click(f"{sel} details.ren summary")
     page.fill(f'{sel} form[action="/rename"] input[name=new]', "pwtest")
     page.click(f'{sel} form[action="/rename"] button[type=submit]')
-    page.wait_for_load_state()
-    errtext = page.locator(".err").first.inner_text() if page.locator(".err").count() else ""
+    page.wait_for_selector(f"{sel} details.ren .err")      # inline, under the field
+    errtext = page.locator(f"{sel} details.ren .err").inner_text()
     ok("renaming onto an existing name is refused",
        "already called" in errtext and exists(newname), errtext or "no error shown")
     # and a name tmux can't have
@@ -307,7 +308,7 @@ with sync_playwright() as p:
     page.click(f"{sel} details.ren summary")
     page.fill(f'{sel} form[action="/rename"] input[name=new]', run_sess)
     page.click(f'{sel} form[action="/rename"] button[type=submit]')
-    page.wait_for_load_state()
+    page.wait_for_selector(f'.sess a.open[data-name="{run_sess}"]')
     ok("renaming back restores the old name", exists(run_sess) and not exists(newname))
 
     # ----------------------------------------------- shortcut lifecycle ----
@@ -541,7 +542,7 @@ with sync_playwright() as p:
         sel = f'.sess:has(a.open[data-name="{name}"])'
         page.click(f"{sel} details.menu summary")
         page.click(f'{sel} form[action="/kill"] button')
-        page.wait_for_load_state()
+        page.wait_for_selector(sel, state="detached")      # /api/kill, row removed in place
     ok("kill menu removes the sessions it made",
        not any(exists(n) for n in MADE if n), str([n for n in MADE if n and exists(n)]))
 

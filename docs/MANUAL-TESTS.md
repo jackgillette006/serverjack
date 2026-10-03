@@ -20,7 +20,7 @@ Open it in Chrome (with the Claude in Chrome extension) or do the steps by hand.
 7. Click another tab in the bar. The terminal switches; the URL changes to /s/<name>. Click back.
 8. Press + in the bar, try to create a session with the same name "t-desktop". An inline error appears. Escape closes the panel.
 9. On the home page, Open pops the session out into a separate small window with only the terminal (a ⋯ button in its top-right corner shows/hides the bar) and the home page stays. Clicking Open again for the same session refocuses that window instead of opening another. ☰ inside the pop-out closes it.
-9a. In the ⋯ menu of a session, tap **Rename**. A small text box unfolds in place with the current name in it. Change it and Save: the list comes back with the new name and `tmux ls` agrees. Try renaming it to the name of another session and to `a.b` — both are refused with the reason at the top of the page, and nothing is renamed. If you had a second tab open on the old session, it should move itself to another session within ~15 seconds (its session name no longer exists).
+9a. In the ⋯ menu of a session, tap **Rename**. A small text box unfolds in place with the current name in it, selected, and (on a phone) the keyboard up. Change it and Save: the row shows the new name without the page reloading, and `tmux ls` agrees. Try renaming it to the name of another session — refused with the reason right under the field, the menu still open and your text still in it — and to `a.b`, which the box itself refuses before sending. Nothing is renamed. If you had a second tab open on the old session, it should move itself to another session within ~15 seconds (its session name no longer exists).
 9b. In the ⋯ menu of a session: "Open here" opens it in this tab; "Copy SSH command" copies an `ssh -t ... tmux attach` line that works in a terminal; "Open in SSH app" launches your SSH client if one is installed.
 9c. From an in-tab session, ↗ pops it out and this tab goes back to the list (you are not attached twice).
 10. Press ✕ in the bar, confirm. You are moved to another session (or the list if none).
@@ -85,10 +85,11 @@ Report PASS/FAIL per step, the browser and its version.
 
 ## Save as a shortcut
 
-1. In the Run box, enter `df -h /` , tick "save as a shortcut", give it a name, Run.
-2. Go back to the list: the shortcut appears in the Shortcuts section. Tap it: it runs in a new session and leaves you at a prompt.
+1. In the Start card's command box, enter `df -h /`, open "Save as a shortcut", give it a name (the *Keep this command* box ticks itself), Start.
+2. Go back to the list: the shortcut appears in the Shortcuts section. Tap Run: it runs in a new session named after the shortcut and leaves you at a prompt.
 3. `cat ~/.config/serverjack/shortcuts.json` in a terminal shows it.
-4. Delete the shortcut from the page. It disappears from the list and from the JSON file.
+4. Tap the pencil on its row: the shortcut form opens filled in. Change the command, Save changes: the page comes back at Shortcuts saying "Updated shortcut", the row shows the new command, and there is still only one of it.
+5. Delete the shortcut from the page. It disappears from the list and from the JSON file, and the page says so under the Shortcuts heading.
 
 ## Agents accordion (any device)
 
@@ -243,7 +244,7 @@ Marked **needs a reboot** — the point of this one is that it survives one.
 
 1. In Shortcuts, the first row is **Update serverjack**, marked *built-in*,
    with a Run button and no delete button.
-2. Tap Run. A session called `update` opens, `git pull --ff-only` and
+2. Tap Run. It asks "Update serverjack and restart it?" first; OK. A session called `update` opens, `git pull --ff-only` and
    `bash install.sh` scroll past, the units restart — and the terminal
    reconnects to the same session on its own within a few seconds, with the
    installer's summary still on screen and a shell prompt under it.

