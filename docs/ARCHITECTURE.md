@@ -527,6 +527,17 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   a fine pointer staying a tablet, and a notched iPhone's safe areas — with the insets patched
   into the page, since emulated WebKit reports 0, and a faked
   `visualViewport` standing in for the soft keyboard.
+- `pwtmux.py` — the terminal itself, as ttyd and tmux are handed it: the
+  generated theme's contrast in rendered pixels (SGR 90 grey and the `ls`
+  white-on-colour pairs at 4.5:1, `minimumContrastRatio` riding with the
+  theme) and no Courier in the font list; no COLSxROWS pill on a resize;
+  the page's tmux client having the RGB feature, with a 24-bit colour
+  reaching the browser unchanged and COLORTERM=truecolor in sessions the
+  page starts; status line and fill-character with an ssh-style client
+  attached (blank padding while the page is open, the user's own values
+  back when it leaves); and a command started from an emulated iPhone 14
+  and SE printing its first line at the phone's width (`ATTACH_WAIT`), with
+  nothing pushed into history.
 
 **`security_http.py`** (host-side) checks HTTP-parser behavior needing no
 browser: the two `OPEN_PATHS` (and `POST /`, which only redirects) still
