@@ -1333,5 +1333,461 @@ class GuidedInstallDriverTests(unittest.TestCase):
         self.assertIn("EXIT 0", result.stderr)
 
 
+
+# ------------------------------------------------------- agent servers ---
+
+def _wait(fn, timeout=8.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        v = fn()
+        if v:
+            return v
+        time.sleep(0.1)
+    return fn()
+
+
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+class ServerSessionTests(unittest.TestCase):
+    """Real tmux, on a private socket (TMUX unset, TMUX_TMPDIR in a temp
+    dir) so nothing here can reach a tmux server anybody is using.
+
+    The bug these pin down: command_args() ran the command inside an inner
+    `bash -lc` without job control, so tmux named the pane "bash" for as long
+    as the command ran. The card read every server started from the page as
+    "exited", and Start / autostart then killed the live server and started
+    a new one (dropping the phone app's sessions). Servers were also found by
+    session name alone."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="sj-unit-tmux-")
+        self.home = os.path.join(self.tmp, "home")
+        os.makedirs(os.path.join(self.tmp, "tmux"), mode=0o700)
+        for d in ("a/app", "b/app", "remote-tools"):
+            os.makedirs(os.path.join(self.home, d))
+        self.env = mock.patch.dict(os.environ, {"TMUX_TMPDIR": os.path.join(self.tmp, "tmux"),
+                                                "HOME": self.home})
+        self.env.start()
+        os.environ.pop("TMUX", None)
+        self._home = mod.HOME
+        mod.HOME = self.home
+        self.per_dir = {"id": "pd", "label": "PD",
+                        "server": {"label": "PD server", "cmd": "sleep 300",
+                                   "session": "pd-remote", "per_dir": True}}
+        self.single = {"id": "solo", "label": "Solo",
+                       "server": {"label": "Solo server", "cmd": "sleep 300",
+                                  "session": "solo-serve"}}
+
+    def tearDown(self):
+        mod.tmux("kill-server")
+        mod.HOME = self._home
+        self.env.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def d(self, rel):
+        return os.path.realpath(os.path.join(self.home, rel))
+
+    def pane(self, name, fmt):
+        return mod.tmux("display-message", "-p", "-t", f"={name}:", fmt).stdout.strip()
+
+    def test_running_command_is_what_the_pane_reports(self):
+        self.assertIsNone(mod.create_command_session("t1", self.home, "sleep 300"))
+        self.assertEqual(_wait(lambda: self.pane("t1", "#{pane_current_command}") == "sleep"
+                               and "sleep"), "sleep")
+        self.assertFalse(mod.session_idle("t1"))
+
+    def test_compound_command_is_reported_too(self):
+        mod.create_command_session("t2", self.home, "echo hi; sleep 300")
+        self.assertTrue(_wait(lambda: self.pane("t2", "#{pane_current_command}") == "sleep"))
+        self.assertFalse(mod.session_idle("t2"))
+
+    def test_a_command_that_exited_reads_as_idle(self):
+        mod.create_command_session("t3", self.home, "true")
+        self.assertTrue(_wait(lambda: mod.session_idle("t3")))
+
+    def test_a_server_started_by_the_old_wrapper_is_still_running(self):
+        # serverjack 1.5.0's wrapper: no `set -m` in the inner shell, so the
+        # pane says "bash" while the command runs. Such servers are still
+        # out there after an upgrade and must not be read as exited.
+        args = mod.command_args("sleep 300")
+        self.assertIn("'set -m; export", args[-1])
+        args[-1] = args[-1].replace("'set -m; export", "'export", 1)
+        mod.tmux("new-session", "-d", "-s", "old", "-c", self.home, *args)
+        self.assertTrue(_wait(lambda: self.pane("old", "#{pane_current_command}") == "bash"
+                              and mod.tmux("list-panes", "-a").returncode == 0))
+        time.sleep(0.5)
+        self.assertFalse(mod.session_idle("old"))
+
+    def test_start_server_is_marked_and_running(self):
+        name, err, started = mod.start_server(self.per_dir, self.d("a/app"))
+        self.assertEqual((name, err, started), ("pd-remote-app", None, True))
+        insts = _wait(lambda: [i for i in mod.server_instances(self.per_dir, mod.server_panes())
+                               if i["state"] == "on"])
+        self.assertEqual([(i["session"], i["dir"]) for i in insts], [("pd-remote-app", "~/a/app")])
+
+    def test_second_start_in_the_same_dir_leaves_the_server_alone(self):
+        name, _, _ = mod.start_server(self.per_dir, self.d("a/app"))
+        _wait(lambda: self.pane(name, "#{pane_current_command}") == "sleep")
+        pid = self.pane(name, "#{pane_pid}")
+        name2, err, started = mod.start_server(self.per_dir, self.d("a/app"))
+        self.assertEqual((name2, err, started), (name, "already running", False))
+        self.assertEqual(self.pane(name, "#{pane_pid}"), pid)
+
+    def test_same_basename_dirs_get_a_server_each(self):
+        n1, _, _ = mod.start_server(self.per_dir, self.d("a/app"))
+        n2, err, started = mod.start_server(self.per_dir, self.d("b/app"))
+        self.assertEqual((n1, n2, err, started), ("pd-remote-app", "pd-remote-app-2", None, True))
+        dirs = {i["session"]: i["dir"] for i in mod.server_instances(self.per_dir, mod.server_panes())}
+        self.assertEqual(dirs, {"pd-remote-app": "~/a/app", "pd-remote-app-2": "~/b/app"})
+
+    def test_an_exited_server_is_replaced(self):
+        tool = {"id": "pd", "server": dict(self.per_dir["server"], cmd="true")}
+        name, _, _ = mod.start_server(tool, self.d("a/app"))
+        self.assertTrue(_wait(lambda: [i for i in mod.server_instances(tool, mod.server_panes())
+                                       if i["state"] == "exited"]))
+        created = self.pane(name, "#{pane_pid}")
+        name2, err, started = mod.start_server(tool, self.d("a/app"))
+        self.assertEqual((name2, err, started), (name, None, True))
+        self.assertNotEqual(self.pane(name2, "#{pane_pid}"), created)
+
+    def test_a_renamed_server_is_still_found(self):
+        name, _, _ = mod.start_server(self.single, self.d("a/app"))
+        mod.rename_session(name, "oc-server")
+        insts = _wait(lambda: [i for i in mod.server_instances(self.single, mod.server_panes())
+                               if i["state"] == "on"])
+        self.assertEqual([i["session"] for i in insts], ["oc-server"])
+        self.assertEqual(mod.start_server(self.single, self.d("b/app"))[:2],
+                         ("oc-server", "already running"))
+        self.assertFalse(mod.session_exists("solo-serve"))
+
+    def test_an_interactive_session_is_never_taken_for_a_server(self):
+        # default_session_name("pd-remote" tool...) can produce a name inside
+        # the server's prefix; and an interactive session can even have the
+        # single server's exact name. Neither carries the marks, nor the
+        # server's command.
+        mod.create_command_session("pd-remote-tools", self.d("remote-tools"), "sleep 300")
+        mod.create_command_session("solo-serve", self.d("remote-tools"), "bash")
+        panes = mod.server_panes()
+        self.assertEqual(mod.server_instances(self.per_dir, panes), [])
+        self.assertEqual(mod.server_instances(self.single, panes), [])
+        # ...so Start makes its own session beside it, never kills it.
+        name, err, _ = mod.start_server(self.single, self.d("a/app"))
+        self.assertEqual((name, err), ("solo-serve-2", None))
+        self.assertTrue(mod.session_exists("solo-serve"))
+
+    def test_an_unmarked_server_from_an_older_version_is_adopted(self):
+        mod.create_command_session("pd-remote-app", self.d("a/app"), "sleep 300")
+        insts = _wait(lambda: [i for i in mod.server_instances(self.per_dir, mod.server_panes())
+                               if i["state"] == "on"])
+        self.assertEqual([i["session"] for i in insts], ["pd-remote-app"])
+
+    def test_autostart_leaves_a_running_server_alone(self):
+        name, _, _ = mod.start_server(self.per_dir, self.d("a/app"))
+        _wait(lambda: self.pane(name, "#{pane_current_command}") == "sleep")
+        pid = self.pane(name, "#{pane_pid}")
+        with mock.patch.object(mod, "find_tool", lambda tid: self.per_dir):
+            line = mod.autostart_start_one({"tool": "pd", "kind": "server", "dir": self.d("a/app")})
+        self.assertIn("already running", line)
+        self.assertEqual(self.pane(name, "#{pane_pid}"), pid)
+
+    def test_a_trailing_semicolon_in_a_directory_survives_the_mark(self):
+        os.makedirs(os.path.join(self.home, "odd;"))
+        name, err, _ = mod.start_server(self.per_dir, self.d("odd;"))
+        self.assertIsNone(err)
+        dirs = [i["dir"] for i in mod.server_instances(self.per_dir, mod.server_panes())]
+        self.assertEqual(dirs, ["~/odd;"])
+
+
+    def test_a_command_ending_in_an_escaped_semicolon_reaches_the_shell_intact(self):
+        # `find . -exec rm {} \;` pasted into Start: tmux used to eat the
+        # final ";" of any argument as a command separator.
+        cmd = "echo one \\;"
+        self.assertIsNone(mod.create_command_session("semi", self.home, cmd))
+        env = mod.tmux("show-environment", "-t", "=semi", "SERVERJACK_CMD").stdout.strip()
+        self.assertEqual(env, "SERVERJACK_CMD=" + cmd)
+
+
+class TmuxArgTests(unittest.TestCase):
+    def test_trailing_semicolons_are_escaped_and_separators_are_not(self):
+        self.assertEqual(mod._tmux_arg("a;"), "a\\;")
+        self.assertEqual(mod._tmux_arg("a\\;"), "a\\\\;")
+        self.assertEqual(mod._tmux_arg(";"), ";")
+        self.assertEqual(mod._tmux_arg("a;b"), "a;b")
+
+
+class PaneExitedTests(unittest.TestCase):
+    def test_a_non_shell_is_never_exited(self):
+        self.assertFalse(mod.pane_exited("sleep", "1"))
+
+    def test_a_shell_with_no_pid_falls_back_to_the_name(self):
+        self.assertTrue(mod.pane_exited("bash", ""))
+
+    def test_a_shell_holding_its_terminal_is_exited_and_one_with_a_job_is_not(self):
+        with mock.patch.object(mod, "_shell_has_terminal", lambda pid: True):
+            self.assertTrue(mod.pane_exited("bash", "42"))
+        with mock.patch.object(mod, "_shell_has_terminal", lambda pid: False):
+            self.assertFalse(mod.pane_exited("bash", "42"))
+
+    def test_stat_is_parsed_after_the_last_paren(self):
+        # comm can contain spaces and ")" -- tpgid is the 6th field after it.
+        line = "42 (we ird) (x)) S 1 42 42 34816 42 4194560 0 0\n"
+        with mock.patch("builtins.open", mock.mock_open(read_data=line)):
+            self.assertTrue(mod._shell_has_terminal(42))
+        line = "42 (bash) S 1 42 42 34816 77 4194560 0 0\n"
+        with mock.patch("builtins.open", mock.mock_open(read_data=line)):
+            self.assertFalse(mod._shell_has_terminal(42))
+
+    def test_no_proc_means_unknown(self):
+        with mock.patch("builtins.open", side_effect=OSError):
+            self.assertIsNone(mod._shell_has_terminal(42))
+
+
+class LoginStateCacheTests(unittest.TestCase):
+    """tool_state()'s login check: stale-while-revalidate, never stale
+    across a login/install that is still running."""
+
+    def setUp(self):
+        mod.clear_tool_cache()
+        self.calls = 0
+        self.answer = True
+        self.delay = 0.0
+        self._orig = mod.run_check
+
+        def fake(cmd, timeout=15):
+            self.calls += 1
+            time.sleep(self.delay)
+            return self.answer
+        mod.run_check = fake
+        self.tool = {"id": "x", "login_check": "check"}
+
+    def tearDown(self):
+        mod.run_check = self._orig
+        mod.clear_tool_cache()
+
+    def expire(self):
+        with mod._STATE_LOCK:
+            _exp, val = mod._STATE_CACHE["x"]
+            mod._STATE_CACHE["x"] = (time.time() - 1, val)
+
+    def test_first_check_is_inline_and_then_cached(self):
+        self.assertIs(mod.logged_in_state(self.tool, []), True)
+        self.assertIs(mod.logged_in_state(self.tool, []), True)
+        self.assertEqual(self.calls, 1)
+
+    def test_an_expired_answer_is_served_at_once_and_refreshed_once(self):
+        mod.logged_in_state(self.tool, [])
+        self.expire()
+        self.answer, self.delay = False, 0.6
+        t0 = time.time()
+        got = [mod.logged_in_state(self.tool, []) for _ in range(3)]
+        self.assertLess(time.time() - t0, 0.3, "a slow login check blocked the page")
+        self.assertEqual(got, [True, True, True])
+        self.assertTrue(_wait(lambda: mod.logged_in_state(self.tool, []) is False, 3))
+        self.assertEqual(self.calls, 2, "one background refresh, not one per request")
+
+    def test_a_refresh_from_before_a_button_press_cannot_write_back(self):
+        mod.logged_in_state(self.tool, [])
+        self.expire()
+        self.answer, self.delay = False, 0.4
+        mod.logged_in_state(self.tool, [])          # starts the slow refresh
+        mod.clear_tool_cache("x")                    # e.g. Log in was pressed
+        time.sleep(0.6)
+        self.assertNotIn("x", mod._STATE_CACHE)
+
+    def age(self, secs):
+        """Make the cached answer secs old."""
+        with mod._STATE_LOCK:
+            _exp, val = mod._STATE_CACHE["x"]
+            mod._STATE_CACHE["x"] = (time.time() - secs + mod.STATE_TTL, val)
+
+    def test_an_open_login_session_wants_a_fresh_answer(self):
+        panes = [{"name": "login-x", "cmd": "sleep", "pid": ""}]
+        mod.logged_in_state(self.tool, [])          # cached True
+        self.answer = False
+        self.age(mod.FLOW_TTL + 1)
+        self.assertIs(mod.logged_in_state(self.tool, panes), False)
+        self.assertEqual(self.calls, 2)
+        # a burst of renders during the flow shares that answer...
+        self.assertIs(mod.logged_in_state(self.tool, panes), False)
+        self.assertEqual(self.calls, 2)
+        # ...for FLOW_TTL, not STATE_TTL
+        self.age(mod.FLOW_TTL + 1)
+        panes = [{"name": "install-x-2", "cmd": "curl", "pid": ""}]
+        self.assertIs(mod.logged_in_state(self.tool, panes), False)
+        self.assertEqual(self.calls, 3)
+
+    def test_an_answer_from_during_a_flow_is_not_kept_after_it(self):
+        # the login finishes: the card must say so now, not a minute later
+        self.answer = False
+        self.assertIs(mod.logged_in_state(self.tool, [{"name": "login-x", "cmd": "sleep", "pid": ""}]), False)
+        self.answer = True
+        self.assertIs(mod.logged_in_state(self.tool, [{"name": "login-x", "cmd": "bash", "pid": ""}]), True)
+        self.assertEqual(self.calls, 2)
+        self.assertIs(mod.logged_in_state(self.tool, []), True)
+        self.assertEqual(self.calls, 2, "an answer from outside the flow is cached as usual")
+
+    def run_together(self, n, panes):
+        import threading
+        got = []
+        ts = [threading.Thread(target=lambda: got.append(mod.logged_in_state(self.tool, panes)))
+              for _ in range(n)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(5)
+        return got
+
+    def test_concurrent_cold_requests_share_one_check(self):
+        # e.g. three tabs reloading at once after an Update restarted serverjack
+        self.delay = 0.4
+        t0 = time.time()
+        got = self.run_together(4, [])
+        self.assertEqual(got, [True] * 4)
+        self.assertEqual(self.calls, 1, "one check, not one per request")
+        self.assertLess(time.time() - t0, 0.8)
+
+    def test_concurrent_requests_during_a_flow_share_one_check(self):
+        mod.logged_in_state(self.tool, [])
+        self.age(mod.FLOW_TTL + 1)
+        self.answer, self.delay = False, 0.4
+        got = self.run_together(4, [{"name": "login-x", "cmd": "sleep", "pid": ""}])
+        self.assertEqual(got, [False] * 4)
+        self.assertEqual(self.calls, 2)
+
+    def test_status_runs_no_login_check(self):
+        # /api/status answers without an identity even under SERVERJACK_ALLOW,
+        # and reports no login state: it must not be a way to run checks.
+        tool = {"id": "x", "bin": "sh", "login_check": "check"}
+        with mock.patch.object(mod, "load_tools", return_value=([tool], None)):
+            mod.status()
+            mod.status()
+        self.assertEqual(self.calls, 0)
+
+    def test_the_warm_up_checks_each_tool_once(self):
+        tool = {"id": "x", "bin": "sh", "login_check": "check"}
+        with mock.patch.object(mod, "load_tools", return_value=([tool], None)):
+            mod.warm_login_cache()
+        self.assertEqual(self.calls, 1)
+        self.assertIs(mod.logged_in_state(tool, []), True)
+        self.assertEqual(self.calls, 1)
+
+    def test_a_finished_login_session_does_not(self):
+        panes = [{"name": "login-x", "cmd": "bash", "pid": ""}]
+        mod.logged_in_state(self.tool, panes)
+        mod.logged_in_state(self.tool, panes)
+        self.assertEqual(self.calls, 1)
+
+    def test_a_nul_byte_never_reaches_tmux(self):
+        # subprocess raises on one; a %00 in a URL is a session that isn't there
+        self.assertEqual(mod.tmux("has-session", "-t", "=a\0b").returncode, 1)
+        self.assertFalse(mod.session_exists("a\0b"))
+
+    def test_only_this_tools_flow_sessions_count(self):
+        self.assertFalse(mod._login_flow_open("x", [{"name": "login-xy", "cmd": "sleep"}]))
+        self.assertFalse(mod._login_flow_open("x", [{"name": "relogin-x", "cmd": "sleep"}]))
+        self.assertTrue(mod._login_flow_open("x", [{"name": "login-x-3", "cmd": "sleep"}]))
+
+
+class ToolCardTests(unittest.TestCase):
+    def setUp(self):
+        self._home = mod.HOME
+        mod.HOME = "/home/x"
+        mod.save_autostart([])
+        self.tool = {"id": "cc", "label": "Claude",
+                     "server": {"label": "Remote Control server", "cmd": "claude remote-control",
+                                "session": "claude-remote", "per_dir": True, "note": "n"},
+                     "actions": [{"label": "hello", "cmd": "echo hi"}], "login": "l"}
+
+    def tearDown(self):
+        mod.HOME = self._home
+        mod.save_autostart([])
+
+    def st(self, servers, state="on"):
+        return {"id": "cc", "label": "Claude", "installed": True, "logged_in": True,
+                "needs_ok": True, "daemon_running": False, "server_state": state,
+                "server_session": servers[0]["session"] if servers else "claude-remote",
+                "servers": servers}
+
+    def summary(self, html_):
+        return html_[html_.index("<summary>"):html_.index("</summary>")]
+
+    def test_one_counted_pill_for_every_instance(self):
+        insts = [{"session": "claude-remote-a", "dir": "~/p/a", "state": "on"},
+                 {"session": "claude-remote-b", "dir": "~/p/b", "state": "on"},
+                 {"session": "claude-remote-c", "dir": "~/p/c", "state": "exited"}]
+        out = mod.tool_card(self.tool, self.st(insts))
+        summ = self.summary(out)
+        self.assertEqual(summ.count('class="pill'), 1)
+        self.assertIn("2 running · 1 exited", summ)
+        self.assertIn('class="pill warn"', summ)
+        for d in ("~/p/a", "~/p/b", "~/p/c"):
+            self.assertIn(f"<code>{d}</code>", out)
+        self.assertIn('data-confirm="Stop Remote Control server in “~/p/a”?"', out)
+        self.assertIn('data-confirm="Remove the exited Remote Control server in “~/p/c”?"', out)
+
+    def test_no_instances_reads_stopped(self):
+        summ = self.summary(mod.tool_card(self.tool, self.st([], "off")))
+        self.assertIn("<span>stopped</span>", summ)
+
+    def test_picker_is_labelled_and_only_drives_the_start_button(self):
+        out = mod.tool_card(self.tool, self.st([], "off"))
+        self.assertEqual(out.count('class="dirpick"'), 1)
+        self.assertIn('<label for="dp-cc">Directory</label>', out)
+        self.assertIn('<input form="d-cc" id="dp-cc" name="dir"', out)
+        self.assertIn('form="d-cc" name="do" value="/tools/server">Start', out)
+        # the non-directory action stays on the card's main form
+        self.assertIn('name="do" value="/tools/action:0">Run', out)
+        self.assertNotIn('form="d-cc" name="do" value="/tools/action:0"', out)
+        # per-directory: "start at boot" only on rows that name a directory
+        self.assertNotIn("data-picker", out)
+
+    def test_no_picker_when_nothing_reads_a_directory(self):
+        tool = {"id": "cx", "label": "Codex", "actions": [{"label": "Pair", "cmd": "p"}],
+                "daemon": {"label": "D", "start": "s", "stop": "t", "pidfile": "/nonexistent"}}
+        out = mod.tool_card(tool, dict(self.st([], "off"), id="cx", label="Codex"))
+        self.assertNotIn("dirpick", out)
+        self.assertNotIn('id="d-cx"', out)
+
+    def test_a_saved_boot_directory_with_nothing_running_gets_its_own_row(self):
+        tmp = tempfile.mkdtemp(prefix="sj-unit-boot-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        mod.set_autostart("cc", "server", tmp, True)
+        out = mod.tool_card(self.tool, self.st([], "off"))
+        self.assertIn(f"<code>{tmp}</code>", out)
+        self.assertIn("Starts at boot; not running now.", out)
+        self.assertIn(f'<input type="hidden" name="dir" value="{tmp}">', out)
+        self.assertRegex(out, r'id="a-cc-server-p0".*?name="dir" value="%s"' % tmp)
+        self.assertIn('form="a-cc-server-p0" name="on" value="1" checked', out)
+
+    def test_single_server_box_shows_its_one_entry(self):
+        tool = {"id": "oc", "label": "OpenCode",
+                "server": {"label": "Server", "cmd": "opencode serve", "session": "opencode-serve"}}
+        tmp = tempfile.mkdtemp(prefix="sj-unit-boot-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        out = mod.tool_card(tool, dict(self.st([], "off"), id="oc"))
+        self.assertIn('data-picker="1"', out)
+        mod.set_autostart("oc", "server", tmp, True, per_dir=False)
+        out = mod.tool_card(tool, dict(self.st([], "off"), id="oc"))
+        self.assertIn("Starts at boot in <code>", out)
+        self.assertIn('form="a-oc-server" name="on" value="1" checked', out)
+        self.assertNotIn('data-picker="1"', out)
+
+
+class AutostartSingleServerTests(unittest.TestCase):
+    def tearDown(self):
+        mod.save_autostart([])
+
+    def test_a_single_server_keeps_one_entry(self):
+        mod.set_autostart("oc", "server", "/tmp", True, per_dir=False)
+        mod.set_autostart("oc", "server", "/", True, per_dir=False)
+        self.assertEqual([e["dir"] for e in mod.load_autostart()], ["/"])
+        mod.set_autostart("oc", "server", "/tmp", False, per_dir=False)
+        self.assertEqual(mod.load_autostart(), [])
+
+    def test_a_per_dir_server_keeps_one_per_directory(self):
+        mod.set_autostart("cc", "server", "/tmp", True)
+        mod.set_autostart("cc", "server", "/", True)
+        self.assertEqual(sorted(e["dir"] for e in mod.load_autostart()), ["/", "/tmp"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
