@@ -119,9 +119,9 @@ Tailscale, your private network, from a phone or a laptop. Open a URL and you
 get:
 
 - **A real terminal.** [ttyd](https://github.com/tsl0922/ttyd) in an iframe,
-  with session tabs, a tmux window picker, a phone soft-key row (Esc, Tab,
-  Shift-Tab, Ctrl, arrows, ^C, PgUp/PgDn, Paste, Copy), and "Add to Home
-  Screen" on iOS for a full-screen app with no browser chrome.
+  with session tabs, a tmux window picker, a phone [key row](#the-key-row)
+  (Esc, Tab, Shift-Tab, Ctrl, ^C, Paste, Copy, arrows, PgUp/PgDn), and "Add
+  to Home Screen" on iOS for a full-screen app with no browser chrome.
 - **A paste-and-run box.** An agent tells you to run something it can't
   (`sudo apt install ...`, a service restart, a disk check); paste it into
   Shell and you land in that terminal watching it run.
@@ -378,6 +378,28 @@ name is cut short with an ellipsis; the full name is in the tab's tooltip.
 Selecting a window is a tmux operation, not a browser one, so **every client
 attached to that session moves with you** — the phone and the desktop are
 looking at the same session. That is tmux, not serverjack.
+
+### The key row
+
+Phones get a row of the keys a touch keyboard doesn't send, under the
+terminal (the keyboard icon in the bar shows or hides it, on any device):
+Esc, Tab, Shift-Tab, Ctrl, ^C, Paste, Copy, the four arrows, PgUp and PgDn.
+On a phone in portrait the row is wider than the screen, so the most-needed
+keys come first and the rest are a sideways swipe away; the edge with more
+keys past it fades out.
+
+- A key fires when you lift your finger, and only for a tap: a swipe across
+  the row just scrolls it. The arrows and PgUp/PgDn repeat while held.
+  Tapping a key never opens or closes the phone's keyboard.
+- **Ctrl** applies to the next key you type, then lets go: Ctrl then `c` is
+  ^C, and punctuation works too (Ctrl then `\` is ^\, `[` is Esc, `_` is
+  ^_). A character with no Ctrl form is typed as is.
+- **Paste** pastes the clipboard. Where the browser won't give the page
+  clipboard access, a hint says how to paste instead (touch-and-hold the
+  terminal on a phone).
+- **Copy** opens the screen as selectable text: tap a line to copy it,
+  *Copy all* for everything, line breaks included. Esc or ✕ closes it;
+  while it is open nothing you type reaches the terminal.
 
 ## Agent servers
 
