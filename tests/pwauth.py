@@ -106,7 +106,7 @@ with sync_playwright() as p:
     ok("...and says who you are", "nobody" in body, body[:200])
     r = anon.request.get(f"{AUTH}/api/sessions")
     ok("JSON API is 403 too", r.status == 403, str(r.status))
-    for asset in ("/manifest.webmanifest", "/icon.svg", "/icon-180.png"):
+    for asset in ("/manifest.webmanifest", "/icon.svg", "/icon-180.png", "/favicon.ico"):
         r = anon.request.get(f"{AUTH}{asset}")
         ok(f"{asset} does not leak restricted instance branding", r.status == 403,
            str(r.status))
