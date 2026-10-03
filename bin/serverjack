@@ -2740,6 +2740,8 @@ select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outl
 .opt{color:var(--text-muted);font-weight:400}
 .hint,.note,.foot{color:var(--text-muted);font-size:12px;line-height:18px}
 .hint{margin:0}
+/* a section's lead-in sentence: the same gap to its cards as a heading's */
+h2 + p.hint{margin-bottom:var(--space-2)}
 .note{margin:6px 0 8px}
 .note code,.hint code{font:12px/18px var(--font-mono);color:var(--text-secondary);word-break:break-all}
 .foot{margin-top:var(--space-5);padding-top:var(--space-3);border-top:1px solid var(--border-soft)}
@@ -4065,6 +4067,12 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
     what_opts.extend(what_option(t["id"], t.get("label") or t["id"],
                                  checked=(checked == t["id"]), run_cmd=t["run"])
                      for t, st in pairs if st["installed"] and t.get("run"))
+    if what_ids == {"shell"} and any(not st["installed"] and t.get("run") and t.get("install")
+                                     for t, st in pairs):
+        # A fresh install: a one-pill choice says nothing about where agents
+        # come from, so point at the rows that install them.
+        what_opts.append('<p class="hint">No coding agents installed yet. Install one under '
+                         '<a href="#agents">Agent servers</a> below and it shows up here.</p>')
 
     if not pairs:
         agents = '<div class="empty">No agents configured.</div>'
@@ -4091,9 +4099,9 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
         ADD_SHORTCUT_CARD.format(dirpicker=dir_picker(input_id="sc_dir"), sc_label=esc(sc_label),
                                  sc_cmd=esc(sc_cmd), addsc_open=" open" if addsc_open else ""),
         "<h2>Sessions</h2>", cards,
-        "<h2>Agent servers</h2>",
-        '<p class="hint">Install, log in, and the background servers the phone apps connect '
-        'to. Interactive sessions start at the top of the page.</p>',
+        '<h2 id="agents">Agent servers</h2>',
+        '<p class="hint">Install an agent or log in to it, or start the background server a '
+        'phone app connects to. Installed agents start from Start a session above.</p>',
         agents,
     ])
     err = "".join(f'<div class="err">{esc(e)}</div>' for e in (error, tools_error) if e)
