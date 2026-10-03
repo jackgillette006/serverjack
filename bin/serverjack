@@ -1761,6 +1761,18 @@ def _shortcut_label(label, cmd):
     return ((label or "").strip() or cmd.split()[0])[:60]
 
 
+def wants_save(f):
+    """Does a Start (or /run) form ask to keep its command as a shortcut?
+    With the page script on, the form carries save_ui and the "Keep this
+    command" box alone decides: typing a shortcut name ticks it, and
+    unticking it afterwards means no. Without the script nothing ticks the
+    box for you, so a typed shortcut name counts as asking -- it used to be
+    thrown away unless the box was ticked too."""
+    if f.get("save_ui"):
+        return bool(f.get("save"))
+    return bool(f.get("save")) or bool(f.get("label", "").strip())
+
+
 def add_shortcut(label, cmd, cwd):
     """Append one shortcut. Returns the label it was saved under."""
     cmd = clean_cmd(cmd)
@@ -3538,6 +3550,13 @@ FLOWS_JS = r"""
     if (ed) q.set('edit_sc', ed.value); else q.delete('edit_sc');
     var url = '/' + (q.toString() ? '?' + q.toString() : '') + location.hash;
     if (url !== location.pathname + location.search + location.hash) history.replaceState(null, '', url);
+  }
+  // With this script on, the "Keep this command" box alone decides: unticking
+  // it after typing a shortcut name (which ticked it) means don't keep it.
+  if (start && !start.elements.namedItem('save_ui')) {
+    var su = document.createElement('input');
+    su.type = 'hidden'; su.name = 'save_ui'; su.value = '1';
+    start.appendChild(su);
   }
 
   // A note or error that names a section or card (data-at) goes inside or
@@ -5487,21 +5506,21 @@ class Handler(BaseHTTPRequestHandler):
         form's own state -- what, dir, the typed command, the typed name --
         so the right radio is still checked and nothing typed is lost.
 
-        "Save as a shortcut": ticking its box, or just typing a name for the
-        shortcut, both mean save -- a name typed into that panel used to be
-        thrown away unless the box was ticked too."""
+        "Save as a shortcut": see wants_save() -- the box decides, and with
+        the page script off a typed shortcut name counts as ticking it."""
         what = f.get("what") or "shell"
         cmd = clean_cmd(f.get("cmd"))
         label = f.get("label", "")
         name_in = f.get("name", "")
-        save = bool(f.get("save")) or bool(label.strip())
+        save = wants_save(f)
 
         def fail(msg, status=400, link=""):
             # The directory box echoes what the form posted (dir_custom first,
             # the same precedence resolve_dir() uses), never the default.
             return self.send_html(render(msg, dir_custom=f.get("dir_custom") or f.get("dir", ""),
                                          cmd=cmd, label=label, name=name_in, save=save,
-                                         save_open=save, what=what, error_link=link), status)
+                                         save_open=save or bool(label.strip()), what=what,
+                                         error_link=link), status)
 
         def name_fail(err):
             # The one error with somewhere to go: offer to open the session.
@@ -5706,10 +5725,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/run":                       # legacy alias for /start's "shell + cmd" case
             cmd = clean_cmd(f.get("cmd"))
             label = f.get("label", "")
-            save = bool(f.get("save")) or bool(label.strip())
+            save = wants_save(f)
             if not cmd:
                 return self.send_html(render("Paste a command to run first."), 400)
-            kept = dict(cmd=cmd, label=label, save=save, save_open=save,
+            kept = dict(cmd=cmd, label=label, save=save, save_open=save or bool(label.strip()),
                         dir_custom=f.get("dir_custom") or f.get("dir", ""))
             cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
             if err:
