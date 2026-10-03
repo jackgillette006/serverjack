@@ -2744,6 +2744,15 @@ class TerminalPageTests(unittest.TestCase):
             self.assertNotIn("|| 'ontouchstart' in window;", src)
             self.assertIn("('ontouchstart' in window && matchMedia('(hover: none)').matches)", src)
 
+    def test_term_page_safe_areas(self):
+        page = mod.render_term("x")
+        for rule in ("#bar,.sbar{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}",
+                     "#frame-wrap{margin-left:env(safe-area-inset-left);margin-right:env(safe-area-inset-right)}",
+                     "body:not(.keys):not(.kb) #frame-wrap{margin-bottom:env(safe-area-inset-bottom)}",
+                     "body.kb #keys{padding-bottom:6px}"):
+            self.assertIn(rule, page)
+        self.assertIn("body.classList.toggle('kb'", mod.APP_JS)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

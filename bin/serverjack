@@ -4616,6 +4616,24 @@ body.popout.showbar #pop.open{{display:flex}}
 body.popout #popout,body.touch #popout{{display:none}}
 /* touch: the logo is the way back to the list; x would only repeat it (and reads as "kill") */
 body.touch #close{{display:none}}
+/* ---- safe areas (viewport-fit=cover). A phone on its side has the notch and
+   the rounded corners at the left and right edges: controls and terminal text
+   stay inside them, backgrounds run underneath. The home indicator's inset is
+   paid by whatever is lowest -- the key row, else the terminal -- and by neither
+   while the soft keyboard covers it (body.kb, from fit(); iOS keeps reporting
+   the inset with the keyboard up). Margins, not padding, on #frame-wrap: the
+   iframe is absolutely positioned and would fill the padding. */
+#bar,.sbar{{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}}
+#keys{{padding-left:calc(6px + env(safe-area-inset-left));padding-right:calc(6px + env(safe-area-inset-right))}}
+#frame-wrap{{margin-left:env(safe-area-inset-left);margin-right:env(safe-area-inset-right)}}
+body:not(.keys):not(.kb) #frame-wrap{{margin-bottom:env(safe-area-inset-bottom)}}
+body.kb #keys{{padding-bottom:6px}}
+body.touch #pop{{padding-left:calc(var(--space-3) + env(safe-area-inset-left));
+  padding-right:calc(var(--space-3) + env(safe-area-inset-right))}}
+body.kb.touch #pop{{padding-bottom:var(--space-3)}}
+#screen-text{{padding:12px calc(12px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom))
+  calc(12px + env(safe-area-inset-left))}}
+body.kb #screen-text{{padding-bottom:12px}}
 /* short landscape (a phone on its side): denser chrome, so the terminal keeps its rows.
    Targets stay >= 44px wide; heights only. Longhand paddings keep any side insets. */
 @media (orientation:landscape) and (max-height:500px){{
@@ -4623,6 +4641,7 @@ body.touch #close{{display:none}}
   #keys{{padding-top:4px;padding-bottom:calc(4px + env(safe-area-inset-bottom))}}
   .k{{height:32px}}
   #pop{{top:calc(40px + env(safe-area-inset-top))}}
+  body.kb #keys{{padding-bottom:4px}}
 }}
 @media (prefers-reduced-motion:reduce){{
   *,*::before,*::after{{animation-duration:.01ms!important;animation-iteration-count:1!important;
@@ -4924,10 +4943,15 @@ APP_JS = r"""
   if (window.visualViewport) {
     var vv = window.visualViewport;
     function fit() {
-      if (Math.abs(window.innerHeight - vv.height) < 2 && vv.offsetTop === 0) { body.style.height = ''; body.style.top = ''; return; }
+      if (Math.abs(window.innerHeight - vv.height) < 2 && vv.offsetTop === 0) {
+        body.style.height = ''; body.style.top = ''; body.classList.remove('kb'); return;
+      }
       body.style.height = vv.height + 'px'; body.style.top = vv.offsetTop + 'px';
+      // The keyboard is up (not a pinch zoom, which shrinks height by the scale):
+      // it covers the home indicator, so nothing pays that inset now (.kb in the CSS).
+      body.classList.toggle('kb', window.innerHeight - vv.height * vv.scale > 80);
     }
-    vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit);
+    vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); fit();
   }
 
   // ---- session tabs
@@ -5025,7 +5049,9 @@ APP_JS = r"""
       t.setAttribute('aria-expanded', 'true');
       var r = t.getBoundingClientRect();
       winmenu.style.top = (r.bottom + 4) + 'px';
-      winmenu.style.left = Math.max(4, Math.min(r.left, innerWidth - winmenu.offsetWidth - 8)) + 'px';
+      var bs = getComputedStyle(document.getElementById('bar'));   // its padding = the side safe areas
+      winmenu.style.left = Math.max(4 + (parseFloat(bs.paddingLeft) || 0),
+        Math.min(r.left, innerWidth - winmenu.offsetWidth - 8 - (POP ? 0 : parseFloat(bs.paddingRight) || 0))) + 'px';
       var first = winmenu.querySelector('button.on') || winmenu.querySelector('button');
       if (first) first.focus();
     }
@@ -5079,6 +5105,11 @@ APP_JS = r"""
   }
   tabs.addEventListener('scroll', edges, { passive: true });
   window.addEventListener('resize', function () { edges(); });
+  // A phone turned on its side (or back) has a strip of another width, with
+  // the safe-area insets moving too: the current tab is easily left off-screen.
+  var portrait = matchMedia('(orientation: portrait)');
+  if (portrait.addEventListener) portrait.addEventListener('change', function () { showCur(); });
+  else if (portrait.addListener) portrait.addListener(function () { showCur(); });
   // A mouse wheel only scrolls vertically, and the strip only sideways (with
   // its scrollbar hidden): turn one into the other, as browser tab bars do.
   tabs.addEventListener('wheel', function (e) {
