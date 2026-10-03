@@ -409,6 +409,64 @@ and this project uses [Semantic Versioning](https://semver.org/).
   terminal frame has a title naming the session, the window list is a menu
   with arrow-key navigation, and the + panel's error is announced
   (`role=alert`).
+- **Pop-out window: × closes it, and nothing covers the terminal.** With
+  the bar shown, the ⋯ handle sat on top of × -- a click there hid the bar
+  and left the window open. With the bar hidden, the handle floated over the
+  terminal's top-right corner, hiding the last few columns of the first two
+  rows (a right-aligned clock or status, vim's tab-close X) and taking the
+  clicks meant for them. The handle now has a band of its own across the
+  top of the window, sits beside × when the bar is shown, and says what it
+  does ("Show bar" / "Hide bar", with `aria-expanded`).
+- **Showing the pop-out's bar no longer eats what you type or resizes the
+  session.** The click left the keyboard on the handle, so the first word
+  you typed went nowhere and the next Space hid the bar again -- the rest of
+  the line then ran as a command (in Firefox nothing typed arrived at all
+  until you clicked the terminal). And every show or hide resized the
+  terminal by 44px, so tmux resized the window for every attached client
+  and agent TUIs redrew. Now the keyboard stays in the terminal, the bar
+  lies over the terminal's top rows while it is shown, and Escape, a click
+  in the terminal, or picking a tab or a window puts it away.
+- Revealing the pop-out's bar shows the **current tab and its window
+  badge**; with more tabs than fit, it used to open scrolled to the start.
+- **A popped-out session is not attached a second time by the same
+  browser.** Back in the tab you popped it out of, or picking its tab in
+  another tab's strip, attached it there as well, and the two windows fought
+  over its size (one boxed in dots, the other cropped). Pop out now leaves
+  no history entry to go Back to, and picking a popped-out session's tab
+  brings its window forward (from the tab that opened it) or says it is open
+  in a pop-out, with *Open here* to attach anyway.
+- **A pop-out window keeps the name of the session it shows.** After you
+  switched tabs inside it, Open on the new session opened a second window on
+  it, and Open on the session it started with silently took it back.
+- **Open on a session that is already popped out brings its window
+  forward without reloading it.** It used to reload it: the terminal
+  re-attached, the CRT power-on replayed and a shown bar or a half-filled +
+  panel was lost. The same goes for the terminal bar's pop-out button.
+- **Blocked pop-ups.** With pop-ups blocked for the site, the terminal's
+  pop-out button did nothing at all, and the landing menu's *Pop out* turned
+  the landing tab into a bar-less pop-out page. The button now says the
+  browser blocked the window, and the landing page opens the session in an
+  ordinary tab and says why.
+- **Touchscreen laptops get the desktop layout again.** Any browser
+  exposing touch events was treated as a phone: no Pop out anywhere, Open
+  replacing the landing tab, the soft-key row on by default and an invisible
+  text box over the terminal that hid the link cursor. Phone or desktop now
+  follows the device's main pointer.
+- **iPhone in landscape: nothing under the notch or the rounded corners.**
+  The terminal page drew edge to edge but only kept clear of the top and
+  bottom, so the logo, ×, Esc and Copy sat in the corners and the start of
+  every terminal line, the + sheet's labels and the Copy view's lines were
+  hidden behind the notch or Dynamic Island. The bar, terminal, key row,
+  sheet and Copy view now stay inside the side safe areas (their
+  backgrounds still run underneath), at the cost of a few terminal columns
+  in landscape. Rotating also scrolls the current tab back into view.
+- **iPhone home indicator.** With the key row turned off, the terminal's
+  last row -- usually your prompt -- ran under the home indicator, where a
+  swipe goes to iOS; it now stops above it. With the keyboard open, the key
+  row no longer keeps an empty ~34px band above the keyboard for the home
+  indicator the keyboard is covering: about two terminal rows back while you
+  type. (Checked in emulation with the insets simulated; still to be
+  confirmed on a real iPhone.)
 
 ### Changed
 
@@ -442,6 +500,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
   terminal its rows back; targets keep their 44px width.
 - `docs/MANUAL-TESTS.md`: the steps for ×, the pop-out logo, rename,
   reconnect and the window badge match the UI again.
+- The pop-out window's ⋯ pill in the top-right corner is now a slim strip
+  across the top with a chevron (click anywhere on it), and the bar it shows
+  lies over the terminal's first rows instead of pushing the terminal down.
+  The terminal in a pop-out is 14px shorter to make room for the strip.
 
 ### Added
 
