@@ -5026,7 +5026,10 @@ APP_JS = r"""
   }
   function switchTo(name, id, here) {
     if (name === cur) { focusTerm(); return; }
+    if (!from) from = { name: cur, id: curId };   // until a list has the new one (render())
+    switchGen++;
     if (!POP && !here && inPopout(name, id)) return;
+    hideNote();                            // e.g. "is open in a pop-out": not any more, it is here now
     cur = name; curId = id || null; WINS = []; winsKey = ''; closeWins(); closePop(false);
     clearTimeout(retryT); retryT = null; retryN = 0;
     loadFrame(name);

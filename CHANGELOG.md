@@ -330,7 +330,6 @@ and this project uses [Semantic Versioning](https://semver.org/).
 - `/favicon.ico` answers with the app icon instead of a 404 on every desktop
   visit, and a client that hangs up mid-response (a phone locking, a tab
   closing) no longer leaves a `BrokenPipeError` traceback in the journal.
-
 - **The terminal reconnects by itself** after serverjack or ttyd restarts,
   including the built-in *Update serverjack*. Before, ttyd's single
   immediate retry landed inside the restart and failed, and the terminal sat
@@ -434,7 +433,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
   over its size (one boxed in dots, the other cropped). Pop out now leaves
   no history entry to go Back to, and picking a popped-out session's tab
   brings its window forward (from the tab that opened it) or says it is open
-  in a pop-out, with *Open here* to attach anyway.
+  in a pop-out, with *Open here* to attach anyway. Loading the session's
+  `/s/` address afresh in a tab (a reload, a typed URL, or Back to an entry
+  from before the pop-out) still attaches it a second time.
 - **A pop-out window keeps the name of the session it shows.** After you
   switched tabs inside it, Open on the new session opened a second window on
   it, and Open on the session it started with silently took it back.
