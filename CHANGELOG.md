@@ -95,6 +95,16 @@ and this project uses [Semantic Versioning](https://semver.org/).
   failed oddly: tmux reads a trailing `;` in any argument as the end of its
   own command. serverjack now escapes it.
 
+- **Directory picker: a typed folder name no longer creates a new, empty
+  folder.** Typing part of a name (`game`, `3d`) and pressing Enter, Go on a
+  phone, or tapping Start sent the text itself, so the session started in a
+  brand-new empty `~/game` instead of the `~/projects/game` the list was
+  suggesting -- and that stray folder then outranked the real one in later
+  searches. Now the top match is highlighted as you type, and Enter, Go and
+  Start all take the highlighted match (Enter pressed straight after typing
+  waits for the list to catch up). A new folder is an explicit choice: the
+  list's last row, **+ New folder `~/name`**, or a typed path (with a `/` or
+  a leading `~`), which is still used exactly as typed.
 - Directory picker: a folder is created only when a session actually starts
   in it. A Start refused for its name still left the new folder behind, and
   saving a shortcut with a mistyped directory silently created it. Now a
@@ -103,6 +113,47 @@ and this project uses [Semantic Versioning](https://semver.org/).
   ~/projects/gmae") instead of inventing one. Errors name the path in its
   `~` form, the way the picker shows it, and a directory with a NUL byte in
   it is a clean error instead of a dropped connection.
+
+- Directory picker on touch screens: swiping the suggestion list scrolls it.
+  It used to pick whichever folder your finger first landed on, so only the
+  rows visible without scrolling could ever be chosen.
+- Directory picker: the suggestion list no longer covers what's below it.
+  On a phone it sits in the page and pushes Name, Command and Start down
+  (about four rows tall at most), and in the default-directory form and the
+  terminal's + panel it does the same on a desktop -- tapping Name, Save or
+  Start & open used to pick a folder instead. On a desktop the Start card's
+  dropdown opens upwards when there's no room below it.
+- Terminal + panel on phones: the directory list hung off the bottom of the
+  sheet (two rows visible) over Start & open, and with the keyboard up the
+  top of the sheet went off-screen. The sheet now stops below the tab bar,
+  so + still closes it, and scrolls inside when it's taller than the screen.
+- Directory picker: Tab and Shift+Tab out of an untouched field just move
+  on. Each press used to fill in a folder (`~/`, then `~/bin/`, ...) and the
+  session started there; Shift+Tab drilled down too. Tab still completes and
+  drills into a match once you've typed or arrowed to one.
+- Directory picker: closing the list (a pick, Escape, or leaving the field)
+  cancels a lookup still on its way, so a slow answer -- likely over
+  Tailscale on a phone -- no longer reopens the list after a pick, or over
+  the next field after you've moved on.
+- Directory picker: a long parent path no longer hides the folder name. The
+  parent is shortened from its left end and the folder name always shows,
+  so rows under the same long parent can be told apart; hovering a row shows
+  its full path.
+- Directory picker with a mouse: rows highlight on hover (and Enter takes the
+  hovered row), a right-click no longer picks a row, and a click on the
+  list's padding no longer closes it and drops focus.
+- Accessibility: the directory field points at a labelled suggestion list
+  (`aria-controls`), the Start card's fields have names a screen reader can
+  announce (Directory, Session name, Command, Shortcut name), and the
+  terminal + panel's Name and Directory labels belong to their fields, so
+  clicking a label focuses it and voice control can find them.
+
+### Added
+
+- Directory picker on touch screens: a **›** at the end of each suggestion
+  shows that folder's subfolders -- the touch equivalent of Tab -- while
+  tapping the row itself still picks it. Tapping the field again after a
+  pick brings the list back.
 
 ## 1.5.0 - 2026-09-16
 

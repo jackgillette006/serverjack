@@ -403,6 +403,11 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   session, a shortcut round-trips through `shortcuts.json`, and an
   agent-servers card's buttons hit the routes they claim, against two fake
   (`bin=true`) tools from a throwaway `tools.json`.
+- `pwdirpick.py` — the directory picker: a typed name starts in the folder it
+  matched (checked against the pane's real cwd), new folders appear only when
+  a session starts in them, touch swipe/drill-down, Tab/Shift+Tab, hover and
+  right-click, late lookups, and that the list never covers the fields below
+  it, on desktop engines and emulated iPhones.
 - `pwauth.py` — `SERVERJACK_ALLOW` end-to-end against a second scratch
   instance, with Playwright forging (or withholding) the
   `Tailscale-User-Login` header itself: wrong/missing header is a 403 that

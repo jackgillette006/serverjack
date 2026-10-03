@@ -56,6 +56,18 @@ You are testing a browser-based tmux terminal at https://<your-host>/ on iPhone 
 15. ☰ goes back to the list; ✕ closes: in a pop-out it closes the window, in a tab it goes back to the list. The session keeps running either way (kill it from its menu on the landing page).
 Report PASS/FAIL per step and the iOS version.
 
+## Directory picker (iPhone; what emulation can't prove)
+
+`tests/pwdirpick.py` covers the picker in emulated WebKit and Chromium; these
+are the parts only a real iPhone settles. Do them in Safari and again in the
+Home Screen app.
+1. On the landing page tap the directory field. The suggestion list appears under it and pushes Name and Start down (nothing is covered), and the keyboard stays up. Swipe the list up and down: it scrolls and nothing is picked.
+2. Type part of a project's name (e.g. `proj`). The top match is highlighted. Press **Go**: the field fills with that folder's `~/...` path, the list closes and the keyboard stays up. Press **Go** again: the session starts in that folder, and no folder named `proj` appears in `~`. Is the list visible above the keyboard while you type, or does it sit behind it? Describe what you see.
+3. Back on the list, type a name that matches nothing. The only row is **+ New folder `~/name`**. Tap it, then Start: the session starts in that new folder.
+4. Type `~/` and tap the **›** at the end of a row: the field becomes that folder's path with a trailing `/`, the list shows its subfolders, and the keyboard stays up. Tap a row: it is picked.
+5. In a session, tap +, then the Directory field. With the keyboard up the sheet stays below the tab bar, the list shows above the keyboard, and Start & open can be reached by scrolling the sheet. Rotate to landscape: the Name field is still reachable by scrolling the sheet.
+Report PASS/FAIL per step, the iOS version, and Safari or Home Screen app.
+
 ## Run a command (any device; step 4 needs a real iPhone)
 
 1. Paste `echo RUNBOX; pwd` into the Run box and tap Run. A new tmux session opens in the terminal, the output appears, and you are left at a **shell prompt** in that session (it does not disappear).
@@ -80,7 +92,7 @@ Then test each of the three states. The easiest way to see all three is on a mac
 1. **Not installed**: a tool with no binary on the box shows an Install button and the exact install command as text. Tap Install: the command shown is the command that runs, it runs in a visible terminal, and when it finishes you are at a prompt. Reload the landing page: the row has moved on to the next state.
 2. **Installed, not logged in**: the row shows a Log in button, and "Open anyway" underneath it. Tap Log in: the login flow runs in the terminal and prints a URL or device code that is readable and tappable/selectable on the phone. Complete it, reload: the row is now Ready.
 3. **Ready**: the body is one option row per thing the tool can do, with no picker above them. Each option row has its label, a one-line note saying how it differs from the others, and its button(s) on the right (underneath, on a phone). Check the order: any extra actions, then the server (a row per running or exited instance, a row per saved "start at boot" directory with nothing running, then the Start row), then the daemon, then a quiet "Log in / switch account". The agent itself is not started from here: pick it under Start a session. A ready tool with no server, daemon or action (Copilot, Gemini) has no row at all.
-4. Only a card with something that reads a directory (starting a server, an action marked `dir`) has a directory picker, labelled **Directory**, in the row whose button uses it. Codex (a daemon and Pair) has none. Type a directory in Claude's picker and press Enter (Go on the iPhone keyboard): the Remote Control server starts there — Enter never runs a different button on the card.
+4. Only a card with something that reads a directory (starting a server, an action marked `dir`) has a directory picker, labelled **Directory**, in the row whose button uses it. Codex (a daemon and Pair) has none. In Claude's picker, type a path (e.g. `~/projects/app`) and press Enter (Go on the iPhone keyboard), or type a folder name, press Enter to take the highlighted folder, then Enter again: the Remote Control server starts there — Enter never runs a different button on the card.
 5. If Node.js is not installed, the Gemini CLI row says so instead of offering an Install button that would fail.
 6. `SERVERJACK_TOOLS=claude,codex` in the env file (restart the units) shows only those two rows, in that order. Unset it again afterwards.
 7. `~/.config/serverjack/tools.json` containing `[{"id":"gemini","hidden":true}]` hides the Gemini row and leaves the others alone.
