@@ -35,6 +35,10 @@ Use semantic tokens rather than scattering literal colors through components.
 }
 ```
 
+The UI is dark-only, so the token block also declares `color-scheme: dark`:
+native scrollbars, checkboxes and other form chrome then draw dark too
+instead of the browser's light defaults.
+
 The accent green is precious. Use it for current/active state, primary actions, focus, success/online state, and small pieces of branding. Do not turn whole screens green.
 
 ## Typography

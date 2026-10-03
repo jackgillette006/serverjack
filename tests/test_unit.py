@@ -2504,5 +2504,58 @@ class LandingHandlerTests(unittest.TestCase):
         self.assertNotIn('class="flash"', page)
 
 
+class PageChromeTests(unittest.TestCase):
+    """Landing-layout fixes that are pure functions of module state: the header
+    title, the dark color-scheme in the shared tokens, and a client hanging up
+    mid-response."""
+
+    def setUp(self):
+        self._title = mod.TITLE
+
+    def tearDown(self):
+        mod.TITLE = self._title
+
+    def test_title_is_dropped_when_it_repeats_the_wordmark(self):
+        # SERVERJACK_TITLE defaults to the hostname; a box called serverjack
+        # used to render "serverjack serverjack".
+        for t in ("serverjack", "Serverjack", " SERVERJACK "):
+            mod.TITLE = t
+            self.assertEqual(mod.title_small(), "", t)
+
+    def test_other_titles_are_kept_and_escaped(self):
+        mod.TITLE = "homeserver"
+        self.assertEqual(mod.title_small(), " <small>homeserver</small>")
+        mod.TITLE = "<b>x</b>"
+        self.assertEqual(mod.title_small(), " <small>&lt;b&gt;x&lt;/b&gt;</small>")
+
+    def test_tokens_declare_a_dark_color_scheme(self):
+        # Without it Chromium/Firefox draw light scrollbars and white
+        # checkboxes on the dark-only UI. TOKENS is shared by both pages.
+        self.assertIn("color-scheme:dark;", mod.TOKENS)
+        self.assertEqual(mod._token("bg-primary"), "#080f0e")
+
+    def test_landing_and_deny_pages_render_the_header_once(self):
+        mod.TITLE = "serverjack"
+        with mock.patch.object(mod, "sessions", return_value=[]), \
+                mock.patch.object(mod, "load_tools", return_value=([], None)), \
+                mock.patch.object(mod, "load_shortcuts", return_value=[]), \
+                mock.patch.object(mod, "update_available", return_value=False):
+            page = mod.render()
+        self.assertNotIn("<small>serverjack</small>", page)
+        self.assertNotIn("<small>serverjack</small>", mod.render_deny("x@y"))
+
+    def test_client_hangup_mid_response_is_swallowed(self):
+        stub = mock.Mock(close_connection=False)
+        for exc in (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            with mock.patch.object(mod.BaseHTTPRequestHandler, "handle", side_effect=exc()):
+                mod.Handler.handle(stub)          # must not raise
+            self.assertTrue(stub.close_connection)
+
+    def test_other_errors_still_surface(self):
+        with mock.patch.object(mod.BaseHTTPRequestHandler, "handle", side_effect=ValueError("bug")):
+            with self.assertRaises(ValueError):
+                mod.Handler.handle(mock.Mock())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

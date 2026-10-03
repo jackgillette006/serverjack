@@ -208,6 +208,21 @@ and this project uses [Semantic Versioning](https://semver.org/).
   starting a session; a rename now says "Another session is already called
   “main”. Pick a different name."
 
+- **Dark scrollbars and checkboxes.** The page never said it was dark-only, so
+  Chrome, Edge and Firefox drew light-grey scrollbars (on the page, the folder
+  suggestions and a long command box) and white unchecked checkboxes next to
+  the dark UI. Every page now declares `color-scheme: dark`.
+- **Home-screen app: nothing scrolls under the status bar any more.** The
+  iPhone app draws under a transparent status bar, and once the list was
+  scrolled, cards and the bright Start button passed right under the clock.
+  A solid strip the height of the status bar now stays behind it (it is zero
+  tall on desktop, Android and in landscape).
+- **"serverjack serverjack" in the header.** The title next to the wordmark
+  defaults to the hostname; when that is also "serverjack" it is now left out.
+- `/favicon.ico` answers with the app icon instead of a 404 on every desktop
+  visit, and a client that hangs up mid-response (a phone locking, a tab
+  closing) no longer leaves a `BrokenPipeError` traceback in the journal.
+
 ### Changed
 
 - **"Save as a shortcut": naming it is enough.** A name typed into the panel

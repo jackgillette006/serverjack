@@ -51,6 +51,7 @@ Routes
     GET  /s/<name>             the terminal wrapper for one session
     GET  /app.js               the wrapper's script
     GET  /manifest.webmanifest, /icon.svg, /icon-180.png     PWA bits
+    GET  /favicon.ico          the same PNG icon, for browsers that ask anyway
     GET  /healthz              "ok"
     GET  /api/sessions         [{name, windows, attached, ...}]
     GET  /api/windows?name=    [{index, name, active, cmd}]
@@ -2498,6 +2499,8 @@ def self_check():
 
 TOKENS = """
 :root{
+  /* dark-only UI: native scrollbars, checkboxes and form chrome follow it */
+  color-scheme:dark;
   --bg-primary:#080f0e; --bg-secondary:#111815; --surface:#1a2420; --surface-alt:#232e28;
   --border:#2f3f36; --border-soft:#1f2a25;
   --text-primary:#e6f7e9; --text-secondary:#9fb3a8; --text-muted:#93a79d;
@@ -3120,6 +3123,13 @@ body{margin:0;background:var(--bg-primary);color:var(--text-primary);
 main{max-width:760px;margin:0 auto;
   padding:calc(var(--space-4) + env(safe-area-inset-top)) calc(var(--space-3) + env(safe-area-inset-right))
     calc(var(--space-6) + env(safe-area-inset-bottom)) calc(var(--space-3) + env(safe-area-inset-left))}
+/* The home-screen app draws under a transparent status bar (black-translucent).
+   main's top padding only protects the first screen, so a fixed strip the
+   height of the inset keeps scrolled content out from under the clock. Zero
+   tall wherever the inset is 0 (desktop, Android, landscape). Above menus and
+   the dir list, below #crt so the power-on/off still covers everything. */
+#sbbg{position:fixed;left:0;right:0;top:0;height:env(safe-area-inset-top);z-index:10;
+  background:var(--bg-primary);pointer-events:none}
 h1{margin:0;font:600 20px/28px var(--font-mono);letter-spacing:-.01em;
   display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
 h1 .glyph{color:var(--accent);flex:none}
@@ -3386,12 +3396,13 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>{title}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#080f0e">
+<meta name="color-scheme" content="dark">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 {pwa_links}
 <style>{css}</style></head><body class="{fx_class}">
-<div id="crt" aria-hidden="true"></div><main>
-<h1>{glyph}serverjack <small>{title}</small></h1>
+<div id="crt" aria-hidden="true"></div><div id="sbbg" aria-hidden="true"></div><main>
+<h1>{glyph}serverjack{title_small}</h1>
 <p class="tagline">Jack into your server.</p>
 <p class="sysline">{sysline}</p>
 {error}
@@ -4500,6 +4511,14 @@ def words(s):
     return " ".join(f'<span class="w">{esc(w)}</span>' for w in str(s).split())
 
 
+def title_small():
+    """The muted " <small>title</small>" after the wordmark in the page header,
+    or nothing when the title would just repeat it: SERVERJACK_TITLE defaults
+    to the hostname, and on a box called serverjack the header read
+    "serverjack serverjack"."""
+    return "" if TITLE.strip().lower() == "serverjack" else f" <small>{esc(TITLE)}</small>"
+
+
 def term_href(name):                 # the wrapper page with the menu bar
     return f"/s/{quote(name, safe='')}"
 
@@ -5078,6 +5097,7 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
     flash_html = (f'<div class="flash" id="note" role="status" data-at="{esc(flash_at)}">'
                   f'{esc(flash)}</div>') if flash else ""
     return PAGE.format(css=CSS, error=flash_html + err, body=body, title=esc(TITLE), glyph=I_LOGO,
+                       title_small=title_small(),
                        pwa_links=PWA_LINKS, dirpick_js=DIRPICK_JS, flows_js=FLOWS_JS,
                        sysline=system_line(), fx_class=FX_CLASS, version=esc(VERSION))
 
@@ -5121,8 +5141,9 @@ DENY_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>{title}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#080f0e">
+<meta name="color-scheme" content="dark">
 <style>{css}</style></head><body><main>
-<h1>{glyph}serverjack <small>{title}</small></h1>
+<h1>{glyph}serverjack{title_small}</h1>
 <div class="err">Not your serverjack.</div>
 <p class="tagline">This serverjack belongs to another tailnet user. You are signed in as {you}.</p>
 <p class="foot">Identity comes from Tailscale: <code>tailscale serve</code> adds a
@@ -5141,7 +5162,8 @@ def render_deny(login):
     # /icon-180.png before path dispatch, so those links would just 403 on
     # every load, and "Add to Home Screen" makes no sense for a page whose
     # whole point is that this user can't use it.
-    return DENY_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_LOGO, you=esc(login or "nobody"))
+    return DENY_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_LOGO, title_small=title_small(),
+                            you=esc(login or "nobody"))
 
 
 # --- PWA bits: manifest + icons (so "Add to Home Screen" on iOS / "Install"
@@ -5224,6 +5246,15 @@ class Handler(BaseHTTPRequestHandler):
         BaseHTTPRequestHandler.setup(self)
         self.peer = conn_uid(self.connection)
         self.peer_ok = peer_allowed(self.peer)
+
+    def handle(self):
+        # A phone locking or a tab closing mid-response is routine, not an
+        # error: without this, socketserver printed a full BrokenPipeError
+        # traceback into the journal for every one of them.
+        try:
+            BaseHTTPRequestHandler.handle(self)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
 
     def refuse_peer(self):
         return self.send_bytes(
@@ -5381,6 +5412,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/icon.svg":
             return self.send_bytes(ICON_SVG.encode(), "image/svg+xml", etag=ICON_REV)
         if path == "/icon-180.png":
+            return self.send_bytes(ICON_PNG, "image/png", etag=ICON_REV)
+        if path == "/favicon.ico":
+            # Desktop browsers ask for this whatever the page's <link rel=icon>
+            # says (pop-ups, error pages, a JSON route opened in a tab), and a
+            # 404 for it on every visit is just noise in the journal. Same
+            # PNG as the home-screen icon; every browser takes a PNG here.
             return self.send_bytes(ICON_PNG, "image/png", etag=ICON_REV)
         if path == "/api/sessions":
             return self.send_json(sessions())
