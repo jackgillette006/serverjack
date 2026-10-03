@@ -427,6 +427,14 @@ try:
             ok(f"{w}px: the status dots never shrink",
                np_.evaluate("getComputedStyle(document.querySelector('#tool-srv summary .pill'),"
                             "'::before').flexShrink") == "0")
+            tags = np_.evaluate("""() => [...document.querySelectorAll('.card.sess .name .pill')]
+              .filter(t => t.textContent.trim().toLowerCase() === 'server')
+              .map(t => { const p = t.getBoundingClientRect(),
+                                r = t.closest('.name').getBoundingClientRect();
+                          return [t.closest('.name').textContent.trim(),
+                                  p.width > 20 && p.right <= r.right + 0.5]; })""")
+            ok(f"{w}px: every server tag in the Sessions list is whole, however long the name",
+               len(tags) >= 3 and all(v for _n, v in tags), tags)
             np_.click("#tool-srv > summary")
             np_.screenshot(path=f"shots/agents-srv-{w}.png", full_page=True)
             ok(f"{w}px: no horizontal overflow with the card open",

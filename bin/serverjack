@@ -2713,6 +2713,10 @@ h2:first-of-type{margin-top:var(--space-4)}
 .sess .info{flex:1;min-width:0}
 .sess .name{font:600 15px/22px var(--font-mono);display:flex;align-items:center;gap:var(--space-2);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* text-overflow does nothing on a flex container's bare text, so the visible
+   name is its own shrinking span and the pill/dot beside it never shrink */
+.sess .name .nm{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.sess .name .pill{flex:none}
 .sess .meta{color:var(--text-muted);font:400 12px/18px var(--font-mono);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .meta code{font:inherit;color:var(--text-secondary)}
@@ -3098,7 +3102,7 @@ UPDATE_CARD = """<div class="card sess" id="sc-update">
 
 SESSION_CARD = """<div class="card sess">
   <div class="info">
-    <div class="name"><span class="dot{on}"></span>{name}{tag}</div>
+    <div class="name"><span class="dot{on}"></span><span class="nm">{name}</span>{tag}</div>
     <div class="meta">{cmd} &middot; {path} &middot; {windows} &middot; {ago}{attached}</div>
   </div>
   <details class="menu">
