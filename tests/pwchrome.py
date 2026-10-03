@@ -18,6 +18,15 @@ Safari). What is proven here:
   nothing, the active tab and its window badge in view, long names cut with
   an ellipsis, the window list built from fresh data;
 - a refit after load (no dead band), no scrollbar strip, no touchCss error;
+- the pop-out window (all three engines): the handle has its own band and
+  covers no terminal cell, the bar lies over the terminal (a toggle never
+  resizes the session) and leaves the keyboard in it, Escape / a click in the
+  terminal / a pick put it away, x is reachable, the current tab is in view,
+  the window is named after the session it shows, and Open on it focuses it
+  without a reload;
+- a popped-out session is never attached a second time from this browser
+  (Back after Pop out, its tab in another tab's strip), and a blocked pop-up
+  says so and opens an ordinary tab;
 - a touchscreen laptop (touch events, mouse pointer) keeps the desktop UI;
 - a notched iPhone (safe-area insets patched in, as WebKit here reports 0):
   bar, terminal, key row, + sheet and Copy view stay inside the side insets in
@@ -152,6 +161,45 @@ FAKE_VV = """(() => { if (window.top !== window) return;
   Object.defineProperty(window, 'visualViewport', { value: t, configurable: true }); })()"""
 
 
+def clients(name):
+    return len([c for c in tmux("list-clients", "-t", f"={name}").stdout.splitlines() if c.strip()])
+
+
+def winsize(name):
+    return tmux("display", "-p", "-t", f"={name}:", "#{window_width}x#{window_height}").stdout.strip()
+
+
+def live(page):
+    page.frame_locator("#frame").locator(".xterm-helper-textarea").wait_for(state="attached", timeout=15000)
+
+
+def pop_from(page, name):
+    """Open from the landing page in `page` (a desktop: a pop-out); returns it, connected."""
+    page.goto(f"{BASE}/")
+    with page.expect_popup() as pi:
+        page.click(f"a.open[data-name='{name}']")
+    w = pi.value
+    w.wait_for_selector("#tabs .tab.on", state="attached")
+    live(w)
+    wait_for(lambda: clients(name) >= 1, 10)
+    time.sleep(1.2)
+    return w
+
+
+def note_says(page, text):
+    return page.locator("#note").is_visible() and text in page.locator("#note").inner_text()
+
+
+HIT = ("(sel) => { const r = document.querySelector(sel).getBoundingClientRect();"
+       " const e = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);"
+       " return !!e && !!e.closest(sel); }")
+# What is on top at the centre of the terminal's top-right cell (xterm's geometry).
+CORNER = ("(() => { const f = document.getElementById('frame'), r = f.getBoundingClientRect(),"
+          " s = f.contentDocument.querySelector('.xterm-screen').getBoundingClientRect(),"
+          " t = f.contentWindow.term, cw = s.width / t.cols, ch = s.height / t.rows;"
+          " const e = document.elementFromPoint(r.left + s.left + s.width - cw / 2, r.top + s.top + ch / 2);"
+          " return e && (e.id || e.tagName); })()")
+
 
 # ---------------------------------------------------------- restart helper --
 def rs_state():
@@ -194,9 +242,9 @@ def reconnect_rounds(page, sess, label, rounds):
 
 
 MADE = [f"pwc-a{TAG}", f"pwc-b{TAG}", f"pwc-c{TAG}", f"pwc-rs{TAG}",
-        f"pwc-a-really-long-session-name-for-the-strip-{TAG}", f"pwc-p{TAG}", f"pwc-q{TAG}"]
+        f"pwc-a-really-long-session-name-for-the-strip-{TAG}", f"pwc-p{TAG}", f"pwc-q{TAG}", f"pwc-zzpop{TAG}"]
 FILLERS = [f"pwc-f{i:02d}-{TAG}" for i in range(18)]
-A, B, C, RS, LONG, P, Q = MADE
+A, B, C, RS, LONG, P, Q, LATE = MADE
 new_session(A)
 new_session(B, windows=3)
 new_session(C)
@@ -204,6 +252,7 @@ new_session(RS)
 new_session(LONG)
 new_session(P)
 new_session(Q)
+new_session(LATE)
 
 try:
     with sync_playwright() as p:
@@ -547,6 +596,176 @@ try:
         sb = page.evaluate("(() => { const v = document.getElementById('frame').contentDocument"
                            ".querySelector('.xterm-viewport'); return v.offsetWidth - v.clientWidth; })()")
         ok("no scrollbar strip down the terminal", sb == 0, f"{sb}px")
+        b.close()
+
+        # ======== the pop-out window: handle, bar, focus, size (G13 G15 G16 G18)
+        # ...and its name (G14) and re-opening it (G17). FILLERS still exist,
+        # so at 640px the strip overflows.
+        for engine in ("chromium", "firefox", "webkit"):
+            print(f"{engine} pop-out window:")
+            b = getattr(p, engine).launch()
+            ctx = b.new_context(viewport={"width": 1000, "height": 650})
+            page = ctx.new_page()
+            w = pop_from(page, P)
+            errs = errors_of(w)
+            hb, fr = rect(w, "#handle"), rect(w, "#frame")
+            ok("the handle has a band of its own above the terminal", hb[3] <= fr[1] + 0.5, (hb, fr))
+            ok("...so the terminal's top-right cell is the terminal's, not the handle's",
+               w.evaluate(CORNER) == "frame", w.evaluate(CORNER))
+            size = winsize(P)
+            w.click("#handle")
+            ok("the handle shows the bar, and is labelled for what it does now",
+               w.locator("#bar").is_visible() and w.get_attribute("#handle", "aria-expanded") == "true"
+               and w.get_attribute("#handle", "aria-label") == "Hide bar")
+            ok("x is visible and hit-tests to itself (the handle no longer covers it)",
+               w.locator("#close").is_visible() and w.evaluate(HIT, "#close"), rect(w, "#close"))
+            time.sleep(0.8)
+            ok("showing the bar does not resize the session", winsize(P) == size, f"{size} -> {winsize(P)}")
+            ok("showing the bar leaves the keyboard in the terminal", wait_for(lambda: w.evaluate(FOCUSED), 3))
+            type_line(w, f"echo SHOWN{TAG}{engine}")
+            ok("...typing with the bar shown reaches tmux, whole",
+               wait_for(lambda: ran(P, f"SHOWN{TAG}{engine}"), 5) and w.locator("#bar").is_visible())
+            ok("...still the same size with the bar up", winsize(P) == size, f"{size} -> {winsize(P)}")
+            w.keyboard.type("cat -v")
+            w.keyboard.press("Enter")
+            time.sleep(0.4)
+            w.keyboard.press("Escape")
+            ok("Escape in the terminal puts the bar away",
+               wait_for(lambda: not w.locator("#bar").is_visible(), 3)
+               and w.get_attribute("#handle", "aria-label") == "Show bar")
+            ok("...and still reaches the program", wait_for(lambda: "^[" in pane(P), 3), pane(P)[-200:])
+            w.keyboard.press("Control+c")
+            w.click("#handle")
+            box = w.locator("#frame").bounding_box()
+            w.mouse.click(box["x"] + 300, box["y"] + 300)
+            ok("a click in the terminal puts the bar away", wait_for(lambda: not w.locator("#bar").is_visible(), 3))
+            w.click("#handle")
+            w.click("#handle")
+            ok("the handle hides it again, keyboard back in the terminal",
+               not w.locator("#bar").is_visible() and wait_for(lambda: w.evaluate(FOCUSED), 3))
+            type_line(w, f"echo HIDDEN{TAG}{engine}")
+            ok("...and typing reaches tmux", wait_for(lambda: ran(P, f"HIDDEN{TAG}{engine}"), 5))
+            ok("...and the session was never resized", winsize(P) == size, f"{size} -> {winsize(P)}")
+
+            # ---- G14: a tab picked inside the pop-out renames the window
+            w.click("#handle")
+            w.click(f"#tabs .tab[data-name='{Q}']")
+            wait_for(lambda: w.evaluate(ARG) == Q, 5)
+            ok("a tab picked in the pop-out: the window is named after it",
+               w.evaluate("window.name") == f"serverjack-{Q}" and w.url.endswith(f"/s/{Q}?popout=1"),
+               f"{w.evaluate('window.name')} {w.url}")
+            ok("...and the bar went away with the pick", not w.locator("#bar").is_visible())
+            wait_for(lambda: clients(Q) == 1, 8)
+
+            # ---- G17: Open on the session a pop-out shows focuses it, no reload
+            w.evaluate("window.__sj = 1")
+            n, born = len(ctx.pages), w.evaluate("performance.timeOrigin")
+            page.click(f"a.open[data-name='{Q}']")
+            time.sleep(1.5)
+            ok("Open on the session a pop-out shows: no new window, no reload, no second client",
+               len(ctx.pages) == n and w.evaluate("window.__sj === 1")
+               and w.evaluate("performance.timeOrigin") == born and clients(Q) == 1,
+               f"pages {len(ctx.pages)}/{n} clients {clients(Q)}")
+            with page.expect_popup() as pi:
+                page.click(f"a.open[data-name='{P}']")
+            w2 = pi.value
+            w2.wait_for_url(f"**/s/{P}?popout=1")
+            ok("Open on the session it showed before gets its own window, leaving this one alone",
+               w.evaluate(ARG) == Q and w.evaluate("window.__sj === 1"), w.evaluate(ARG))
+            w2.close()
+
+            # ---- G16: revealing the bar shows the current tab
+            w.set_viewport_size({"width": 640, "height": 400})
+            w.click("#handle")
+            w.click(f"#tabs .tab[data-name='{LATE}']")
+            wait_for(lambda: w.evaluate(ARG) == LATE, 5)
+            w.evaluate("document.getElementById('tabs').scrollLeft = 0")
+            time.sleep(0.3)
+            w.click("#handle")
+            ok("revealing the bar brings the current tab into view", w.evaluate(IN_TABS))
+
+            # ---- G13: x itself closes the pop-out
+            try:
+                w.click("#close")
+            except PlaywrightError:
+                pass                              # it closed during the click: the success case
+            try:
+                w.wait_for_event("close", timeout=3000)
+            except PlaywrightError:
+                pass
+            ok("x in the pop-out closes it", w.is_closed())
+            ok("no page errors", not errs, errs)
+            b.close()
+
+        # ================= G12: a popped-out session is not attached here again
+        for engine in ("chromium", "firefox"):
+            print(f"{engine}: a popped-out session is not attached a second time:")
+            b = getattr(p, engine).launch()
+            ctx = b.new_context(viewport={"width": 1280, "height": 800})
+            page = ctx.new_page()
+            errs = errors_of(page)
+            page.goto(f"{BASE}/")
+            open_term(page, BASE, P)
+            with page.expect_popup() as pi:
+                page.click("#popout")
+            w = pi.value
+            w.wait_for_url(f"**/s/{P}?popout=1")
+            live(w)
+            page.wait_for_url(f"{BASE}/")
+            wait_for(lambda: clients(P) == 1, 10)
+            page.go_back()
+            time.sleep(2)
+            ok("Back after Pop out does not attach the tab again",
+               "/s/" not in page.url and clients(P) == 1, f"{page.url} clients={clients(P)}")
+            open_term(page, BASE, Q)
+            born, n = w.evaluate("performance.timeOrigin"), len(ctx.pages)
+            page.click(f"#tabs .tab[data-name='{P}']")
+            time.sleep(1.5)
+            ok("its tab in this tab's strip does not attach it here either",
+               page.evaluate(ARG) == Q and clients(P) == 1 and len(ctx.pages) == n,
+               f"arg={page.evaluate(ARG)} clients={clients(P)} pages={len(ctx.pages)}")
+            ok("...says where it is", note_says(page, P), page.locator("#note").inner_text())
+            ok("...and leaves the pop-out alone (no reload)", w.evaluate("performance.timeOrigin") == born)
+            other = ctx.new_page()
+            open_term(other, BASE, Q)
+            n = len(ctx.pages)
+            other.click(f"#tabs .tab[data-name='{P}']")
+            time.sleep(1.5)
+            ok("from a tab that did not open it: says so, and opens no window",
+               other.evaluate(ARG) == Q and note_says(other, P) and len(ctx.pages) == n and clients(P) == 1,
+               f"pages={len(ctx.pages)}/{n} clients={clients(P)}")
+            other.click("#note button")
+            ok("...and its 'Open here' attaches it here after all",
+               wait_for(lambda: other.evaluate(ARG) == P, 5) and wait_for(lambda: clients(P) == 2, 8),
+               f"clients={clients(P)}")
+            other.close()
+            w.close()
+            time.sleep(0.8)
+            page.click(f"#tabs .tab[data-name='{P}']")
+            ok("with the pop-out closed, its tab switches as usual", wait_for(lambda: page.evaluate(ARG) == P, 5))
+            ok("no page errors", not errs, errs)
+            b.close()
+
+        # ======================================== G19: pop-ups blocked
+        print("chromium, pop-ups blocked:")
+        b = p.chromium.launch()
+        ctx = b.new_context(viewport={"width": 1280, "height": 800})
+        ctx.add_init_script("window.open = () => null")
+        page = ctx.new_page()
+        errs = errors_of(page)
+        page.goto(f"{BASE}/")
+        page.click(f".sess:has(a.open[data-name='{P}']) details summary")
+        page.click(f".sess:has(a.open[data-name='{P}']) a[data-open=popout]")
+        page.wait_for_selector("#tabs .tab.on")
+        ok("menu Pop out, blocked: an ordinary tab on the session, with its bar",
+           page.url.endswith(f"/s/{P}") and page.locator("#bar").is_visible()
+           and not page.evaluate("document.body.classList.contains('popout')"), page.url)
+        ok("...which says why", wait_for(lambda: note_says(page, "opened here"), 2))
+        page.click("#popout")
+        ok("the terminal's Pop out, blocked: says so and stays",
+           wait_for(lambda: note_says(page, "Allow pop-ups"), 2) and page.url.endswith(f"/s/{P}")
+           and len(ctx.pages) == 1, page.url)
+        ok("no page errors", not errs, errs)
         b.close()
 
         # ======================= G10: a touchscreen laptop keeps the desktop UI

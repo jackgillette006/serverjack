@@ -2753,6 +2753,28 @@ class TerminalPageTests(unittest.TestCase):
             self.assertIn(rule, page)
         self.assertIn("body.classList.toggle('kb'", mod.APP_JS)
 
+    def test_popout_markup(self):
+        page = mod.render_term("x", popout=True)
+        self.assertIn('class="popout', page)
+        # The handle says what it toggles, and that it is collapsed.
+        self.assertIn('<button id="handle" type="button" title="Show bar" aria-label="Show bar" '
+                      'aria-expanded="false" aria-controls="bar">', page)
+        self.assertNotIn("Show menu", page)
+        # The notice the page uses for a blocked pop-up or a session in a pop-out.
+        self.assertIn('<div id="note" role="status" hidden>', page)
+        # Its own band, so it covers no terminal cells; the bar lies over the
+        # terminal, so a toggle never resizes the session.
+        self.assertIn("body.popout #frame-wrap{margin-top:14px}", page)
+        self.assertIn("body.popout.showbar #bar{display:flex;position:absolute", page)
+
+    def test_popouts_are_focused_not_reloaded(self):
+        # A URL handed to window.open navigates even the window that already
+        # shows it; both pages open the named window empty and compare first.
+        self.assertIn("window.open('', 'serverjack-' + name, 'popup=yes", mod.APP_JS)
+        self.assertIn("window.open('', 'serverjack-' + name, 'popup=yes", mod.PAGE)
+        self.assertNotIn("window.open('/s/", mod.APP_JS)
+        self.assertIn("location.replace('/')", mod.APP_JS)    # Back can't return to the popped-out page
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
