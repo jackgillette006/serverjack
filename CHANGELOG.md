@@ -32,7 +32,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
   server-like name (Claude in `~/projects/remote-tools` is
   `claude-remote-tools`) is no longer listed as an exited server whose
   Remove button would kill it. Server sessions carry a small **server** tag
-  in the Sessions list.
+  in the Sessions list. A session serverjack did not start is no longer
+  taken for a server even when its name matches: a `tmux new -s
+  opencode-serve` you made by hand is not on the card, and Start makes
+  `opencode-serve-2` beside it. Only servers started by serverjack 1.5.0
+  (same name and same command) are still adopted.
 - **The agent card is right as soon as a login or install finishes.** A
   look at the list in the middle of a login (Back to finish OAuth in another
   app, another tab, a dashboard polling `/api/status`) kept the card on
