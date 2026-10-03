@@ -286,6 +286,55 @@ try:
             page.click('#tool-solo button:text-is("Stop")')
         ok("...and Stop stops the renamed session", wait_for(lambda: not exists("renamed-solo"), 5))
 
+        # The same, in place: the list's Rename and Kill don't reload the
+        # page, so the agent card that names the server's session is redrawn
+        # with it. Its Stop used to post the old name: it killed nothing,
+        # dropped the boot entry anyway and said "stopped".
+        start_from_card(page, "solo", "~/projects/web-app")
+        card(page, "solo")
+        with page.expect_navigation():
+            page.locator("#tool-solo input.autostart").click()
+        page.goto(BASE + "/")
+        page.click("#tool-solo > summary")
+        sel = '.sess:has(a.open[data-name="solo-serve"])'
+        page.click(f"{sel} details.menu > summary")
+        page.click(f"{sel} details.ren summary")
+        page.fill(f'{sel} form[action="/rename"] input[name=new]', "solo-inplace")
+        page.click(f'{sel} form[action="/rename"] button[type=submit]')
+        stop_name = '#tool-solo form[action="/tools/server"] input[name=session]'
+        ok("a Rename in place redraws the server's card, still open, with the new name",
+           wait_for(lambda: page.locator(stop_name).count() == 1
+                    and page.locator(stop_name).get_attribute("value") == "solo-inplace", 5)
+           and page.locator("#tool-solo[open]").count() == 1,
+           page.eval_on_selector_all(stop_name, "e => e.map(x => x.value)"))
+        with page.expect_navigation():
+            page.click('#tool-solo button:text-is("Stop")')
+        note = page.locator("#note").inner_text() if page.locator("#note").count() else ""
+        ok("...so its Stop, with no reload, stops that session, drops its boot entry and says so",
+           wait_for(lambda: not exists("solo-inplace"), 5)
+           and not [e for e in autostart_entries(CFG) if e["tool"] == "solo"]
+           and "stopped “solo-inplace”" in note, f"{note!r} {autostart_entries(CFG)}")
+        r = page.request.post(BASE + "/tools/server", headers=SAME,
+                              form={"id": "solo", "action": "stop", "session": "solo-inplace"})
+        ok("a Stop with nothing left to stop says so, and is no 'stopped' note",
+           r.status == 400 and "isn’t running" in r.text() and "done=server-stop" not in r.url,
+           f"{r.status} {r.url}")
+        start_from_card(page, "solo", "~/projects/web-app")
+        page.goto(BASE + "/")
+        page.click("#tool-solo > summary")
+        sel = '.sess:has(a.open[data-name="solo-serve"])'
+        page.click(f"{sel} details.menu > summary")
+        page.click(f'{sel} form[action="/kill"] button[type=submit]')
+        ok("a Kill in place turns the open card back to Start",
+           wait_for(lambda: page.locator("#tool-solo[open] #dp-solo").count() == 1, 5)
+           and "stopped" in page.locator("#tool-solo summary .state").inner_text(),
+           page.locator("#tool-solo").inner_text())
+        page.fill("#dp-solo", "web-a")
+        ok("...with a working directory picker",
+           wait_for(lambda: page.locator("#tool-solo .dirlist li").count() > 0, 5),
+           page.locator("#dp-solo").get_attribute("aria-controls"))
+        page.locator("#dp-solo").press("Escape")
+
         # ---------------------------------------------- F19: start at boot
         card(page, "srv")
         prow = page.locator('#tool-srv .orow:has(code:text-is("~/projects/synth-ios"))')

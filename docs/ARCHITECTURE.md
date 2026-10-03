@@ -242,7 +242,10 @@ beside it is a plain shell that would read as exited). Options survive
 `rename-session`, so identity never depends on the name (`<session>-<dir>`,
 made unique with `auto_name()`). An unmarked session from an older version is
 adopted only if it has that version's name and its `SERVERJACK_CMD` is the
-server's exact command. Start, Stop and autostart all go through these. `_tool_path()`
+server's exact command. Start, Stop and autostart all go through these. Stop
+takes the instance its card names, else (a card older than a Rename in
+place) the one in the card's directory, or a single server's only one; with
+none left it is an error and the boot entry stays. `_tool_path()`
 folds each tool's `paths` plus nvm's version directories into one extra
 `PATH` computed once at startup, since a systemd user unit's `PATH` never
 sourced the shell profile a CLI's installer relied on.
@@ -395,10 +398,11 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   `tmux display -p '#{window_index}'`.
 - `pwagents.py` — the agent cards, against serverjack instances it starts
   itself with fake servers: Start/Stop/autostart find servers by their marks
-  (same-basename directories, renames, look-alike interactive sessions), the
-  directory picker and Enter, start-at-boot rows, fresh login state, the
-  collapsed row at phone widths, and the CRT power-off giving the page back
-  when the next one is slow.
+  (same-basename directories, renames, look-alike interactive sessions), a
+  card redrawn after a Kill or Rename in place, the directory picker and
+  Enter, start-at-boot rows, fresh login state, the collapsed row at phone
+  widths, and the CRT power-off giving the page back when the next one is
+  slow.
 - `pwland.py` — the Start a session card really starts a shell or an agent
   session, a shortcut round-trips through `shortcuts.json`, and an
   agent-servers card's buttons hit the routes they claim, against two fake

@@ -2079,6 +2079,76 @@ class AutostartSingleServerTests(unittest.TestCase):
         self.assertEqual(sorted(e["dir"] for e in mod.load_autostart()), ["/", "/tmp"])
 
 
+class ServerStopStaleCardTests(unittest.TestCase):
+    """/tools/server's Stop from a card older than the session list: Rename
+    and Kill happen in place, so a card can still post a server's old name.
+    The server is found by its marks and the card's directory instead (a
+    single server: there is one); with nothing of it left, the route says so
+    and leaves the boot entry alone. It used to kill nothing, drop the boot
+    entry and say "stopped"."""
+
+    def setUp(self):
+        self.tools = {
+            "cc": {"id": "cc", "label": "Claude",
+                   "server": {"label": "S", "cmd": "c", "session": "cc-remote", "per_dir": True}},
+            "oc": {"id": "oc", "label": "OpenCode",
+                   "server": {"label": "Server", "cmd": "c", "session": "oc-serve"}}}
+        self.servers, self.killed = [], []
+        self.tmp = tempfile.mkdtemp(prefix="sj-unit-stop-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for p in (mock.patch.object(mod, "find_tool", lambda tid: self.tools.get(tid)),
+                  mock.patch.object(mod, "tool_state", lambda t, names=None: {"servers": self.servers}),
+                  mock.patch.object(mod, "tmux", lambda *a, **k: self.killed.append(a)),
+                  mock.patch.object(mod, "clear_tool_cache", lambda tid: None)):
+            p.start()
+            self.addCleanup(p.stop)
+        mod.save_autostart([])
+        self.addCleanup(mod.save_autostart, [])
+
+    def stop(self, tid, **form):
+        stub = _ToolRouteStub()
+        mod.Handler.do_tool(stub, "/tools/server", dict(id=tid, action="stop", **form))
+        return stub
+
+    def test_a_renamed_per_dir_server_is_found_by_its_directory(self):
+        self.servers = [{"session": "cc-other", "dir": "/", "state": "on"},
+                        {"session": "renamed", "dir": self.tmp, "state": "on"}]
+        mod.set_autostart("cc", "server", self.tmp, True)
+        stub = self.stop("cc", session="cc-remote-x", dir=self.tmp)
+        self.assertEqual(self.killed, [("kill-session", "-t", "=renamed")])
+        self.assertEqual(mod.load_autostart(), [])
+        self.assertTrue(stub.redirected.startswith("/?done=server-stop&n=renamed&"), stub.redirected)
+
+    def test_a_renamed_single_server_is_the_one_there_is(self):
+        self.servers = [{"session": "renamed", "dir": "/", "state": "on"}]
+        mod.set_autostart("oc", "server", self.tmp, True, per_dir=False)
+        stub = self.stop("oc", session="oc-serve", dir="/")
+        self.assertEqual(self.killed, [("kill-session", "-t", "=renamed")])
+        self.assertEqual(mod.load_autostart(), [])
+        self.assertTrue(stub.redirected.startswith("/?done=server-stop&n=renamed&"), stub.redirected)
+
+    def test_nothing_running_is_an_error_and_keeps_the_boot_entry(self):
+        mod.set_autostart("cc", "server", self.tmp, True)
+        mod.set_autostart("oc", "server", self.tmp, True, per_dir=False)
+        self.servers = [{"session": "cc-other", "dir": "/", "state": "on"}]
+        stub = self.stop("cc", session="cc-remote-x", dir=self.tmp)
+        self.assertIsNone(stub.redirected)
+        self.assertEqual(stub.failed[1], 400)
+        self.assertIn("isn’t running", stub.failed[0])
+        self.servers = []
+        stub = self.stop("oc", session="oc-serve", dir=self.tmp)
+        self.assertIsNone(stub.redirected)
+        self.assertEqual(self.killed, [])
+        self.assertEqual(len(mod.load_autostart()), 2)
+
+    def test_a_name_that_is_no_server_of_its_own_is_never_killed(self):
+        # An interactive session that only shares the prefix, no directory.
+        self.servers = [{"session": "cc-remote-app", "dir": self.tmp, "state": "on"}]
+        stub = self.stop("cc", session="cc-remote-tools")
+        self.assertEqual(self.killed, [])
+        self.assertEqual(stub.failed[1], 400)
+
+
 class CleanCmdTests(unittest.TestCase):
     """clean_cmd(): browsers submit every <textarea> newline as CRLF, and bash
     kept the CR glued to the last word of every line but the last."""

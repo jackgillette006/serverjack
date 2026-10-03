@@ -228,9 +228,11 @@ Marked **needs a reboot** — the point of this one is that it survives one.
 3. Start it, then **Stop** it from the page. The entry is gone from
    `autostart.json` — a deliberate stop must not come back.
    Tick it again, then kill the server's session from its ⋯ menu under
-   Sessions instead: the card keeps a row for that directory, "Starts at
-   boot; not running now", with the box ticked — unticking it there removes
-   the entry.
+   Sessions instead: with no reload, the card keeps a row for that directory,
+   "Starts at boot; not running now", with the box ticked — unticking it
+   there removes the entry. Rename a running server's session from its ⋯
+   menu, then press Stop on its card without reloading: the renamed session
+   is the one that stops.
 4. Tick the box again, then reboot the machine. After it comes up (give it a
    minute; the unit waits for `network-online.target` and then 15 seconds more),
    the session is running without anyone opening the page. This is the whole

@@ -186,9 +186,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
   reload or Back doesn't bring it back (the old "Default directory: ..." note
   did, on every reload).
 - **Kill and Rename happen in place.** No reload: the row goes away or shows
-  its new name. Rename opens focused with the old name selected, refuses `:`
-  and `.` before sending, and shows a refusal right under the field with the
-  menu still open and your text kept.
+  its new name, and an agent card whose server it was is redrawn to match.
+  Rename opens focused with the old name selected, refuses `:` and `.`
+  before sending, and shows a refusal right under the field with the menu
+  still open and your text kept.
 - Changing the default directory ("Starts in ~ · change") no longer empties a
   half-filled Start card, and a folder it refuses is reported inside that
   form instead of at the top of the page, off-screen on a phone.

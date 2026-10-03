@@ -306,7 +306,8 @@ selected; the same rules as a new session apply, so tmux's forbidden
 characters (`:` and `.`), a leading `$` (tmux reads that as a session id) and
 a name something else already has are refused, with the reason right under
 the field. Renaming a server's session is fine: its agent card still finds
-it. Kill and Rename both happen in place — the row goes or changes, and
+it. Kill and Rename both happen in place — the row goes or changes, the
+agent card of a server whose session it was is redrawn to match, and
 nothing else on the page (a half-typed Start card, the scroll position)
 moves. Renaming a session leaves a browser
 sitting on the old `/s/<name>` without a session. That is harmless: the page
