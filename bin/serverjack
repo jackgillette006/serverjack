@@ -1151,21 +1151,24 @@ def tmux(*args, check=False):
 
 
 def sessions():
+    # "id" is tmux's own #{session_id} ($3): it survives a rename and is never
+    # reused, so the terminal page can tell "renamed" (follow it) from "ended".
     fmt = "\t".join([
         "#{session_name}", "#{session_windows}", "#{session_attached}",
         "#{session_created}", "#{pane_current_command}", "#{pane_current_path}",
+        "#{session_id}",
     ])
     r = tmux("list-sessions", "-F", fmt)
     out = []
     if r.returncode != 0:
         return out                       # no server running: no sessions
     for line in r.stdout.splitlines():
-        name, windows, attached, created, cmd, path = (line.split("\t") + [""] * 6)[:6]
+        name, windows, attached, created, cmd, path, sid = (line.split("\t") + [""] * 7)[:7]
         out.append({
             "name": name, "windows": int(windows or 0),
             "attached": attached not in ("", "0"),
             "created": int(created or 0), "cmd": cmd,
-            "path": path.replace(HOME, "~", 1),
+            "path": path.replace(HOME, "~", 1), "id": sid,
         })
     return out
 
@@ -5673,15 +5676,25 @@ TERM_DOWN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Terminal unavailable &middot; {title}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#080f0e">
-<style>{css}</style></head><body><main>
-<h1>{glyph}serverjack <small>{title}</small></h1>
+<style>{css}
+html.framed h1,html.framed .top,html:not(.framed) .framed-only{{display:none}}
+html.framed main{{padding-top:var(--space-3)}}
+html.framed .tagline{{margin-left:0}}
+</style>
+<script>if (window.top !== window) document.documentElement.className = 'framed';</script>
+</head><body><main id="sj-term-down">
+<h1>{glyph}serverjack{title_small}</h1>
 <div class="err">The terminal isn’t answering.</div>
 <p class="tagline">serverjack proxies the terminal to ttyd on a private socket, and
 that socket did not accept a connection: <code>{why}</code></p>
-<p class="foot">The terminal runs as a second user unit. Check it with
+<p class="tagline framed-only">This page keeps retrying on its own and goes back to the
+terminal as soon as ttyd answers. Your tmux sessions are untouched — nothing here can kill them.</p>
+<p class="tagline top">Your tmux sessions are untouched — nothing here can kill them.</p>
+<p><button class="btn" type="button" onclick="location.reload()">Retry now</button></p>
+<details class="inline foot"><summary>If it doesn’t come back</summary>
+<p class="tagline">The terminal runs as a second user unit. Check it with
 <code>systemctl --user status serverjack-ttyd</code> and
-<code>journalctl --user -u serverjack-ttyd -n 50</code>, then reload this page.
-Your tmux sessions are untouched — nothing here can kill them.</p>
+<code>journalctl --user -u serverjack-ttyd -n 50</code>.</p></details>
 </main></body></html>
 """
 
@@ -5689,7 +5702,8 @@ Your tmux sessions are untouched — nothing here can kill them.</p>
 def render_term_down(why):
     # No {pwa_links}: this is an error interstitial, not a page to install as
     # a PWA -- and PWA_LINKS' manifest/icon sub-requests would only add noise.
-    return TERM_DOWN_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_LOGO, why=esc(why))
+    return TERM_DOWN_PAGE.format(title=esc(TITLE), title_small=title_small(), css=CSS,
+                                 glyph=I_LOGO, why=esc(why))
 
 
 SESSION_GONE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
