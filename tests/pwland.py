@@ -313,14 +313,14 @@ with sync_playwright() as p:
 
     # ----------------------------------------------- shortcut lifecycle ----
     page.goto(f"{BASE}/")
-    card = page.locator(f'.card.sess:has(.name:text-is("{scname}"))')
+    card = page.locator(f'.card.sess:has(.name .nm:text-is("{scname}"))')
     ok("Save as a shortcut stored it", card.count() == 1)
     ok("shortcut card shows the command",
        f"LAND_{TAG}" in card.first.inner_text(), card.first.inner_text() if card.count() else "")
     card.first.locator('form[action="/shortcuts/del"] button').click()
     page.wait_for_load_state()
     ok("delete removes the shortcut",
-       page.locator(f'.card.sess:has(.name:text-is("{scname}"))').count() == 0)
+       page.locator(f'.card.sess:has(.name .nm:text-is("{scname}"))').count() == 0)
 
     # ------------------------------------------ start-a-session: the tool radio ----
     page.goto(f"{BASE}/")
