@@ -568,6 +568,37 @@ class DirSearchTests(unittest.TestCase):
             self.assertTrue(any(p.endswith("late-arrival") for p, _d, _r in entries),
                             "past the TTL, the index should rebuild and see the new directory")
 
+    # ------------------------------------- "create": the + New folder row
+    def test_a_name_with_no_folder_offers_the_one_a_submit_would_create(self):
+        # setUp pins the default dir to self.root: a bare name resolves there.
+        status, obj = mod.dir_search("brand-new")
+        self.assertEqual(status, 200)
+        self.assertEqual(obj["create"]["path"], os.path.join(self.root, "brand-new"))
+        self.assertEqual(obj["create"]["show"], "~/work/brand-new")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "brand-new")),
+                         "offering it must not create it")
+
+    def test_a_typed_path_offers_its_own_new_folder(self):
+        # resolve_dir() expands ~ with os.path.expanduser(), i.e. $HOME.
+        with mock.patch.dict(os.environ, {"HOME": self.fake_home}):
+            _status, obj = mod.dir_search("~/projects/fresh/deeper")
+        self.assertEqual(obj["create"]["path"],
+                         os.path.join(self.fake_home, "projects", "fresh", "deeper"))
+
+    def test_no_create_offer_for_an_existing_folder_a_file_or_an_empty_query(self):
+        self.assertNotIn("create", mod.dir_search("alpha")[1])        # self.root/alpha exists
+        self.assertNotIn("create", mod.dir_search("~/projects")[1])
+        self.assertNotIn("create", mod.dir_search("")[1])
+        with open(os.path.join(self.root, "a-file"), "w"):
+            pass
+        self.assertNotIn("create", mod.dir_search("a-file")[1])
+
+    def test_a_relative_path_completes_against_the_default_dir(self):
+        # The same base resolve_dir() submits it against -- not HOME.
+        os.makedirs(os.path.join(self.root, "projects", "ai", "notes"))
+        paths, _truncated = mod._dir_search_path("projects/ai/")
+        self.assertEqual([os.path.basename(p) for p in paths], ["3d-lab", "notes"])
+
 
 class TermThemeTests(unittest.TestCase):
     """_term_theme()/TERM_THEME/ttyd_src(): the terminal color theme is
