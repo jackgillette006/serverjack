@@ -471,6 +471,45 @@ and this project uses [Semantic Versioning](https://semver.org/).
   type. (Checked in emulation with the insets simulated; still to be
   confirmed on a real iPhone.)
 
+- Swiping the key row to reach the keys past its edge sent the key under
+  your finger -- ^C (interrupting whatever ran), Esc (interrupting an agent),
+  an arrow, or a silently armed Ctrl. Keys now fire on a tap released in
+  place; a swipe only scrolls.
+- Paste and Copy did nothing when tapped in browsers that send no click
+  after a touch on them (Linux WebKit on touch, which is also what the test
+  suite drives as its iPhone). They now act on the tap itself; iOS Safari,
+  which did send the click, still pastes from it, and nothing fires twice.
+- Soft keys ignored keyboard Enter/Space and assistive-technology
+  activation (they only listened for a pointer press); they now respond to
+  both, and the Ctrl key reports whether it is armed to screen readers.
+- The soft Ctrl followed by punctuation or some digits (`\ [ ] _ ^ / ? @ -
+  2`) sent nothing and swallowed the character, so Ctrl+\, Ctrl+_ and
+  Ctrl+] were impossible from a phone. They now send the control byte; a
+  character with no Ctrl form is typed as is instead of disappearing.
+- Dictated, predicted or emoji text was silently dropped after any soft key
+  or a Ctrl-latched key, and an armed Ctrl survived switching to another
+  session (making its first letter a control character). Both fixed.
+- The Copy view left keyboard focus in the hidden terminal: Esc (meant to
+  close it) and anything typed went to the program underneath, interrupting
+  agents unseen. Opening it now moves focus into the view, which drops the
+  phone keyboard; Esc closes it.
+- Copy all copied the screen with every line run together, and tapping a
+  line stripped its indentation. Both now copy the text exactly as shown.
+- The Copy view showed an empty page when the session had ended and stale
+  text when serverjack couldn't be reached (which Copy all would then copy);
+  it now says which, and stays with the session the page is on.
+- Firefox: after clicking the keys toggle, a soft key, the Copy view's
+  Close or the active tab, typing went nowhere until you clicked into the
+  terminal.
+- On a phone, the keys toggle, the Copy view's Close and a tap on the
+  current tab of a one-window session no longer pop the keyboard up; they
+  leave it as it was.
+- With no clipboard access, Paste flashed "hold to paste" inside the key,
+  widening it and pushing Copy off-screen; a second press left that label
+  stuck for good. The hint is now a small note above the row ("Long-press
+  the terminal to paste" on a phone, Ctrl+V / Cmd+V on a desktop), and
+  button labels always come back.
+
 ### Changed
 
 - **"Save as a shortcut": naming it is enough.** A name typed into the panel
@@ -507,6 +546,14 @@ and this project uses [Semantic Versioning](https://semver.org/).
   across the top with a chevron (click anywhere on it), and the bar it shows
   lies over the terminal's first rows instead of pushing the terminal down.
   The terminal in a pop-out is 14px shorter to make room for the strip.
+
+- **The phone key row puts the important keys on screen.** It needed 656px,
+  so on every phone in portrait ^C, Paste and Copy sat past the right edge
+  with nothing to say they existed. Keys are narrower and reordered (Esc,
+  Tab, Shift-Tab, Ctrl, ^C, Paste, Copy, then the arrows and PgUp/PgDn), so
+  Esc through Copy fit from 320px up; the edge with more keys past it fades
+  out; keys are 44px tall on touch screens. The arrows and PgUp/PgDn now
+  repeat while held, instead of one tap per character.
 
 ### Added
 

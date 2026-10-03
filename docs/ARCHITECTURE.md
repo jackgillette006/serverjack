@@ -399,6 +399,14 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   counted against the suite.
 - `pwmobile.py` — soft keys, Paste, and the "Copy" screen-text view, on
   desktop and WebKit's iPhone 14 emulation (not real iOS Safari).
+- `pwinput.py` — the soft-key row in depth, against a raw byte logger
+  (`cat -v` with the tty's line editing and signals off): keys fire on a
+  tap, never on a swipe across the row (real touch gestures through
+  Chromium's CDP); arrows repeat while held; keyboard and assistive-tech
+  activation; the Ctrl latch's control bytes; text arriving after a soft
+  key; Paste firing once; the Copy view's focus, Esc, errors and copied
+  text; where the keyboard focus lands after bar and overlay clicks in all
+  three engines; and which keys fit on screen at 320 and 390px.
 - `pwpop.py` — pop-out-to-window behavior and that reopening the same
   session refocuses rather than duplicates.
 - `pwwin.py` — the window-count badge and picker, verified against
