@@ -18,7 +18,12 @@ Safari). What is proven here:
   nothing, the active tab and its window badge in view, long names cut with
   an ellipsis, the window list built from fresh data;
 - a refit after load (no dead band), no scrollbar strip, no touchCss error;
-- a touchscreen laptop (touch events, mouse pointer) keeps the desktop UI.
+- a touchscreen laptop (touch events, mouse pointer) keeps the desktop UI;
+- a notched iPhone (safe-area insets patched in, as WebKit here reports 0):
+  bar, terminal, key row, + sheet and Copy view stay inside the side insets in
+  landscape, the terminal clears the home indicator with the key row off, and
+  nothing pays that inset while the soft keyboard is up (a faked
+  visualViewport drives fit()).
 
 Sessions it makes are all called pwc-*, and are killed at the end.
 """
@@ -110,6 +115,42 @@ def errors_of(page):
     errs = []
     page.on("pageerror", lambda e: errs.append(str(e)))
     return errs
+
+
+def rect(page, sel):
+    return page.evaluate(f"(() => {{ const e = document.querySelector({sel!r}); if (!e) return null;"
+                         f" const r = e.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; }})()")
+
+
+def px(page, sel, prop):
+    return page.evaluate(f"parseFloat(getComputedStyle(document.querySelector({sel!r})).{prop})")
+
+
+def safe_patch(insets):
+    """Route handler: env(safe-area-inset-*) -> fixed values, as a real iPhone
+    reports them (emulated WebKit reports 0 for all four)."""
+    def patch(route):
+        r = route.fetch()
+        body = r.text()
+        for k, v in insets.items():
+            body = body.replace(f"env(safe-area-inset-{k})", v)
+        route.fulfill(response=r, body=body)
+    return patch
+
+
+IN_TABS = ("(() => { const s = document.getElementById('tabs').getBoundingClientRect(),"
+           " t = document.querySelector('#tabs .tab.on').getBoundingClientRect();"
+           " return t.left >= s.left - 0.5 && t.right <= s.right + 0.5; })()")
+# A visualViewport the test drives, so the page's fit() runs as on an iPhone:
+# __set(h) is the soft keyboard taking the bottom (innerHeight - h) pixels.
+FAKE_VV = """(() => { if (window.top !== window) return;
+  const t = new EventTarget(); let h = null;
+  Object.defineProperty(t, 'height', { get: () => h === null ? innerHeight : h });
+  Object.defineProperty(t, 'width', { get: () => innerWidth });
+  t.offsetTop = 0; t.offsetLeft = 0; t.scale = 1;
+  t.__set = v => { h = v; t.dispatchEvent(new Event('resize')); };
+  Object.defineProperty(window, 'visualViewport', { value: t, configurable: true }); })()"""
+
 
 
 # ---------------------------------------------------------- restart helper --
@@ -533,6 +574,68 @@ try:
            and page.locator("#popout").is_visible() and not page.locator("#keys").is_visible())
         ok("...and no touch textarea stretched over the terminal",
            page.frame_locator("#frame").locator("#sj-touch").count() == 0)
+        b.close()
+
+        # =================== F37 F81 F82: a notched iPhone's safe areas (WebKit)
+        print("webkit iphone 14 landscape, notch at the sides:")
+        b = p.webkit.launch()
+        ctx = b.new_context(**phone(p, "iPhone 14 landscape"))
+        ctx.add_init_script("try { localStorage.setItem('sj-keys', '1') } catch (e) {}")
+        page = ctx.new_page()
+        page.route("**/s/**", safe_patch({"top": "0px", "bottom": "21px", "left": "47px", "right": "47px"}))
+        open_term(page, BASE, P)
+        W = page.evaluate("innerWidth")
+        logo, kbtn, fr, k0, kn = (rect(page, s) for s in ("#bar a.ib", "#keysbtn", "#frame", "#keys .k", "#copy"))
+        ok("the bar's controls are inside the safe area", logo[0] >= 47 and kbtn[2] <= W - 47, (logo, kbtn, W))
+        ok("so is the terminal (no columns under the notch)", fr[0] >= 47 and fr[2] <= W - 47, fr)
+        ok("the key row starts and ends inside it", k0[0] >= 47 and kn[2] <= W - 47, (k0, kn))
+        page.evaluate("document.getElementById('add').click()")
+        time.sleep(0.4)
+        inp = rect(page, "#pop input[name=name]")
+        ok("the + sheet's fields are inside it", inp[0] >= 47 and inp[2] <= W - 47, inp)
+        page.evaluate("document.getElementById('pop-cancel').click()")
+        ok("the Copy view's text is inside it",
+           px(page, "#screen-text", "paddingLeft") >= 47 + 12 and px(page, "#screen-text", "paddingRight") >= 47 + 12)
+        page.set_viewport_size({"width": 390, "height": 664})          # turned back upright
+        # (headless WebKit can take seconds to deliver the orientation change)
+        ok("turned upright: the current tab is still in view (the strip got narrower)",
+           wait_for(lambda: page.evaluate(IN_TABS), 6))
+        b.close()
+
+        print("webkit iphone 14 portrait, home indicator and soft keyboard:")
+        b = p.webkit.launch()
+        for keys in ("1", "0"):
+            ctx = b.new_context(**phone(p))
+            ctx.add_init_script(f"try {{ localStorage.setItem('sj-keys', '{keys}') }} catch (e) {{}}")
+            ctx.add_init_script(FAKE_VV)
+            page = ctx.new_page()
+            errs = errors_of(page)
+            page.route("**/s/**", safe_patch({"top": "47px", "bottom": "34px", "left": "0px", "right": "0px"}))
+            open_term(page, BASE, P)
+            H = page.evaluate("innerHeight")
+            if keys == "1":
+                ok("key row on: it pays the home indicator's inset",
+                   px(page, "#keys", "paddingBottom") == 6 + 34, px(page, "#keys", "paddingBottom"))
+                page.evaluate("visualViewport.__set(innerHeight - 300)")
+                time.sleep(0.2)
+                ok("keyboard up: the key row sits flush on it (no dead band)",
+                   page.evaluate("document.body.classList.contains('kb')")
+                   and px(page, "#keys", "paddingBottom") == 6
+                   and abs(rect(page, "#keys")[3] - (H - 300)) < 1, rect(page, "#keys"))
+                page.evaluate("visualViewport.__set(innerHeight)")
+                time.sleep(0.2)
+                ok("keyboard down again: the inset is back",
+                   not page.evaluate("document.body.classList.contains('kb')")
+                   and px(page, "#keys", "paddingBottom") == 6 + 34)
+            else:
+                ok("key row off: the terminal stops above the home indicator",
+                   rect(page, "#frame")[3] <= H - 34 + 0.5, (rect(page, "#frame"), H))
+                page.evaluate("visualViewport.__set(innerHeight - 300)")
+                time.sleep(0.2)
+                ok("...and reaches down to the keyboard when that is up",
+                   abs(rect(page, "#frame")[3] - (H - 300)) < 1, rect(page, "#frame"))
+            ok("no page errors", not errs, errs)
+            ctx.close()
         b.close()
 finally:
     for s in MADE + FILLERS:
