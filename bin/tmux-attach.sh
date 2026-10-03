@@ -62,13 +62,93 @@ if ! tmux has-session -t "=$name" 2>/dev/null; then
   exit 1
 fi
 
-# The page has its own bar (tabs, window count), so tmux's status line is
-# just noise in a browser: hide it for sessions opened through serverjack.
-# It is a session option, so an ssh client of the same session loses it too;
-# SERVERJACK_TMUX_STATUS=on keeps it.
-if [[ "${SERVERJACK_TMUX_STATUS:-off}" != "on" ]]; then
-  tmux set-option -t "=$name:" status off 2>/dev/null
+# What the page changes on a session while it has it open. restore() below
+# puts both back once no page has the session open any more, so an ssh or
+# tty1 client sees plain tmux again as soon as the browser has gone:
+#
+# - status off. The page has its own bar (tabs, window count), so tmux's
+#   status line is just noise in a browser. It is a session option -- tmux
+#   has no per-client status line -- so an ssh client attached at the same
+#   time as the page loses it too, for as long as the page is open.
+#   SERVERJACK_TMUX_STATUS=on leaves it alone.
+# - fill-character ' '. When two clients of different sizes share a window
+#   (a phone and a desktop), the bigger one shows the window in its corner
+#   and tmux fills the rest with '·' dots, a screenful of what looks like
+#   garbage. Blank space says the same thing quietly. A window option, tmux
+#   >= 3.3 (older ones refuse it, and it is skipped), so every window gets
+#   it, and a hook gives it to windows made while the page is open.
+#
+# @serverjack_status and @serverjack_fill mark what this file set, so
+# restore() only ever undoes its own changes.
+sid=$(tmux display -p -t "=$name:" '#{session_id}' 2>/dev/null) || sid=
+pre=()
+if [[ -n $sid && "${SERVERJACK_TMUX_STATUS:-off}" != "on" ]]; then
+  # Run in the same tmux command as the attach below, so a page that is just
+  # leaving (restore() in another copy of this script) can't put the status
+  # line back in between.
+  pre=(set-option -t "$sid" status off \; set-option -t "$sid" @serverjack_status 1 \;)
 fi
+if [[ -n $sid ]] && tmux set-option -w -t "$sid:" fill-character ' ' 2>/dev/null; then
+  tmux set-option -t "$sid" @serverjack_fill 1
+  while read -r w; do
+    tmux set-option -w -t "$w" fill-character ' '
+  done < <(tmux list-windows -t "$sid" -F '#{window_id}')
+  # An index of its own, so a user's own after-new-window hook is untouched.
+  tmux set-hook -t "$sid" 'after-new-window[73]' "set-option -w fill-character ' '"
+fi 2>/dev/null
 
+# True while another serverjack page still has the session open: a client
+# whose parent process is this script (ttyd runs tmux-attach.sh, which runs
+# tmux) or, for a page attached by an older copy that exec'd tmux, ttyd
+# itself. ssh, tty1 and desktop terminals don't count -- they are who
+# restore() is for.
+page_attached() {
+  local pid stat ppid
+  while read -r pid; do
+    [[ $pid =~ ^[0-9]+$ ]] || continue
+    read -r stat < "/proc/$pid/stat" || continue
+    stat=${stat##*) }               # drop "pid (comm) ": comm can hold spaces
+    ppid=${stat#* }
+    ppid=${ppid%% *}
+    [[ $ppid =~ ^[0-9]+$ ]] || continue
+    [[ $(tr '\0' ' ' < "/proc/$ppid/cmdline") == *tmux-attach.sh* ||
+       $(< "/proc/$ppid/comm") == ttyd ]] && return 0
+  done < <(tmux list-clients -t "$sid" -F '#{client_pid}')
+  return 1
+} 2>/dev/null
+
+restore() {
+  [[ -n $sid ]] || return 0
+  page_attached && return 0
+  if [[ $(tmux show-options -qv -t "$sid" @serverjack_status) == 1 ]]; then
+    # Unset, not "on": back to whatever the user's own tmux.conf says.
+    tmux set-option -u -t "$sid" status \; set-option -u -t "$sid" @serverjack_status
+  fi
+  if [[ $(tmux show-options -qv -t "$sid" @serverjack_fill) == 1 ]]; then
+    while read -r w; do
+      tmux set-option -u -w -t "$w" fill-character
+    done < <(tmux list-windows -t "$sid" -F '#{window_id}')
+    tmux set-hook -u -t "$sid" 'after-new-window[73]' \; set-option -u -t "$sid" @serverjack_fill
+  fi
+} 2>/dev/null
+
+# Truecolor. ttyd's terminal is xterm.js, which draws 24-bit colour, but
+# nothing tells tmux that: TERM is xterm-256color, whose terminfo has no RGB
+# flag, so tmux would quantise every 24-bit colour a program prints to the
+# 256-colour palette before it reaches the browser. -T RGB says so for this
+# client only; an ssh client of the same session keeps whatever its own
+# terminal supports. It is a tmux >= 3.2 flag and an older tmux refuses to
+# start at all with it, so probe first: no flag means 256 colours, as before.
+features=()
+tmux -T RGB -V >/dev/null 2>&1 && features=(-T RGB)
+
+# Not exec'd, so restore() can run once the client has gone. When the page
+# goes (tab closed, reload, dropped connection) ttyd hangs up this whole
+# process group: tmux exits, and the trap keeps this shell alive to clean up.
 # No -d: never yank the session away from another client (tty1, ssh, phone).
-exec tmux attach-session -t "=$name"
+trap ':' HUP
+tmux "${features[@]}" "${pre[@]}" attach-session -t "=$name"
+rc=$?
+exec >/dev/null 2>&1          # the terminal is gone; nothing to write to
+restore
+exit "$rc"

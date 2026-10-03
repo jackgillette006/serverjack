@@ -311,7 +311,11 @@ only log in to the server -- the scheme has no way to carry a command),
 **Rename**, and *Kill session*. Whether **Open** pops out or stays in the tab
 follows the device's main pointer, so a laptop with a touchscreen is still a
 desktop (a finger swipe on its terminal still scrolls the history), while an
-iPad stays a tablet even with a trackpad attached.
+iPad stays a tablet even with a trackpad attached. An SSH client gets plain
+tmux, status line included, except while a page has the same session open: the
+page hides the status line, and tmux can only do that for every client of the
+session at once (`SERVERJACK_TMUX_STATUS=on` keeps it; see
+[Configure](#configure)).
 
 A pop-out window is just the terminal under a slim strip: click the strip to
 show the bar, which opens over the terminal's top rows (so the session is
@@ -1054,7 +1058,7 @@ Works, with four things to know first:
 | `SERVERJACK_TERM` | `/term/` | URL path serverjack serves the terminal on (proxying it to ttyd's socket) |
 | `TTYD_EXTRA_ARGS` | unset | optional ttyd client options, shell-parsed as data with no expansion (e.g. `-t macOptionIsMeta=true`, see [Mac and iPad keyboards](#scrolling-copying-and-keys)). Allowed flags: `-t`/`--client-option`, `-T`/`--terminal-type`, `-m`/`--max-clients`, and `-P`/`--ping-interval`. Listener, auth, command, base-path, origin and write-access flags are refused. A JSON value (e.g. `-t theme={"background":"#123456"}`) needs its inner `"` escaped as `\"` -- the shell-style parsing that keeps this safe also treats a bare `"..."` as quoting syntax and strips it, corrupting the JSON otherwise. serverjack's own client options come first, so a `-t` of yours for the same key wins: it passes `disableResizeOverlay=true` (no `COLSxROWS` pill over the terminal on every resize), `fontFamily=Consolas,Liberation Mono,Menlo,monospace` (ttyd's default minus `Courier`, which Android draws as a serif typewriter face) and, with the default theme only, `minimumContrastRatio=4.5` |
 | `SERVERJACK_TERM_THEME` | unset (on) | `off` (or `0`/`no`/`false`) skips the default terminal color theme (built from the app's own tokens and passed to ttyd as a `-t theme=...` server option, with `-t minimumContrastRatio=4.5` so text stays readable on any background a program picks -- see [DESIGN.md](docs/design/DESIGN.md#terminal-theme)), leaving ttyd's stock xterm.js look. A `-t theme=...` (or `--client-option[=]theme=...`) of your own in `TTYD_EXTRA_ARGS` is detected automatically and also skips it, so your theme is what applies -- no need to set this too |
-| `SERVERJACK_TMUX_STATUS` | `off` | sessions opened from the page get tmux's status line turned off (the bar shows tabs and window count instead); `on` leaves tmux alone |
+| `SERVERJACK_TMUX_STATUS` | `off` | while a page has a session open, tmux's status line is turned off (the bar shows tabs and window count instead). tmux has no per-client status line, so an SSH client attached at the same time loses it too; it comes back as soon as the last page leaves the session. `on` leaves tmux alone |
 | `SERVERJACK_SSH` | `auto` | `user@host` for the SSH menu items (tailnet DNS name if Tailscale is up, else hostname); `off` hides them |
 | `SERVERJACK_FX` | unset (on) | `off` (or `0`/`no`/`false`) turns the CRT effects off by default; each browser can still flip them with the **CRT fx** toggle in the landing page's footer |
 | `SERVERJACK_CONFIG` | `~/.config/serverjack` | config directory override |
