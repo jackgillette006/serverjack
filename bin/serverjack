@@ -2098,10 +2098,12 @@ def _dir_create(q):
     answer, so the two can't disagree -- or None when that folder already
     exists, q is empty, or q names something that isn't a directory. The
     picker offers it as an explicit "+ New folder" row, so a new folder is a
-    choice you can see rather than a side effect of a search term."""
+    choice you can see rather than a side effect of a search term. ~ is
+    expanded against this module's HOME first, like the rest of dir search
+    (_expand_home()); outside tests that is resolve_dir()'s own answer."""
     if not q.strip():
         return None
-    d, err = resolve_dir(q)
+    d, err = resolve_dir(_expand_home(q.strip()))
     if err or os.path.isdir(d):
         return None
     return {"path": d, "show": _dir_show(d)}

@@ -579,15 +579,18 @@ class DirSearchTests(unittest.TestCase):
                          "offering it must not create it")
 
     def test_a_typed_path_offers_its_own_new_folder(self):
-        # resolve_dir() expands ~ with os.path.expanduser(), i.e. $HOME.
-        with mock.patch.dict(os.environ, {"HOME": self.fake_home}):
+        # ~ is the module's HOME (patched by setUp), not the real $HOME.
+        with mock.patch.dict(os.environ, {"HOME": "/nonexistent-home"}):
             _status, obj = mod.dir_search("~/projects/fresh/deeper")
         self.assertEqual(obj["create"]["path"],
                          os.path.join(self.fake_home, "projects", "fresh", "deeper"))
 
     def test_no_create_offer_for_an_existing_folder_a_file_or_an_empty_query(self):
         self.assertNotIn("create", mod.dir_search("alpha")[1])        # self.root/alpha exists
-        self.assertNotIn("create", mod.dir_search("~/projects")[1])
+        # ~ is the module's HOME, where projects/ exists -- whatever the real
+        # $HOME holds (it used to follow that, so this passed or failed by machine).
+        with mock.patch.dict(os.environ, {"HOME": "/nonexistent-home"}):
+            self.assertNotIn("create", mod.dir_search("~/projects")[1])
         self.assertNotIn("create", mod.dir_search("")[1])
         with open(os.path.join(self.root, "a-file"), "w"):
             pass
