@@ -157,13 +157,13 @@ with sync_playwright() as p:
            str([(r["n"], r["facts"], r["factsLeft"]) for r in rows]))
         if w >= 390:
             ok(f"{w}px: ...shown in full, not cut by the path",
-               all(r["factsFit"] for r in rows), str([(r["n"], r["facts"]) for r in rows if not r["factsFit"]]))
+               bool(rows) and all(r["factsFit"] for r in rows), str([(r["n"], r["facts"]) for r in rows if not r["factsFit"]]))
         ar = next((r for r in rows if r["n"] == att), None)
         ok(f"{w}px: an attached session says 'attached' in words, first, fully visible",
            bool(ar) and ar["facts"].startswith("attached") and ar["attRight"] is not None
            and ar["attRight"] <= 0.5 and ar["dot"] == "attached", str(ar))
         ok(f"{w}px: the status dot has a text alternative on every row",
-           all(r["dot"] in ("attached", "not attached") for r in rows), str([r["dot"] for r in rows]))
+           bool(rows) and all(r["dot"] in ("attached", "not attached") for r in rows), str([r["dot"] for r in rows]))
         # The directory is an inline span in a wrapping meta line, so it has
         # no scroll box of its own to measure: "first" is its first line box
         # at the meta's left edge, "in full" every line box of it inside the

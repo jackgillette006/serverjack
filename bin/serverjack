@@ -3833,7 +3833,7 @@ LAND_JS = r"""
       n.setAttribute('role', 'status');
       h2.parentNode.insertBefore(n, h2.nextSibling);
     }
-    n.className = cls; n.dataset.kind = kind; n.textContent = text;
+    n.className = cls; n.dataset.kind = kind; n.dataset.at = Date.now(); n.textContent = text;
   }
   function anchor() { return document.getElementById('sessnote') || h2; }
   function placeholder() {
@@ -3893,6 +3893,8 @@ LAND_JS = r"""
       known = list.map(function (s) { return s.name; });
       fails = 0;
       note('', '', 'down');
+      var n = document.getElementById('sessnote');     // "x has ended" has been read by now
+      if (n && n.dataset.kind === 'ended' && Date.now() - n.dataset.at > 20000) n.remove();
       sync(list);
     }).catch(function () {
       // twice in a row, so a phone waking up before its network doesn't flash it
