@@ -6,9 +6,14 @@ Safari). What is proven here:
 - the terminal reconnects BY ITSELF after serverjack, ttyd or both restart
   (run.sh's fourth instance, driven through tests/restartable.sh), and after
   the frame loaded our own 502 page while ttyd was down;
-- a session renamed elsewhere is followed (tab, URL, title; frame not
-  reloaded), one that ended sends the tab to the list and closes a pop-out --
-  never quietly attaching some other session;
+- a session renamed elsewhere is followed (tab, URL, title, and the frame
+  re-pointed at the new name), one that ended sends the tab to the list and
+  closes a pop-out -- never quietly attaching some other session; a tab for
+  a session that ended since the strip was drawn keeps the page where it
+  was, and a list asked for before a switch doesn't undo the switch;
+- serverjack down when a tab is tapped (the browser's own error page in the
+  frame) and ttyd down mid-session both recover by themselves, saying
+  "reconnecting" meanwhile;
 - Back after switching tabs never leaves the frame on a different session
   from the bar;
 - the + panel: Escape / + / Cancel / a click in the terminal close it and put
@@ -20,10 +25,11 @@ Safari). What is proven here:
 - a refit after load (no dead band), no scrollbar strip, no touchCss error;
 - the pop-out window (all three engines): the handle has its own band and
   covers no terminal cell, the bar lies over the terminal (a toggle never
-  resizes the session) and leaves the keyboard in it, Escape / a click in the
-  terminal / a pick put it away, x is reachable, the current tab is in view,
-  the window is named after the session it shows, and Open on it focuses it
-  without a reload;
+  resizes the session) and leaves the keyboard in it, Escape (which then
+  goes no further) / a click in the terminal / a pick put it away, x is
+  reachable, the current tab is in view
+  on every reveal (the first one included), the window is named after the
+  session it shows, and Open on it focuses it without a reload;
 - a popped-out session is not attached a second time from this browser by
   Back after Pop out or its tab in another tab's strip (a note says where it
   is, and goes once the tab is switched there after all), and a blocked
@@ -62,6 +68,14 @@ OVERLAY = ("(() => { const d = document.getElementById('frame').contentDocument;
            " const x = d.querySelector('.xterm'); if (!x) return 'none';"
            " for (const c of x.children) if (!c.className) return c.textContent; return ''; })()")
 ARG = "new URLSearchParams(document.getElementById('frame').contentWindow.location.search).get('arg')"
+# The same, null while the frame holds another origin's document (the
+# browser's own error page), where reading its location throws.
+ARG_OR_NULL = "(() => { try { return " + ARG + "; } catch (e) { return null; } })()"
+RETRY = ("(() => { const d = document.getElementById('frame').contentDocument, x = d && d.querySelector('.xterm');"
+         " let v = 'none'; if (x) for (const c of x.children) if (!c.className) v = getComputedStyle(c).visibility;"
+         " return {retry: document.body.classList.contains('retry'),"
+         " cap: document.querySelector('#conn .cap').textContent,"
+         " shown: getComputedStyle(document.getElementById('conn')).display !== 'none', overlay: v}; })()")
 
 
 def tmux(*args):
@@ -150,9 +164,14 @@ def safe_patch(insets):
     return patch
 
 
+# Both boxes must have a size: a hidden bar gives two empty rects, which would
+# otherwise "contain" each other.
 IN_TABS = ("(() => { const s = document.getElementById('tabs').getBoundingClientRect(),"
            " t = document.querySelector('#tabs .tab.on').getBoundingClientRect();"
-           " return t.left >= s.left - 0.5 && t.right <= s.right + 0.5; })()")
+           " return s.width > 0 && t.width > 0 && t.left >= s.left - 0.5 && t.right <= s.right + 0.5; })()")
+STRIP = ("(() => { const s = document.getElementById('tabs'), r = s.getBoundingClientRect(),"
+         " t = s.querySelector('.tab.on').getBoundingClientRect();"
+         " return {scrollLeft: s.scrollLeft, strip: [r.left, r.right], tab: [t.left, t.right]}; })()")
 # A visualViewport the test drives, so the page's fit() runs as on an iPhone:
 # __set(h) is the soft keyboard taking the bottom (innerHeight - h) pixels.
 FAKE_VV = """(() => { if (window.top !== window) return;
@@ -243,6 +262,27 @@ def rs_up(n):
     return wait_for(lambda: rs_state() == ["up", str(n)], 30, 0.1)
 
 
+def error_page_round(page, label, target):
+    """serverjack down while a tab is tapped: the frame gets the browser's own
+    error page (another origin's document), which no check could read, so
+    the frame used to stay on it for good."""
+    n = rs_restart("web", 3)
+    page.click(f"#tabs .tab[data-name='{target}']")
+    said = wait_for(lambda: page.evaluate(RETRY)["retry"], 6, 0.1)
+    up = rs_up(n)
+    t0 = time.time()
+    back = wait_for(lambda: page.evaluate(ARG_OR_NULL) == target and page.evaluate(OVERLAY) == ""
+                    and page.evaluate(FOCUSED), 25, 0.2)
+    marker = f"EP{TAG}{label}"
+    if back:
+        type_line(page, "echo " + marker)
+    ok(f"{label}: a tab tapped while serverjack is down comes back to that session by itself",
+       up and back and wait_for(lambda: ran(target, marker), 5),
+       f"up={up} back={back} arg={page.evaluate(ARG_OR_NULL)!r} after {time.time() - t0:.1f}s")
+    ok("...saying it is reconnecting in the meantime", said)
+    ok("...and not once it is back", not page.evaluate(RETRY)["retry"], page.evaluate(RETRY))
+
+
 def reconnect_rounds(page, sess, label, rounds):
     for i, (what, secs) in enumerate(rounds):
         n = rs_restart(what, secs)
@@ -304,6 +344,19 @@ try:
                 type_line(page, f"echo DOWN{TAG}")
                 ok("...on the session in the bar", wait_for(lambda: ran(A, f"DOWN{TAG}"), 5)
                    and page.evaluate(ARG) == A, page.evaluate(ARG))
+            # ---- ttyd down mid-session (F09): the page says it is reconnecting
+            # by itself, and ttyd's "Press ⏎ to Reconnect" (a key a phone's key
+            # row doesn't have) is not shown
+            n = rs_restart("ttyd", 8)
+            said = wait_for(lambda: page.evaluate(RETRY)["retry"] and page.evaluate(RETRY)["overlay"] == "hidden", 6)
+            st = page.evaluate(RETRY)
+            ok("ttyd down mid-session: 'reconnecting' over the terminal, not ttyd's 'Press ⏎ to Reconnect'",
+               said and st["shown"] and st["cap"].startswith("reconnecting"), str(st))
+            rs_up(n)
+            ok("...gone again once it is back",
+               wait_for(lambda: page.evaluate(OVERLAY) == "" and not page.evaluate(RETRY)["retry"], 15),
+               str(page.evaluate(RETRY)))
+            error_page_round(page, "chromium", C)
             ok("no page errors", not errs, errs)
             b.close()
 
@@ -317,6 +370,7 @@ try:
             page = b.new_context(viewport={"width": 1280, "height": 800}).new_page()
             open_term(page, RS_BASE, RS)
             reconnect_rounds(page, RS, "firefox", [("both", 0.3)])
+            error_page_round(page, "firefox", A)
             b.close()
         else:
             print("  (skipped: reconnect checks -- run.sh's restartable instance is not configured)")
@@ -468,8 +522,12 @@ try:
            wait_for(lambda: page.get_attribute("#tabs .tab.on", "data-name") == renamed, 5)
            and page.evaluate("location.pathname") == f"/s/{renamed}" and page.title().startswith(renamed),
            page.evaluate("location.pathname"))
-        ok("...without reloading the terminal",
-           page.evaluate("document.getElementById('frame').contentWindow.__sj === 1"))
+        # ttyd's own reconnect (a dropped socket, a phone waking) asks for the
+        # name the frame was loaded with, so the frame follows too: it used
+        # to show "No tmux session called <old name>" for 20 s after a drop.
+        ok("...and so does the terminal, so a reconnect finds it under its new name",
+           wait_for(lambda: page.evaluate(ARG_OR_NULL) == renamed and page.evaluate(FOCUSED), 10),
+           page.evaluate(ARG_OR_NULL))
         type_line(page, f"echo REN{TAG}")
         ok("...and typing still reaches it", wait_for(lambda: ran(renamed, f"REN{TAG}"), 5))
         tmux("rename-session", "-t", f"={renamed}", A)
@@ -489,6 +547,41 @@ try:
         ok("killed elsewhere: the tab goes to the list at once, not to another session", landed, page.url)
         if landed:
             ok("...which says it ended", f"“{gone}” has ended" in page.locator(".flash").inner_text())
+
+        # ---- a tab for a session that ended since the strip was drawn (it
+        # can be 15 s old): the page stays where it was and says so -- it used
+        # to leave for the list (a pop-out closed) over a session never opened
+        stale = f"pwc-stale{TAG}"
+        new_session(stale)
+        MADE.append(stale)
+        open_term(page, BASE, A)
+        wait_for(lambda: page.locator(f"#tabs .tab[data-name='{stale}']").count() == 1, 5)
+        tmux("kill-session", "-t", f"={stale}")
+        page.click(f"#tabs .tab[data-name='{stale}']")
+        time.sleep(1.5)
+        ok("a tab whose session ended meanwhile: the page stays on its session, and says so",
+           page.evaluate("location.pathname") == f"/s/{A}" and note_says(page, f"“{stale}” has ended")
+           and wait_for(lambda: page.evaluate(ARG_OR_NULL) == A and page.evaluate(FOCUSED), 10),
+           f"{page.url} arg={page.evaluate(ARG_OR_NULL)!r}")
+        ok("...and the tab is gone", page.locator(f"#tabs .tab[data-name='{stale}']").count() == 0)
+        type_line(page, f"echo STALE{TAG}")
+        ok("...and typing still reaches it", wait_for(lambda: ran(A, f"STALE{TAG}"), 5))
+
+        # ---- a list asked for before a switch, answered after it: it can't
+        # have the new session in it, and must not send the page to the list
+        fresh = f"pwc-fresh{TAG}"
+        MADE.append(fresh)
+        page.evaluate("""() => { const f = window.fetch; window.fetch = function (u) {
+            const r = f.apply(this, arguments);
+            return window.__slow && String(u).indexOf('/api/sessions') >= 0
+              ? r.then(x => new Promise(ok => setTimeout(() => ok(x), 1500))) : r; }; }""")
+        page.evaluate("window.__slow = 1; window.dispatchEvent(new Event('online')); window.__slow = 0")
+        page.click("#add")
+        page.fill("#pop_name", fresh)
+        page.click("#pop button[type=submit]")
+        time.sleep(3)
+        ok("a late answer from before a switch doesn't send the page away from the new session",
+           page.evaluate("location.pathname") == f"/s/{fresh}" and fresh in sessions(), page.url)
         ok("no page errors", not errs, errs)
 
         # ---- F12: a pop-out on a session that ends closes
@@ -510,6 +603,21 @@ try:
         except PlaywrightError:
             pass
         ok("a pop-out whose session ended closes", w.is_closed(), "" if w.is_closed() else w.url)
+
+        # ---- ...but one whose STRIP had a session that ended stays open
+        stale2 = f"pwc-stale2{TAG}"
+        new_session(stale2)
+        MADE.append(stale2)
+        w = pop_from(pop, A)
+        w.click("#handle")
+        wait_for(lambda: w.locator(f"#tabs .tab[data-name='{stale2}']").count() == 1, 5)
+        tmux("kill-session", "-t", f"={stale2}")
+        w.click(f"#tabs .tab[data-name='{stale2}']")
+        time.sleep(1.5)
+        ok("a pop-out: a tab whose session ended meanwhile leaves the window open, on its session",
+           not w.is_closed() and w.evaluate("location.pathname") == f"/s/{A}", "closed" if w.is_closed() else w.url)
+        if not w.is_closed():
+            w.close()
         b.close()
 
         # ======================================= strip: many sessions (desktop)
@@ -647,11 +755,20 @@ try:
             w.keyboard.type("cat -v")
             w.keyboard.press("Enter")
             time.sleep(0.4)
+            esc0 = pane(P).count("^[")
             w.keyboard.press("Escape")
             ok("Escape in the terminal puts the bar away",
                wait_for(lambda: not w.locator("#bar").is_visible(), 3)
                and w.get_attribute("#handle", "aria-label") == "Show bar")
-            ok("...and still reaches the program", wait_for(lambda: "^[" in pane(P), 3), pane(P)[-200:])
+            time.sleep(0.5)
+            # The bar is an overlay: the Escape that dismisses it is not also
+            # sent on (it interrupted an agent's turn, and made bash read the
+            # next key as a Meta chord). The next one goes to the program.
+            ok("...and only that: the program doesn't get that Escape", pane(P).count("^[") == esc0,
+               pane(P)[-200:])
+            w.keyboard.press("Escape")
+            ok("...the next Escape reaches the program", wait_for(lambda: pane(P).count("^[") > esc0, 3),
+               pane(P)[-200:])
             w.keyboard.press("Control+c")
             w.click("#handle")
             box = w.locator("#frame").bounding_box()
@@ -692,15 +809,31 @@ try:
                w.evaluate(ARG) == Q and w.evaluate("window.__sj === 1"), w.evaluate(ARG))
             w2.close()
 
-            # ---- G16: revealing the bar shows the current tab
+            # ---- G16: revealing the bar shows the current tab. As met for
+            # real: the FIRST reveal of a fresh pop-out whose session sorts
+            # past the end of the strip (it has never been laid out).
+            w3 = pop_from(page, LATE)
+            w3.click("#handle")
+            g = w3.evaluate(STRIP)
+            ok("(its tab lies past the strip's first screenful)",
+               g["tab"][1] - g["strip"][0] + g["scrollLeft"] > g["strip"][1] - g["strip"][0], g)
+            ok("revealing the bar the first time brings the current tab into view",
+               w3.locator("#bar").is_visible() and w3.evaluate(IN_TABS), g)
+            w3.close()
+            # ...and every reveal after that: strip scrolled to the start while
+            # shown, hidden, shown again.
             w.set_viewport_size({"width": 640, "height": 400})
             w.click("#handle")
             w.click(f"#tabs .tab[data-name='{LATE}']")
             wait_for(lambda: w.evaluate(ARG) == LATE, 5)
-            w.evaluate("document.getElementById('tabs').scrollLeft = 0")
-            time.sleep(0.3)
             w.click("#handle")
-            ok("revealing the bar brings the current tab into view", w.evaluate(IN_TABS))
+            w.evaluate("document.getElementById('tabs').scrollLeft = 0")
+            ok("(scrolled to the start, the current tab is out of view)", not w.evaluate(IN_TABS),
+               w.evaluate(STRIP))
+            w.click("#handle")
+            w.click("#handle")
+            ok("revealing it again brings the current tab back into view",
+               w.locator("#bar").is_visible() and w.evaluate(IN_TABS), w.evaluate(STRIP))
 
             # ---- G13: x itself closes the pop-out
             try:
