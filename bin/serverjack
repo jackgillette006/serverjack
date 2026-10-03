@@ -64,10 +64,10 @@ Routes
     GET  /manifest.webmanifest, /icon.svg, /icon-180.png     PWA bits
     GET  /favicon.ico          the same PNG icon, for browsers that ask anyway
     GET  /healthz              "ok"
-    GET  /api/sessions         [{name, windows, attached, ...}]
+    GET  /api/sessions         [{name, windows, attached, clients, ...}]
     GET  /api/windows?name=    [{index, name, active, cmd}]
-    GET  /api/scroll?name=     {mouse, scrolled}: the terminal page's view of
-                               the active pane
+    GET  /api/scroll?name=     {mouse, scrolled, cols, rows, status, latest, clients}:
+                               the terminal page's view of the active pane
     GET  /api/tools            one state object per agent
     GET  /api/screen?name=     the session's pane as plain text
     GET  /api/status           counts + agent + machine summary, for a dashboard
@@ -1173,6 +1173,7 @@ def sessions():
         out.append({
             "name": name, "windows": int(windows or 0),
             "attached": attached not in ("", "0"),
+            "clients": int(attached) if attached.isdigit() else 0,
             "created": int(created or 0), "cmd": cmd,
             "path": path.replace(HOME, "~", 1), "id": sid,
         })
@@ -1208,22 +1209,33 @@ _SCROLL_ACC = {}      # session -> rows not yet turned into a page (alternate-sc
 # restart of serverjack. Needs tmux 3.0 (pane options); on older tmux the
 # set fails quietly and typing behaves as it always did.
 SCROLL_MARK = "@serverjack_scrolled"
-_STATE_FMT = "\t".join(["#{pane_in_mode}", "#{pane_mode}", "#{" + SCROLL_MARK + "}", "#{mouse}"])
+_STATE_FMT = "\t".join(["#{pane_in_mode}", "#{pane_mode}", "#{" + SCROLL_MARK + "}", "#{mouse}",
+                        "#{window_width}", "#{window_height}", "#{status}", "#{window-size}",
+                        "#{session_attached}"])
 
 
 def pane_scroll_state(name):
     """What the terminal page needs to know about the session's active pane,
     in one tmux call: whether it sits in copy mode that serverjack entered
-    ("scrolled") and tmux mouse mode. A mark left over from copy mode that
-    has since ended (scrolled to the bottom, Esc or q) is cleared here."""
+    ("scrolled"), tmux mouse mode, the window's size and sizing policy (the
+    page compares that with its own terminal to see whether another screen
+    has the size), and how many clients are attached. A mark left over from
+    copy mode that has since ended (scrolled to the bottom, Esc or q) is
+    cleared here."""
     r = tmux("display-message", "-p", "-t", f"={name}:", _STATE_FMT)
-    parts = (r.stdout.rstrip("\n").split("\t") + [""] * 4)[:4] if r.returncode == 0 else [""] * 4
-    in_mode, mode, mark, mouse = parts
+    parts = (r.stdout.rstrip("\n").split("\t") + [""] * 9)[:9] if r.returncode == 0 else [""] * 9
+    in_mode, mode, mark, mouse, ww, wh, status, policy, attached = parts
     if mark and in_mode != "1":
         tmux("set-option", "-p", "-u", "-t", f"={name}:", SCROLL_MARK)
+    status_rows = 0 if status in ("", "off") else 1 if status == "on" else int(status) if status.isdigit() else 1
     return {
         "scrolled": bool(mark) and in_mode == "1" and mode == "copy-mode",
         "mouse": mouse in ("1", "on"),
+        "cols": int(ww) if ww.isdigit() else 0,
+        "rows": int(wh) if wh.isdigit() else 0,
+        "status": status_rows,
+        "latest": policy == "latest",
+        "clients": int(attached) if attached.isdigit() else 0,
     }
 
 
@@ -2425,13 +2437,17 @@ def session_facts(s):
     cut it), the window count when there is more than one, and the age. The
     path and command follow it and are what a narrow row gives up first.
     "attached" is aria-hidden because the dot already says it to a screen
-    reader. paint() in LAND_JS rebuilds the same thing in place."""
+    reader. With more than one client on it, it says how many ("attached on
+    2 screens"). paint() in LAND_JS rebuilds the same thing in place."""
     rest = " · ".join(x for x in (
         f"{s['windows']} windows" if s["windows"] > 1 else "",
         session_age(s["created"])) if x)
     att = ""
     if s["attached"]:
-        att = '<span aria-hidden="true"><b class="att">attached</b>' + (" &middot; " if rest else "") + "</span>"
+        n = s.get("clients", 0)
+        word = f"attached on {n} screens" if n > 1 else "attached"
+        att = (f'<span aria-hidden="true"><b class="att">{word}</b>'
+               + (" &middot; " if rest else "") + "</span>")
     return att + esc(rest).replace(" · ", " &middot; ")
 
 
@@ -3193,6 +3209,8 @@ I_PLUS = _svg('<path d="M12 5.5v13"/><path d="M5.5 12h13"/>', 18)
 I_KEYBOARD = _svg('<rect x="2.5" y="6" width="19" height="12" rx="2"/>'
                   '<path d="M7 10h.01M11 10h.01M15 10h.01M17.5 10h.01M7.5 14h9"/>', 18)
 I_CLOSE = _svg('<path d="M6.5 6.5l11 11"/><path d="M17.5 6.5l-11 11"/>', 18)
+I_SCREENS = _svg('<rect x="2.5" y="4.5" width="13" height="10" rx="1.5"/><path d="M6.5 19h5M9 14.5V19"/>'
+                 '<rect x="17.5" y="8.5" width="4" height="10.5" rx="1"/>', 18)
 I_REFRESH = _svg('<path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 4v4.5h-4.5"/>', 18)
 I_SEND = _svg('<path d="M5 12h12.5"/><path d="M12 5.5l6.5 6.5-6.5 6.5"/>', 18)
 I_CHEV = _svg('<path d="M6 9.5l6 6 6-6"/>', 18, "i chev")
@@ -3908,13 +3926,14 @@ LAND_JS = r"""
     var f = row.querySelector('.facts');
     var rest = [s.windows > 1 ? s.windows + ' windows' : '', age(s.created)]
       .filter(function (x) { return x; }).join(' \u00b7 ');
-    if (f && f.dataset.k !== (on ? '1' : '0') + rest) {
-      f.dataset.k = (on ? '1' : '0') + rest;
+    var n = s.clients > 1 ? s.clients : 0, k = (on ? '1' : '0') + n + rest;
+    if (f && f.dataset.k !== k) {
+      f.dataset.k = k;
       f.textContent = '';
       if (on) {
         var wrap = document.createElement('span'), b = document.createElement('b');
         wrap.setAttribute('aria-hidden', 'true');
-        b.className = 'att'; b.textContent = 'attached';
+        b.className = 'att'; b.textContent = n ? 'attached on ' + n + ' screens' : 'attached';
         wrap.appendChild(b);
         if (rest) wrap.appendChild(document.createTextNode(' \u00b7 '));
         f.appendChild(wrap);
@@ -4562,6 +4581,9 @@ body{{display:flex;flex-direction:column;height:100vh;height:100dvh;position:rel
 .tab .wb{{flex:none;margin-left:6px;color:var(--text-muted);font-size:11px;
   display:inline-flex;align-items:center;gap:3px}}
 .tab.on .wb{{color:var(--accent);opacity:.85}}
+/* ---- "also open on another screen" (tmux sizes the window to the latest screen) */
+#screens{{padding:0 8px;min-width:40px;gap:2px;font-size:11px}}
+#screens[hidden]{{display:none}}
 /* ---- tmux windows of the current session (glass, under the active tab) */
 #winmenu{{position:absolute;z-index:12;min-width:210px;max-width:min(340px,calc(100vw - 16px));
   max-height:60vh;overflow:auto;background:var(--glass-bg);
@@ -4756,6 +4778,7 @@ body.kb #screen-text{{padding-bottom:12px}}
 <div id="bar">
   <a class="ib home" href="/" title="All sessions" aria-label="All sessions">{logo}</a>
   <div id="tabs"></div>
+  <button class="ib" id="screens" type="button" hidden>{i_screens}<span class="n"></span></button>
   <button class="ib" id="add" title="New session" aria-label="New session" aria-expanded="false" aria-controls="pop">{i_plus}</button>
   <button class="ib" id="keysbtn" title="Show/hide extra keys" aria-label="Show/hide extra keys">{i_keys}</button>
   <button class="ib" id="popout" title="Pop out into a small window" aria-label="Pop out">{i_popout}</button>
@@ -5008,6 +5031,10 @@ APP_JS = r"""
     }, true);
     // an IME composition delivers its text when it ends: start leaving now
     d.addEventListener('compositionstart', function () { if (holding()) hold(function () {}); }, true);
+    // Engaging with the terminal (a tap or click in it, its window taking
+    // focus) is what lets this screen take the session's size back.
+    d.addEventListener('pointerdown', engage, true);
+    try { d.defaultView.addEventListener('focus', engage); } catch (_) {}
   }
   // Feed text to the terminal exactly as a paste (xterm applies bracketed
   // paste when the app asked for it, so multi-line text is safe).
@@ -5131,10 +5158,11 @@ APP_JS = r"""
   }
 
   // ---- what the server says about the pane: copy mode serverjack entered
-  // (above) and tmux mouse mode (the fallback for mouseOn()). Read on load,
-  // on coming back to the page, and every 2s while it has focus (so a
+  // (above), tmux mouse mode (the fallback for mouseOn()), and the window's
+  // size, which tells whether another screen has it (below). Read on load,
+  // when the page is engaged with, and every 2s while it has focus (so a
   // scroll on the phone is known to the desktop before you type there).
-  function pollState() {
+  function pollState(claim) {
     var name = cur, gen = scrollGen;
     if (!name) return;
     fetch('/api/scroll?name=' + encodeURIComponent(name), { cache: 'no-store' })
@@ -5143,16 +5171,83 @@ APP_JS = r"""
         if (name !== cur || !j || j.error) return;
         MOUSE = !!j.mouse;
         if (gen === scrollGen && !scrollBusy && !scrollQ && !leaving) sjScrolled = !!j.scrolled;
+        paintScreens(j.clients || 0);
+        if (claim) claimSize(j);
       }).catch(function () {});
   }
   var pollTick = 0;
   setInterval(function () {
     if (document.hidden) return;
     pollTick++;
-    if (document.hasFocus() || pollTick % 5 === 0) pollState();   // 10s while only visible
+    if (document.hasFocus() || pollTick % 5 === 0) pollState(false);   // 10s while only visible
   }, 2000);
-  window.addEventListener('focus', function () { pollState(); });
-  document.addEventListener('visibilitychange', function () { if (!document.hidden) pollState(); });
+
+  // ---- the session's size. tmux sizes a window to whichever of its
+  // clients most recently typed, resized or attached (`window-size latest`),
+  // so a phone shrank the desktop to a small box, or the desktop cropped the
+  // phone, until one of them typed something. A screen now takes the size
+  // back when it is engaged with (focus, a tap or click in the terminal,
+  // coming back to the tab): if tmux's window is not this terminal's size,
+  // the terminal is nudged one row smaller and back, a resize tmux counts as
+  // this client's. No key is sent. Nothing happens while the page is
+  // hidden, or on a window whose size is not `latest`'s to decide (a
+  // `window-size` set by hand, or a tmux older than 3.1).
+  var lastEngage = 0;
+  function engage() {
+    if (document.hidden) return;
+    var now = Date.now(); if (now - lastEngage < 1000) return;
+    lastEngage = now; pollState(true);
+  }
+  function sizeDiffers(j, t) { return !!j.cols && (j.cols !== t.cols || j.rows !== t.rows - (j.status || 0)); }
+  // ttyd draws a COLSxROWS pill over the terminal on every resize until its
+  // preferences (disableResizeOverlay among them) arrive, with the first data
+  // from the server: a nudge before that flashed the pill on a phone that
+  // had just opened the session. So no nudge before the terminal has been
+  // written to (or, with no way to tell, before 3 s have gone by).
+  function watchWrites() {
+    var d = tdoc(), t = xterm();
+    if (!d || !t || d.__sjWatch) return;
+    d.__sjWatch = true;
+    try { t.onWriteParsed(function () { d.__sjWritten = true; }); } catch (e) { d.__sjWritten = null; }
+  }
+  var claimT = null;
+  function termReady() {
+    watchWrites();
+    var d = tdoc(), t = xterm();
+    if (d && t && !d.__sjWritten) {
+      try { var b = t.buffer.active; if (b.cursorX || b.cursorY) d.__sjWritten = true; } catch (e) {}
+    }
+    return !!(d && d.__sjWritten) || Date.now() - loadedAt > 3000;
+  }
+  function claimSize(j) {
+    var t = xterm();
+    if (!t || !j.latest || document.hidden || !sizeDiffers(j, t)) return;
+    if (!termReady()) {                      // look again once ttyd has its settings
+      if (!claimT) claimT = setTimeout(function () { claimT = null; lastEngage = Date.now(); pollState(true); }, 300);
+      return;
+    }
+    var c = t.cols, r = t.rows; if (r < 4) return;
+    try { t.resize(c, r - 1); } catch (e) { return; }
+    setTimeout(function () { try { if (t.cols === c && t.rows === r - 1) t.resize(c, r); } catch (e) {} }, 60);
+  }
+  window.addEventListener('focus', engage);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) engage(); });
+  // ---- "also open on another screen": a quiet count in the bar. Tapping it
+  // takes the session's size for this screen.
+  var screensBtn = document.getElementById('screens');
+  function paintScreens(n) {
+    var others = n - 1, was = screensBtn.hidden;
+    if (others >= 1) {
+      screensBtn.querySelector('.n').textContent = n;
+      var what = 'Also open on ' + (others === 1 ? 'another screen' : others + ' other screens') +
+                 ' — tap to fit it to this one';
+      screensBtn.title = what; screensBtn.setAttribute('aria-label', what);
+    }
+    screensBtn.hidden = others < 1;
+    // The tab strip just changed width: keep the whole current tab in view,
+    // clear of the edge fades, and the fades themselves right.
+    if (was !== screensBtn.hidden) showCur();
+  }
 
   // Wheels and swipes. One row per measured row height of travel: ttyd draws
   // with WebGL or canvas, which have no DOM rows to measure, so this used to
@@ -5206,7 +5301,7 @@ APP_JS = r"""
     }, { capture: true, passive: false });
     d.addEventListener('touchend', function () { lastY = null; }, { capture: true, passive: true });
   }
-  frame.addEventListener('load', function () { hook(); touchCss(); scrollHooks(); pollState(); focusTerm(); });
+  frame.addEventListener('load', function () { hook(); touchCss(); scrollHooks(); safe(watchWrites); pollState(); focusTerm(); });
 
   // ---- soft key row
   var keysRow = document.getElementById('keys'), ctrlBtn = document.getElementById('ctrl');
@@ -5315,6 +5410,10 @@ APP_JS = r"""
   tapButton(document.getElementById('keysbtn'), function (b, how) {
     setKeys(!body.classList.contains('keys'));
     if (!touchy(how)) focusTerm();         // a phone keeps its keyboard up, or down, as it was
+  });
+  tapButton(screensBtn, function (b, how) {   // "also open on another screen": take the size here
+    lastEngage = Date.now(); pollState(true);
+    if (!touchy(how)) focusTerm();
   });
 
   // ---- Paste / Copy buttons
@@ -5425,7 +5524,7 @@ APP_JS = r"""
   function resetInput() {
     disarm(); swallowInput = false; endPress(); closeScreen(false);
     // nothing typed for the old session, or about its copy mode, carries over
-    heldInput = []; sjScrolled = false; scrollQ = 0; wheelAcc = 0;
+    heldInput = []; sjScrolled = false; scrollQ = 0; wheelAcc = 0; paintScreens(0);
   }
 
   // ---- iOS: the soft keyboard doesn't shrink the layout viewport, so track
@@ -6717,7 +6816,7 @@ def render_term(name, popout=False):
         name=esc(name), src=esc(ttyd_src(name)), dirpicker=dir_picker(input_id="pop_dir"), kinds=kind_options(),
         title=esc(TITLE), tokens=TOKENS, pwa_links=PWA_LINKS, logo=logo_svg(28),
         i_chev=I_CHEV, i_plus=I_PLUS, i_keys=I_KEYBOARD, i_popout=I_POPOUT,
-        i_close=I_CLOSE, i_send=I_SEND, i_refresh=I_REFRESH,
+        i_close=I_CLOSE, i_send=I_SEND, i_refresh=I_REFRESH, i_screens=I_SCREENS,
         fx_css=FX_CSS, fx_css_term=FX_CSS_TERM, dirpick_css=DIRPICK_CSS, dirpick_js=DIRPICK_JS,
         term_path_json=js(TERM_PATH), name_json=js(name), title_json=js(TITLE),
         body_class=' class="%s"' % " ".join(

@@ -2873,6 +2873,38 @@ class ScrollMarkTests(unittest.TestCase):
         self.assertFalse(mod.leave_scroll(self.name))         # ...but it stays the user's
         self.assertEqual(self.fmt("#{pane_in_mode}"), "1")
 
+    def test_state_reports_size_policy_and_clients(self):
+        st = mod.pane_scroll_state(self.name)
+        self.assertEqual((st["cols"], st["rows"]), (80, 24))
+        self.assertTrue(st["latest"])                 # tmux's default window-size
+        self.assertEqual(st["clients"], 0)            # nothing attached here
+        self.assertFalse(st["mouse"])
+        self.assertIn(st["status"], (0, 1))
+        mod.tmux("set-option", "-t", f"={self.name}:", "mouse", "on")
+        self.assertTrue(mod.pane_scroll_state(self.name)["mouse"])
+
+    def test_sessions_carry_a_client_count(self):
+        (s,) = [x for x in mod.sessions() if x["name"] == self.name]
+        self.assertEqual((s["attached"], s["clients"]), (False, 0))
+
+
+class SessionClientsMarkupTests(unittest.TestCase):
+    """How many screens a session is open on: the landing row says so past
+    one, and the terminal page carries the (hidden) cue for it."""
+
+    def test_landing_row_names_the_screen_count_past_one(self):
+        rows = [{"name": n, "windows": 1, "attached": c > 0, "clients": c, "created": 0,
+                 "cmd": "bash", "path": "~"} for n, c in (("one", 1), ("two", 2), ("idle", 0))]
+        with mock.patch.object(mod, "sessions", return_value=rows), \
+                mock.patch.object(mod, "tool_states", return_value=[]):
+            page = mod.render()
+        self.assertIn("attached on 2 screens", page)
+        self.assertEqual(page.count('<b class="att">attached</b>'), 1)    # "one": plain "attached"
+
+    def test_terminal_page_has_a_hidden_screens_cue(self):
+        page = mod.render_term("pwtest")
+        self.assertIn('<button class="ib" id="screens" type="button" hidden>', page)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
