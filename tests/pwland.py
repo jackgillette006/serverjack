@@ -112,8 +112,10 @@ with sync_playwright() as p:
     heads = page.eval_on_selector_all("main h2", "els => els.map(e => e.textContent.trim())")
     def at(t):
         return heads.index(t) if t in heads else -1
-    ok("sections in order: Start a session < Shortcuts < Sessions < Agent servers",
-       -1 < at("Start a session") < at("Shortcuts") < at("Sessions") < at("Agent servers"), str(heads))
+    # run.sh's fixture always has sessions (pwtest, pwother), so Sessions lead;
+    # tests/pwlayout.py covers the no-sessions order.
+    ok("sections in order: Sessions < Start a session < Shortcuts < Agent servers",
+       -1 < at("Sessions") < at("Start a session") < at("Shortcuts") < at("Agent servers"), str(heads))
     ok("Start card has the command box, dir picker, Shell checked by default, and a Start button",
        page.locator("#cmd").count() == 1 and page.locator("#dir").count() == 1
        and page.locator("input[name=what][value=shell]:checked").count() == 1

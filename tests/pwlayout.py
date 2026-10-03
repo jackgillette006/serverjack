@@ -190,6 +190,24 @@ with sync_playwright() as p:
         pg.screenshot(path=f"shots/layout-rows-{w}.png", full_page=True)
         c.close()
 
+    # ------------------------------------- sessions above the fold (F29) --
+    # With sessions running they lead the page, so a row is on the first
+    # screen of a phone and a laptop (this fixture has the built-in Update
+    # row plus at least two shortcuts above them in the old order).
+    for label, mk in (("iPhone 14 390x664", lambda: phone(p, wk, 390, 664)),
+                      ("iPhone SE 320x568", lambda: phone(p, wk, 320, 568)),
+                      ("desktop 1280x720", lambda: b.new_context(viewport={"width": 1280, "height": 720}))):
+        c = mk()
+        pg = c.new_page()
+        pg.goto(f"{BASE}/")
+        geo = pg.evaluate("""() => { const h = document.getElementById('sessions'),
+          r = document.querySelector('.sess[data-session]');
+          return [h.getBoundingClientRect().top, r.getBoundingClientRect().bottom, innerHeight,
+                  document.querySelectorAll('.sess:not([data-session])').length]; }""")
+        ok(f"{label}: the Sessions heading and its first row are on the first screen",
+           geo[1] <= geo[2] and geo[3] >= 3, str(geo))
+        c.close()
+
     # ------------------------------------------ per-row accessible names --
     page.goto(f"{BASE}/")
     names = page.evaluate("""() => ({
