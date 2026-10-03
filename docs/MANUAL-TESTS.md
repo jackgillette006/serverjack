@@ -97,7 +97,7 @@ Report PASS/FAIL per step, the browser and its version.
 1. Paste `echo RUNBOX; pwd` into the Run box and tap Run. A new tmux session opens in the terminal, the output appears, and you are left at a **shell prompt** in that session (it does not disappear).
 2. Go back to the list. The session created in step 1 is in the Sessions list. Kill it.
 3. Run `ls /nonexistent-path`. You see the error and still land at a prompt.
-4. **iPhone**: run `sudo -k true`. The `[sudo] password for <user>:` prompt appears in the terminal, tapping the terminal opens the keyboard, and typing the password (characters not echoed) then Return succeeds. Then run `sudo -k apt-get -s install cowsay` and confirm the password prompt behaves the same for a longer-running command. This is the main use case — describe exactly what happens if anything is awkward.
+4. **iPhone**: run `sudo -k true`. The `$ sudo -k true` line is on screen above the prompt (the whole command, even one too long for one line: try `sudo -k systemctl status --no-pager --lines=5 cron.service` too, and check its first word, `sudo`, is visible without scrolling). The `[sudo] password for <user>:` prompt appears in the terminal, tapping the terminal opens the keyboard, and typing the password (characters not echoed) then Return succeeds. Then run `sudo -k apt-get -s install cowsay` and confirm the password prompt behaves the same for a longer-running command. This is the main use case — describe exactly what happens if anything is awkward.
 5. Run something long (`sleep 60`), lock the phone, unlock: you are still attached and the command is still running.
 
 ## Save as a shortcut

@@ -1745,10 +1745,20 @@ class PaneExitedTests(unittest.TestCase):
         self.assertTrue(mod.pane_exited("bash", ""))
 
     def test_a_shell_holding_its_terminal_is_exited_and_one_with_a_job_is_not(self):
+        with mock.patch.object(mod, "_pane_runs_start_script", lambda pid: False):
+            with mock.patch.object(mod, "_shell_has_terminal", lambda pid: True):
+                self.assertTrue(mod.pane_exited("bash", "42"))
+            with mock.patch.object(mod, "_shell_has_terminal", lambda pid: False):
+                self.assertFalse(mod.pane_exited("bash", "42"))
+
+    def test_a_shell_still_running_the_start_script_is_not_exited(self):
+        # Waiting for its page (ATTACH_WAIT), the pane's own `bash -c` holds
+        # the terminal although the command has not run yet.
         with mock.patch.object(mod, "_shell_has_terminal", lambda pid: True):
-            self.assertTrue(mod.pane_exited("bash", "42"))
-        with mock.patch.object(mod, "_shell_has_terminal", lambda pid: False):
-            self.assertFalse(mod.pane_exited("bash", "42"))
+            with mock.patch("builtins.open", mock.mock_open(read_data=b"bash\0-c\0i=0; sleep 0.1\0")):
+                self.assertFalse(mod.pane_exited("bash", "42"))
+            with mock.patch("builtins.open", mock.mock_open(read_data=b"bash\0-l\0")):
+                self.assertTrue(mod.pane_exited("bash", "42"))      # after `exec bash -l`
 
     def test_stat_is_parsed_after_the_last_paren(self):
         # comm can contain spaces and ")" -- tpgid is the 6th field after it.
@@ -2926,6 +2936,97 @@ class SessionClientsMarkupTests(unittest.TestCase):
     def test_terminal_page_has_a_hidden_screens_cue(self):
         page = mod.render_term("pwtest")
         self.assertIn('<button class="ib" id="screens" type="button" hidden>', page)
+
+
+class SessionCreateTests(unittest.TestCase):
+    """create_session()/create_command_session(): the tmux new-session line.
+    Every session gets COLORTERM=truecolor (tmux converts 24-bit colour down
+    for any client that can't show it, so this is never a lie), and a
+    session started with a command waits for the page to attach before
+    printing "$ <cmd>" -- printed at tmux's detached 80 columns first, it
+    was re-wrapped for a phone's ~47 and pushed into history above a sudo
+    prompt. Sessions nobody opens (autostart, agent servers) don't wait."""
+
+    def setUp(self):
+        self.calls = []
+
+        def fake_tmux(*args):
+            self.calls.append(list(args))
+            return subprocess.CompletedProcess(args, 0, "", "")
+        patches = [mock.patch.object(mod, "tmux", fake_tmux),
+                   mock.patch.object(mod, "tool_kinds",
+                                     lambda: {"shell": (None, "Shell"), "fake": ("fake --flag", "Fake")})]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _env(self, args):
+        return [args[i + 1] for i, a in enumerate(args) if a == "-e"]
+
+    def test_shell_command_waits_for_the_page_then_prints_its_header(self):
+        self.assertIsNone(mod.create_session("shell", "s1", "/tmp", command="sudo true"))
+        args = self.calls[-1]
+        self.assertIn("COLORTERM=truecolor", self._env(args))
+        script = args[-1]
+        self.assertTrue(script.startswith(mod.ATTACH_WAIT), script)
+        self.assertIn('printf "\\$ %s\\n" "$SERVERJACK_CMD"', script)
+        self.assertLess(script.index("session_attached"), script.index("printf"))
+
+    def test_a_tool_session_waits_too(self):
+        mod.create_session("fake", "s2", "/tmp")
+        self.assertTrue(self.calls[-1][-1].startswith(mod.ATTACH_WAIT))
+
+    def test_plain_shell_has_no_script_to_delay(self):
+        mod.create_session("shell", "s3", "/tmp")
+        args = self.calls[-1]
+        self.assertIn("COLORTERM=truecolor", self._env(args))
+        self.assertFalse(any(mod.ATTACH_WAIT in a for a in args))
+
+    def test_server_sessions_start_at_once(self):
+        mod.create_command_session("srv", "/tmp", "sleep 300")
+        args = self.calls[-1]
+        self.assertIn("COLORTERM=truecolor", self._env(args))
+        self.assertFalse(any(mod.ATTACH_WAIT in a for a in args))
+
+    def _run_wait(self, answers):
+        """Run ATTACH_WAIT under /bin/sh with a fake `tmux` that answers the
+        attached-client poll with each of `answers` in turn ("fail" = exit 1),
+        then echoes DONE. Returns (seconds taken, polls made)."""
+        d = tempfile.mkdtemp(prefix="sj-unit-wait-")
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "answers"), "w") as f:
+            f.write("\n".join(answers) + "\n")
+        fake = os.path.join(d, "tmux")
+        with open(fake, "w") as f:
+            f.write('#!/bin/sh\n'
+                    'echo x >> "$D/polls"\n'
+                    'a=$(head -n 1 "$D/answers"); sed -i 1d "$D/answers"\n'
+                    '[ "$a" = fail ] && exit 1\n'
+                    'echo "${a:-1}"\n')
+        os.chmod(fake, 0o755)
+        env = {"PATH": d + ":/usr/bin:/bin", "D": d, "TMUX_PANE": "%0"}
+        t0 = time.monotonic()
+        out = subprocess.run(["/bin/sh", "-c", mod.ATTACH_WAIT + "echo DONE"],
+                             capture_output=True, text=True, env=env, timeout=10).stdout
+        took = time.monotonic() - t0
+        self.assertEqual(out.strip(), "DONE")
+        with open(os.path.join(d, "polls")) as f:
+            return took, len(f.read().split())
+
+    def test_wait_ends_once_a_client_is_attached(self):
+        took, polls = self._run_wait(["0", "0", "1"])
+        self.assertEqual(polls, 3)
+        self.assertLess(took, 2.0)
+
+    def test_wait_is_skipped_when_tmux_cannot_answer(self):
+        took, polls = self._run_wait(["fail"])
+        self.assertEqual(polls, 1)
+        self.assertLess(took, 1.0)
+
+    def test_the_wait_script_parses_with_the_command_script(self):
+        script = mod.ATTACH_WAIT + mod.command_args("sudo apt upgrade")[-1]
+        r = subprocess.run(["/bin/sh", "-n", "-c", script], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
 
 
 if __name__ == "__main__":

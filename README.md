@@ -233,7 +233,10 @@ yet.
   **in front of** that login shell: an interactive `sudo` prompt works,
   anything that asks a question (apt, a login flow, a confirmation) works,
   and when the command finishes the session stays open at a prompt so you can
-  see the output instead of watching it vanish.
+  see the output instead of watching it vanish. The command waits (at most
+  5 seconds) for your terminal to open before it starts, so its echoed
+  `$ <command>` line is laid out for your screen and stays in view above a
+  password prompt, whatever the width.
 - An **agent** just runs its plain command (`claude`, `codex`, ...) in the
   directory you picked. There's no separate "remote control" or "server"
   choice here — those are background processes the phone apps connect to,
@@ -1217,7 +1220,13 @@ ones an Install button or the Start a session card started. Opening a
 session loads `/s/<name>`,
 whose bar sits over an iframe of `/term/?arg=<name>`; ttyd passes that one
 argument to `tmux-attach.sh`, which attaches. There is no no-argument fallback,
-so `bin/tmux-picker.sh` is only for use from a real terminal.
+so `bin/tmux-picker.sh` is only for use from a real terminal. The browser
+attaches as a 24-bit colour client (tmux 3.2 or newer; an older tmux gives it
+the 256-colour palette), and sessions started from the page get
+`COLORTERM=truecolor` so programs know they may use it. While any page has a
+session open, its tmux status line is off and a smaller client's window is
+padded with blanks rather than `·` dots; both go back to your own tmux
+settings when the last page leaves.
 
 The units use `KillMode=process` on purpose: if the browser is the first thing
 to create a tmux session after boot, the tmux server is a child of the unit,

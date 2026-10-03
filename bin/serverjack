@@ -1320,6 +1320,20 @@ def _shell_has_terminal(pid):
         return None
 
 
+def _pane_runs_start_script(pid):
+    """True while process <pid> (a pane's own process) is still the shell
+    tmux started with -c to run serverjack's start script, not yet the
+    `exec bash -l` that script ends in. A session that waits for its page
+    (ATTACH_WAIT) is in that state with the shell holding the terminal, and
+    its command has not even started. False when /proc can't say."""
+    try:
+        with open(f"/proc/{int(pid)}/cmdline", "rb") as f:
+            argv = f.read().split(b"\0")
+        return len(argv) > 1 and argv[1] == b"-c"
+    except (OSError, ValueError):
+        return False
+
+
 def pane_exited(cmd, pid=None):
     """Whether a pane has dropped to a plain shell: the command a server or
     tool session was started for has exited (see command_args()).
@@ -1328,9 +1342,13 @@ def pane_exited(cmd, pid=None):
     not proof -- a session started by serverjack 1.5.0 kept a `bash -lc`
     wrapper in front of the command, and a tool may itself be a shell
     script. It only counts when the pane's own process is the one holding
-    the terminal, which is exactly the state `exec bash -l` leaves behind.
-    Without /proc to ask, the name is all there is."""
+    the terminal, which is exactly the state `exec bash -l` leaves behind
+    -- and not while that process is still the start script, e.g. waiting
+    for the page to attach before the command runs (ATTACH_WAIT). Without
+    /proc to ask, the name is all there is."""
     if cmd not in SHELLS:
+        return False
+    if pid and _pane_runs_start_script(pid):
         return False
     owns = _shell_has_terminal(pid) if pid else None
     return True if owns is None else owns
@@ -1749,15 +1767,43 @@ def create_command_session(name, cwd, cmd, marks=None, pane_mark=None):
     if pane_mark:
         extra += [";", "set-option", "-F", "-t", f"={name}:", pane_mark, "#{pane_id}"]
     r = tmux("new-session", "-d", "-s", name, "-c", cwd, "-e", f"PATH={TOOL_PATH}",
-             *command_args(cmd), *extra)
+             "-e", "COLORTERM=truecolor", *command_args(cmd), *extra)
     if r.returncode != 0:
         return (r.stderr or r.stdout).strip() or "tmux new-session failed"
     return None
 
 
+# Prefixed to the pane script of every session the page starts with a
+# command in it (create_session() below). The session is created detached,
+# at tmux's default 80x24, and the browser only attaches a moment later, at
+# its own width -- 37-50 columns on a phone in portrait. If the "$ <cmd>"
+# line and a sudo password prompt were already printed by then, tmux
+# re-wraps them for the narrower window, and every extra row that takes
+# pushes the top of the screen into history: the user was left looking at
+# "...ctl restart nginx" over "[sudo] password:", with the verb and the
+# target scrolled away. So the command waits for the page instead: it
+# polls the session's attached-client count ten times a second, then gives
+# ttyd's first fit a fifth of a second to land, and starts at the size the
+# user will actually see. Capped at 5 s -- a page that never attaches (a
+# tab closed straight away) only ever delays the command, never stops it --
+# and any error from tmux skips the wait. Sessions nobody opens
+# (create_command_session(): autostart, agent servers) don't get it.
+ATTACH_WAIT = (
+    'i=0; while [ "$i" -lt 50 ]; do '
+    'n=$(tmux display -p -t "$TMUX_PANE" "#{session_attached}" 2>/dev/null) || break; '
+    'if [ "${n:-0}" -gt 0 ] 2>/dev/null; then sleep 0.2; break; fi; '
+    'sleep 0.1; i=$((i + 1)); done; ')
+
+
 def create_session(kind, name, cwd, command=None):
     """kind: 'shell' or a tool id from tool_kinds(). command: for shells, a
-    command line to run first (the user typed it; it IS meant to be run)."""
+    command line to run first (the user typed it; it IS meant to be run).
+
+    COLORTERM=truecolor: tmux takes 24-bit colour from any program and
+    passes it on as-is to clients that support it (the browser terminal
+    does; bin/tmux-attach.sh tells tmux so) and down-converts it for those
+    that don't, but bat, delta, nvim and the agent CLIs only emit it when
+    COLORTERM says they may -- and tmux doesn't set it."""
     kinds = tool_kinds()
     if kind not in kinds:
         return "Unknown session type."
@@ -1765,9 +1811,11 @@ def create_session(kind, name, cwd, command=None):
     if err:
         return err
     cmd, _label = kinds[kind]
-    args = ["new-session", "-d", "-s", name, "-c", cwd, "-e", f"PATH={TOOL_PATH}"]
+    args = ["new-session", "-d", "-s", name, "-c", cwd, "-e", f"PATH={TOOL_PATH}",
+            "-e", "COLORTERM=truecolor"]
     if cmd or (command and command.strip()):
         args += command_args(cmd or command)
+        args[-1] = ATTACH_WAIT + args[-1]     # the last argument is the pane's shell command
     r = tmux(*args)
     if r.returncode != 0:
         return (r.stderr or r.stdout).strip() or "tmux new-session failed"
