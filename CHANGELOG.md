@@ -94,17 +94,23 @@ and this project uses [Semantic Versioning](https://semver.org/).
   `find . -exec rm {} \;` — or a directory or session name ending in one
   failed oddly: tmux reads a trailing `;` in any argument as the end of its
   own command. serverjack now escapes it.
-
 - **Directory picker: a typed folder name no longer creates a new, empty
   folder.** Typing part of a name (`game`, `3d`) and pressing Enter, Go on a
   phone, or tapping Start sent the text itself, so the session started in a
   brand-new empty `~/game` instead of the `~/projects/game` the list was
   suggesting -- and that stray folder then outranked the real one in later
-  searches. Now the top match is highlighted as you type, and Enter, Go and
-  Start all take the highlighted match (Enter pressed straight after typing
-  waits for the list to catch up). A new folder is an explicit choice: the
-  list's last row, **+ New folder `~/name`**, or a typed path (with a `/` or
-  a leading `~`), which is still used exactly as typed.
+  searches. Now the folder with exactly that name (or else the top match) is
+  highlighted as you type, and Enter, Go and Start take the highlighted row
+  (Enter pressed straight after typing waits for the list to catch up), so
+  `lab` finds `~/projects/ai/lab` even when `~/projects/3d-lab` ranks above
+  it. A new folder is something you can see: if nothing matches, the list's
+  only row is **+ New folder `~/name`**, and that is what Start creates; a
+  typed path (with a `/` or a leading `~`, or `.` for the default directory)
+  is still used exactly as typed. With the list dismissed, Start uses a name
+  only when exactly one folder has it, and otherwise shows the list again
+  rather than guess. A name the page fills in itself is looked up before it
+  is sent, and an agent card's "start at boot" box uses the same folder its
+  Start would (it used to make `~/game` too).
 - Directory picker: a folder is created only when a session actually starts
   in it. A Start refused for its name still left the new folder behind, and
   saving a shortcut with a mistyped directory silently created it. Now a
@@ -113,16 +119,16 @@ and this project uses [Semantic Versioning](https://semver.org/).
   ~/projects/gmae") instead of inventing one. Errors name the path in its
   `~` form, the way the picker shows it, and a directory with a NUL byte in
   it is a clean error instead of a dropped connection.
-
 - Directory picker on touch screens: swiping the suggestion list scrolls it.
   It used to pick whichever folder your finger first landed on, so only the
   rows visible without scrolling could ever be chosen.
 - Directory picker: the suggestion list no longer covers what's below it.
-  On a phone it sits in the page and pushes Name, Command and Start down
-  (about four rows tall at most), and in the default-directory form and the
-  terminal's + panel it does the same on a desktop -- tapping Name, Save or
-  Start & open used to pick a folder instead. On a desktop the Start card's
-  dropdown opens upwards when there's no room below it.
+  It sits in the page under the field and pushes the rest down (about five
+  rows tall at most), on a phone and a desktop, in the Start card, the agent
+  cards, Add a shortcut, the default-directory form and the terminal's +
+  panel. Tapping or clicking Name, Save, Start or Start & open used to pick
+  a folder instead. A slow click is fine too: the list waits for the button
+  to come back up before it closes, so Start doesn't move out from under it.
 - Terminal + panel on phones: the directory list hung off the bottom of the
   sheet (two rows visible) over Start & open, and with the keyboard up the
   top of the sheet went off-screen. The sheet now stops below the tab bar,
@@ -150,10 +156,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Directory picker on touch screens: a **›** at the end of each suggestion
-  shows that folder's subfolders -- the touch equivalent of Tab -- while
-  tapping the row itself still picks it. Tapping the field again after a
-  pick brings the list back.
+- Directory picker: a **›** at the end of each suggestion shows that
+  folder's subfolders -- the touch equivalent of Tab, and clickable with a
+  mouse too -- while tapping or clicking the row itself still picks it.
+  Tapping the field again after a pick brings the list back.
 
 ## 1.5.0 - 2026-09-16
 

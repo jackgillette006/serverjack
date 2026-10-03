@@ -194,21 +194,28 @@ because the query is in their *parent's* name) always sort after every
 direct name match, however shallow those children are, so drilling into a
 folder never buries a real match under its own contents.
 
-A typed name is a search, never a new folder: the top match is highlighted,
-and Enter (Go on a phone) takes the highlighted match, as does tapping
-**Start** with the name still in the box. Arrow keys (or the mouse) move the
-highlight. To make a new folder, pick the list's last row, **+ New folder
-`~/name`**, or type a path — anything with a `/` or a leading `~`, DIR_ROOTS
-or not — which is used exactly as typed; the folder is created when the
-session actually starts, never before (a start refused for its name leaves
-nothing behind). **Tab** fills the highlighted (or first) match with a
-trailing `/` and shows *its* children, so you can drill down the way shell
-completion works — but only once you've typed or arrowed; Tab and Shift+Tab
-out of an untouched field just move on. On a touch screen, the **›** at the
-end of a row does the same drill-down, tapping the row picks it, and the
-list scrolls with a swipe. On a phone the list sits in the page, pushing the
-fields below it down rather than covering them; on a desktop it drops over
-the card and opens upwards when there's no room below.
+A typed name is a search. As you type, the folder with exactly that name is
+highlighted (the shallowest, if there are several), or else the top match,
+and Enter (Go on a phone) takes the highlighted row, as does tapping
+**Start** while the list shows it. Arrow keys (or the mouse) move the
+highlight. If nothing matches, the list's only row is **+ New folder
+`~/name`**, and that is what Start creates. With the list dismissed
+(Escape), Start uses a name only when exactly one folder has that name;
+anything less certain (a partial name, several folders of that name, or only
+a new one) shows the list again instead, so a folder you haven't seen is
+never used. To make a new folder, pick that row or type a path (anything
+with a `/` or a leading `~`, DIR_ROOTS or not, and `.`), which is used exactly
+as typed. The folder is created when the session actually starts, never
+before: a start refused for its name leaves nothing behind. **Tab** fills
+the highlighted (or first) match with a trailing `/` and shows *its*
+children, so you can drill down the way shell completion works, but only
+once you've typed or arrowed; Tab and Shift+Tab out of an untouched field
+just move on. The **›** at the end of a row does the same drill-down with a
+tap or click (on a touch screen it's a full-height target), clicking or
+tapping the row picks it, and the list scrolls with a swipe. The list sits
+in the page under the field, on a phone and a desktop alike, pushing what's
+below it down rather than covering it, so the next field or button is always
+where you aim.
 
 Leave the field empty and a session starts in your **default directory**
 (shown right in the placeholder, e.g. "`~/projects` — type a folder name or
@@ -371,7 +378,9 @@ Every server and daemon option row has a small **start at boot** checkbox. For
 a per-directory server (Claude's) that means the row of each server you have
 started, since the entry is for that directory; the Start row has none. Tick
 it and the thing is recorded in `~/.config/serverjack/autostart.json` (a
-server's directory has to exist already, as for a shortcut):
+server's directory has to exist already, as for a shortcut, and a folder name
+in the card's picker means the folder its Start would use). Untick it to
+forget the entry:
 
 ```json
 [
