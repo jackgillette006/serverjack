@@ -5444,6 +5444,27 @@ APP_JS = r"""
     vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); fit();
   }
 
+  // ---- leaving the page. On Windows and Linux, Ctrl+W (delete-word in bash
+  // and in the agents) closes the browser tab or the pop-out and never
+  // reaches the terminal; so do Ctrl+Shift+W, Ctrl+T, Ctrl+N and Ctrl+Tab.
+  // So the page asks first. Not when serverjack itself is taking you away
+  // (x, the logo, Pop out, a session that ended): those mark the exit
+  // first. Switching sessions only reloads the frame, which doesn't ask.
+  // (ttyd's own prompt stays off: it lives in the frame, so it fired on
+  // every session switch.) iOS shows no such prompt; nothing changes there.
+  var leavingPage = false, leaveT = null;
+  function goingAway() {
+    leavingPage = true; clearTimeout(leaveT);
+    leaveT = setTimeout(function () { leavingPage = false; }, 2000);   // the exit didn't happen after all
+  }
+  window.addEventListener('beforeunload', function (e) {
+    if (leavingPage) return;
+    e.preventDefault(); e.returnValue = '';
+  });
+  document.addEventListener('click', function (e) {
+    if (e.target && e.target.closest && e.target.closest('#close, #popout, #bar a[href]')) goingAway();
+  }, true);
+
   // ---- session tabs
   function pageUrl(name) { return '/s/' + encodeURIComponent(name) + (POP ? '?popout=1' : ''); }
   function setUrl(name) {
