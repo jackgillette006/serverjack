@@ -2705,9 +2705,10 @@ body.touch #pop{max-height:calc(100% - 48px - env(safe-area-inset-top))}
 # The one directory-picker combobox's behaviour, shared the same way as
 # DIRPICK_CSS above: a self-contained script that finds every ".dirpick" on
 # whichever page includes it and wires it up. Every .dirpick is present in
-# the server-rendered HTML from the start (none are added by JS later), so
-# one pass over the DOM at load time is enough -- no MutationObserver, no
-# re-init hook.
+# the server-rendered HTML from the start, so one pass over the DOM at load
+# time is enough -- no MutationObserver. The one exception is an agent card
+# the landing page swaps for a fresh copy after a Kill or Rename in place
+# (FLOWS_JS): it wires that card's picker with window.sjWireDirpicks(card).
 DIRPICK_JS = r"""
 (function () {
   'use strict';
@@ -3036,7 +3037,9 @@ DIRPICK_JS = r"""
       return null;
     };
   }
-  Array.prototype.forEach.call(document.querySelectorAll('.dirpick'), wire);
+  function wireAll(root) { Array.prototype.forEach.call(root.querySelectorAll('.dirpick'), wire); }
+  wireAll(document);
+  window.sjWireDirpicks = wireAll;
 })();
 """
 
@@ -3202,6 +3205,11 @@ select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outl
 .flash{background:var(--accent-wash);border:1px solid var(--accent-dim);color:var(--text-primary);
   padding:10px 14px;border-radius:var(--radius-sm);margin-bottom:var(--space-3);
   font:500 13px/18px var(--font-mono)}
+/* a row that went (Kill in place, a session found ended): a line in its
+   place in the list for a few seconds (FLOWS_JS rowNote()) */
+.sess.sessmsg{min-height:44px;color:var(--text-secondary);font:500 13px/18px var(--font-mono);
+  transition:opacity 300ms ease}
+.sess.sessmsg.out{opacity:0}
 /* landing flows (FLOWS_JS): a button whose form is on its way; notes and errors
    moved next to the card they are about, which the page then scrolls to */
 .btn.busy{opacity:.6;cursor:progress}
@@ -3650,7 +3658,7 @@ FLOWS_JS = r"""
   }
   addEventListener('pageshow', function (e) {
     document.querySelectorAll('form[data-busy]').forEach(unbusy);
-    if (e.persisted) document.querySelectorAll('.flash').forEach(function (n) { n.remove(); });
+    if (e.persisted) document.querySelectorAll('.flash, .sessmsg').forEach(function (n) { n.remove(); });
     syncStart();
   });
 
@@ -3675,19 +3683,52 @@ FLOWS_JS = r"""
     }
     p.textContent = msg;
   }
+  function fetchPage() {
+    return fetch('/', {cache: 'no-store', credentials: 'same-origin'})
+      .then(function (r) { return r.text(); })
+      .then(function (html) { return new DOMParser().parseFromString(html, 'text/html'); });
+  }
+  // An agent card names its server's session (Stop's form, Open's link), so
+  // after a Kill or Rename in place it would act on a name that is gone, and
+  // still say "running" after a Kill. The cards that name the session are
+  // swapped for fresh ones from doc (fetched when not given), staying open
+  // or closed as they were, with their directory pickers wired up.
+  function namesSession(t, name) {
+    return Array.prototype.some.call(t.querySelectorAll('input[name=session]'), function (i) {
+      return i.value === name;
+    }) || Array.prototype.some.call(t.querySelectorAll('a[href^="/s/"]'), function (a) {
+      try { return decodeURIComponent(a.getAttribute('href').slice(3)) === name; } catch (x) { return false; }
+    });
+  }
+  function refreshTools(name, doc) {
+    var stale = Array.prototype.filter.call(document.querySelectorAll('details.tool[id]'), function (t) {
+      return namesSession(t, name);
+    });
+    if (!stale.length) return Promise.resolve();
+    return (doc ? Promise.resolve(doc) : fetchPage()).then(function (doc) {
+      stale.forEach(function (t) {
+        var fresh = doc.getElementById(t.id), open = t.open;
+        if (!fresh) return;
+        fresh = document.importNode(fresh, true);
+        t.replaceWith(fresh);
+        fresh.open = open;
+        if (window.sjWireDirpicks) window.sjWireDirpicks(fresh);
+      });
+    });
+  }
   // The renamed row, fresh from the server: the name is in a dozen places in
   // it (links, hidden fields, the SSH command), so re-rendering beats patching.
   function refreshCard(oldName, newName) {
     var card = cardOf(oldName);
-    return fetch('/', {cache: 'no-store', credentials: 'same-origin'})
-      .then(function (r) { return r.text(); })
-      .then(function (html) {
-        var fresh = cardOf(newName, new DOMParser().parseFromString(html, 'text/html'));
+    return fetchPage()
+      .then(function (doc) {
+        var fresh = cardOf(newName, doc);
         if (!card || !fresh) throw new Error('no row');
         fresh = document.importNode(fresh, true);
         card.replaceWith(fresh);
         var s = fresh.querySelector('details.menu > summary');
         if (s) s.focus({preventScroll: true});
+        return refreshTools(oldName, doc);
       })
       .catch(function () {
         stash();
@@ -3707,6 +3748,40 @@ FLOWS_JS = r"""
       }, function () { inlineErr(f, 'Couldn’t reach serverjack. Try again.'); })
       .then(function () { delete f.dataset.busy; b.disabled = false; });
   }
+  // A row that has gone (killed here, or found ended when opened) leaves a
+  // line in its place for a few seconds: said where the tap was, the list
+  // still one card (the line is a row of it), and a keyboard user's place
+  // kept on the next row instead of falling to <body>.
+  function rowsLeft() {
+    return Array.prototype.map.call(document.querySelectorAll('.sess a.open[data-name]'),
+                                    function (a) { return a.closest('.sess'); });
+  }
+  function rowNote(card, text) {
+    document.querySelectorAll('.sess.sessmsg').forEach(function (x) { x.remove(); });
+    var n = document.createElement('div'), had = card.contains(document.activeElement);
+    n.className = 'card sess sessmsg'; n.setAttribute('role', 'status'); n.dataset.live = '1';
+    n.textContent = text;
+    var all = rowsLeft(), i = all.indexOf(card), next = all[i + 1] || all[i - 1];
+    card.replaceWith(n);
+    if (had) {
+      var to = next && next.querySelector('details.menu > summary');
+      if (!to) { to = n; n.tabIndex = -1; }
+      try { to.focus({preventScroll: true}); } catch (x) { to.focus(); }
+    }
+    setTimeout(function () {
+      n.classList.add('out');
+      setTimeout(function () {
+        if (!n.parentNode) return;
+        if (n.contains(document.activeElement)) {
+          var h = document.getElementById('sessions');
+          if (h) { h.tabIndex = -1; try { h.focus({preventScroll: true}); } catch (x) { h.focus(); } }
+        }
+        n.remove();
+      }, 320);
+    }, 6000);
+    return n;
+  }
+  window.sjRowNote = rowNote;
   function kill(e, f) {
     e.preventDefault();
     var name = f.elements.namedItem('name').value, card = f.closest('.sess');
@@ -3714,16 +3789,17 @@ FLOWS_JS = r"""
     post('/api/kill', {name: name})
       .then(function (r) {
         if (r.error || !card) throw new Error(r.error || 'no row');
-        document.querySelectorAll('.flash[data-live]').forEach(function (x) { x.remove(); });
-        var n = document.createElement('div');
-        n.className = 'flash'; n.setAttribute('role', 'status'); n.dataset.live = '1';
-        n.textContent = 'Killed “' + name + '”.';
-        card.replaceWith(n);
-        if (!document.querySelector('.sess a.open[data-name]')) {
+        var n = rowNote(card, 'Killed “' + name + '”.');
+        // #nosess: the same placeholder the session list's own refresh puts
+        // up, so the two can never show it twice.
+        if (!document.querySelector('.sess a.open[data-name]') && !document.getElementById('nosess')) {
           var em = document.createElement('div');
-          em.className = 'empty'; em.textContent = 'No sessions running. Start one above.';
+          em.className = 'empty'; em.id = 'nosess'; em.textContent = 'No sessions running.';
           n.parentNode.insertBefore(em, n.nextSibling);
         }
+        // Killed already: a card that can't be refreshed is only out of date
+        // (and its Stop says so), so this is not waited for.
+        refreshTools(name).catch(function () {});
       })
       .catch(function () { delete f.dataset.busy; stash(); f.submit(); });   // the plain POST
   }
@@ -3738,6 +3814,14 @@ FLOWS_JS = r"""
     var i = d.open && d.querySelector('input[name=new]');
     if (i) { i.focus(); i.select(); }
   });
+  // A rename error is about that attempt: it goes when Rename or its menu
+  // folds away, rather than greeting the next one.
+  document.addEventListener('toggle', function (e) {   // toggle doesn't bubble
+    var d = e.target;
+    if (!d.open && d.matches && d.matches('details.ren, details.menu')) {
+      d.querySelectorAll('details.ren .err').forEach(function (p) { p.remove(); });
+    }
+  }, true);
 
   // After the page's confirm() listener: a cancelled Kill is defaultPrevented.
   document.addEventListener('submit', function (e) {
@@ -5889,20 +5973,31 @@ class Handler(BaseHTTPRequestHandler):
                 insts = st["servers"]
                 target = f.get("session", "")
                 inst = next((i for i in insts if i["session"] == target), None)
-                if inst is None and not target and not per_dir and insts:
-                    inst = insts[0]
-                if inst is not None:
-                    tmux("kill-session", "-t", f"={inst['session']}")
+                if inst is None:
+                    # A card older than the session list (renamed meanwhile,
+                    # or a single server's Stop with no name): the marks say
+                    # which sessions are this server's, the card's directory
+                    # which one -- or, for a single server, there is one.
+                    want = f.get("dir", "")
+                    inst = (next((i for i in insts if want and same_dir(i["dir"], want)), None)
+                            if per_dir else (insts[0] if insts else None))
+                if inst is None:
+                    # Nothing of it is left to stop: say so, and leave its
+                    # boot entry be (the card, current again, shows the box).
+                    where = f" in {_dir_show(f['dir'])}" if per_dir and f.get("dir") else ""
+                    return self.fail(f"{server.get('label') or 'The server'}{where} isn’t running.",
+                                     400, tid)
+                tmux("kill-session", "-t", f"={inst['session']}")
                 # A deliberate stop must not come back after a restart: drop
                 # the autostart entry that would start it again -- the one for
                 # this directory, or for a single server, the only one.
-                gone = (inst or {}).get("dir") or f.get("dir", "")
+                gone = inst.get("dir") or f.get("dir", "")
                 drop_autostart(lambda e: e.get("tool") == tid and e.get("kind") == "server"
                                and (not per_dir or (bool(gone) and same_dir(e.get("dir"), gone))))
                 clear_tool_cache(tid)
-                # The note names the session actually stopped (a single
-                # server's Stop may post no session name).
-                return self.redirect(done_url("server-stop", inst["session"] if inst else target, tid))
+                # The note names the session actually stopped, which is not
+                # always the one the card posted.
+                return self.redirect(done_url("server-stop", inst["session"], tid))
             # Start in the directory picked on the card: Claude's server opens
             # its sessions there.
             cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
