@@ -9,7 +9,8 @@ session, with a terminal on your screen. The landing page has these panels,
 in the order you actually need them from a phone: Sessions first whenever
 any are running (reopening and killing one is the everyday thing), then
 Start a session, Shortcuts (with Add a shortcut), and Agent servers. With
-no sessions, Start a session leads and Sessions sits under the shortcuts.
+no sessions, or when the page comes back with an error from one of the forms,
+Start a session leads and Sessions sits under the shortcuts.
 
   1. Start a session -- a segmented Shell / <agent> choice, a directory
      picker (default ~), and, for Shell only, an optional command box: an
@@ -5631,7 +5632,13 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
     # everyday thing (DESIGN.md: fast paths first), and under the Start card and
     # every shortcut no session row was on the first screen of any phone or
     # laptop. With none, Start a session leads (and the empty note says "above").
-    body = "\n".join((sessions_part + start_part if sess else start_part + sessions_part) + [
+    # So does any error re-render: nearly all come from a form up there (Start,
+    # the default directory, Add a shortcut, a shortcut's Run), and the form
+    # being refilled must sit right under its error, not below the whole
+    # session list. (A refused no-JS rename lands here too, in the order every
+    # page had before sessions moved up.)
+    sessions_first = bool(sess) and not (error or dd_open or addsc_open or save_open)
+    body = "\n".join((sessions_part + start_part if sessions_first else start_part + sessions_part) + [
         '<h2 id="agents">Agent servers</h2>',
         '<p class="hint">Install an agent or log in to it, or start the background server a '
         'phone app connects to. Installed agents start from Start a session, above.</p>',

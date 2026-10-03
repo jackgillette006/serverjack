@@ -2643,6 +2643,29 @@ class SessionRowTests(unittest.TestCase):
         self.assertIn("Start one above", empty)       # true in that order
         self.assertNotIn("top of the page", self._page(one))
 
+    def test_an_error_re_render_keeps_start_first(self):
+        # The refilled form has to sit right under its error, not below every
+        # session row; a plain or note-carrying page keeps Sessions first.
+        one = [{"name": "main", "windows": 1, "attached": False, "created": 0,
+                "cmd": "bash", "path": "~"}]
+        with mock.patch.object(mod, "sessions", return_value=one), \
+                mock.patch.object(mod, "load_tools", return_value=([], None)), \
+                mock.patch.object(mod, "load_shortcuts", return_value=[]), \
+                mock.patch.object(mod, "update_available", return_value=False):
+            pages = {
+                "start": mod.render("A session called main already exists.", name="main"),
+                "start-empty": mod.render("No such directory."),
+                "prefs": mod.render("Not a directory.", dd_open=True, dd_value="~/nope"),
+                "addsc": mod.render("A shortcut needs a command.", addsc_open=True),
+                "note": mod.render(flash="Default directory: ~/projects"),
+            }
+        for k, page in pages.items():
+            s, st = page.index('id="sessions"'), page.index('<h2 id="start">Start a session</h2>')
+            if k == "note":
+                self.assertLess(s, st, k)
+            else:
+                self.assertLess(st, s, k)
+
     def test_gone_session_page_escapes_the_name_and_offers_close(self):
         page = mod.render_session_gone('x"<script>alert(1)</script>')
         self.assertIn("x&quot;&lt;script&gt;alert(1)&lt;/script&gt;", page)

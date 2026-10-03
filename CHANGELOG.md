@@ -14,7 +14,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
   servers. Before, the Start card and every shortcut sat above them, so no
   session row was on the first screen of any phone or laptop and reopening
   or killing one -- the everyday thing -- always meant a long scroll. With
-  none running, Start a session still leads.
+  none running, Start a session still leads, and so it does when the page
+  comes back with an error from the Start card, the default directory or Add
+  a shortcut, so the field to fix stays right under the error.
 
 ### Fixed
 
