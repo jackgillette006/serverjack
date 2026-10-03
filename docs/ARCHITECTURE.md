@@ -419,9 +419,11 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   every typed field (the directory included) and its address is a plain
   GET of `/`, so reload and Back never resubmit; a double tap through a
   delaying proxy is one POST; Kill and Rename work in place; in-place
-  actions land back at their section or card with a one-shot note;
-  shortcuts can be edited; multi-line commands run line by line. Chromium,
-  WebKit's iPhone 14 emulation and Firefox.
+  actions land back at their section or card with a one-shot note (and a
+  bfcache restore drops it and frees a busy button); shortcuts can be
+  edited, and Cancel really leaves the editor; the Keep box decides over a
+  typed shortcut name; multi-line commands run line by line. Chromium,
+  WebKit's iPhone 14 emulation (and 320px) and Firefox.
 - `pwauth.py` — `SERVERJACK_ALLOW` end-to-end against a second scratch
   instance, with Playwright forging (or withholding) the
   `Tailscale-User-Login` header itself: wrong/missing header is a 403 that
