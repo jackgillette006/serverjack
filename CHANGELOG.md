@@ -286,11 +286,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
   Open on a session that had ended loaded a full copy of the landing page
   with an error at `/s/<name>` (in a 1000x650 pop-up on desktop). The list
   now re-reads the sessions every 15 seconds while visible and whenever the
-  page comes back, patching rows in place (never under an open menu), says
-  so when serverjack can't be reached, and Open on a session it knows has
-  ended shows a note instead. `/s/<name>` for a gone session redirects to the
-  list with a one-line note, or in a pop-out shows a small "session ended"
-  page with a Close button.
+  page comes back, patching rows in place (never under an open menu or a
+  half-typed rename), says so when serverjack can't be reached, and Open on
+  a session it knows has ended shows a note instead. `/s/<name>` for a gone
+  session redirects to the list with a one-line note, or in a pop-out shows
+  a small "session ended" page with a Close button.
 - **The session you just left no longer shows as "attached".** The list was
   rendered while the old page's terminal connection was still closing, so
   every round trip marked that session attached; a second look a second
