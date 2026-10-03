@@ -225,6 +225,34 @@ and this project uses [Semantic Versioning](https://semver.org/).
   trusted for identity) -- usually the owner. It now says no identity
   arrived and points at the `tailscale serve` address; a real wrong login
   still gets the old wording, and the allowed logins are still never named.
+- **Session rows on a phone show what matters.** The meta line was one
+  ellipsised line in the order command · path · windows · age · attached, so
+  on a phone the path ate the space and the window count, age and
+  "attached" were cut off (leaving only the dot's colour). It now leads with
+  the short facts -- **attached** in words, the window count when there is
+  more than one, the age -- and the command and path take what is left.
+  Shortcut rows lead with their directory, so two shortcuts that differ
+  only in where they run can be told apart.
+- **The age says what it measures.** "6m ago" was the session's creation time
+  but read as last activity; it now reads `up 6m` (`up 3h`, `up 2d`), the
+  same word the machine line above uses.
+- **Long names end in "…"** instead of being cut mid-letter, the full name is
+  a hover title on desktop, and the "built-in" pill on the Update row is no
+  longer sliced on a 320px screen. The shortcut name fields now stop at the
+  60 characters the server keeps, instead of silently cutting the rest.
+- **The ⋯ menu fits on narrow phones.** On a 375px or smaller screen the menu
+  (and more so with Rename unfolded) ran off the left edge, cutting "Open
+  here" to "here" and hiding the start of the rename box. Below 480px it now
+  drops in under the row at the row's width. The rename box is 16px, so iOS
+  no longer zooms the page when you tap it.
+- **Screen readers and Voice Control can tell rows apart.** Every row's ⋯,
+  Open, Remove and Run used to have the same name ("More", "Open", …); they
+  are now "More actions for main", "Open main", "Remove shortcut Logs",
+  "Run Logs", and the status dot is announced as "attached"/"not attached".
+- **"Open in SSH app" is now "SSH app (login only)".** It sat in each
+  session's menu but opened the same bare `ssh://user@host` for all of them;
+  an `ssh://` link cannot carry `tmux attach`, so the label now says what it
+  does (Copy SSH command is the one that attaches).
 - `/favicon.ico` answers with the app icon instead of a 404 on every desktop
   visit, and a client that hangs up mid-response (a phone locking, a tab
   closing) no longer leaves a `BrokenPipeError` traceback in the journal.
