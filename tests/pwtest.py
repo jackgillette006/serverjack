@@ -164,9 +164,11 @@ with sync_playwright() as p:
     clip = page.evaluate("navigator.clipboard.readText()")
     ok("Ctrl+C with selection copies", "COPYME_12345" in clip, repr(clip))
     ok("...and does not interrupt", cmd() == "sleep", cmd())
-    page.keyboard.press("Control+c"); time.sleep(0.5)   # now really interrupt (selection cleared? if not, second press)
-    if cmd() == "sleep":
-        page.mouse.click(box["x"] + 50, box["y"] + 50); page.keyboard.press("Control+c"); time.sleep(0.5)
+    ok("...and the copy drops the selection", not page.evaluate(
+        "document.getElementById('frame').contentWindow.term.hasSelection()"))
+    # so the very next Ctrl+C interrupts -- no click in the terminal first
+    # (the selection used to stay, and every Ctrl+C copied it again)
+    page.keyboard.press("Control+c"); time.sleep(0.5)
     ok("sleep interrupted afterwards", cmd() != "sleep", cmd())
 
     # soft keys: force the row on, run cat -v, press keys
