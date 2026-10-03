@@ -308,6 +308,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
   ("Optional command, e.g. sudo apt install ffmpeg"), and install commands in
   an agent card's notes wrap at spaces instead of mid-word
   (`curl -fsSL http` / `s://...`).
+- **The footer stops pointing at a back button.** It said "Use the browser's
+  back button to return here", which the home-screen app doesn't have and a
+  desktop pop-out has nothing to go back to. It now names the control that
+  exists (the logo at the top left of a session's bar) and says leaving
+  never stops a session -- killing it does. The bar's × is announced as
+  "Back to sessions", and both it and the logo replace the terminal in the
+  history, so Back from the list no longer re-opens the session you just
+  left. The docs now use "kill" for ending a session and "leave" for coming
+  back to the list.
 - `/favicon.ico` answers with the app icon instead of a 404 on every desktop
   visit, and a client that hangs up mid-response (a phone locking, a tab
   closing) no longer leaves a `BrokenPipeError` traceback in the journal.
