@@ -462,7 +462,8 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   naming and re-opening without a reload), a popped-out session never
   attached twice (Back, another tab's strip), blocked pop-ups, a
   touchscreen laptop (Chromium `--touch-events=enabled`) keeping the
-  desktop UI, and a notched iPhone's safe areas — with the insets patched
+  desktop UI while a finger swipe still scrolls tmux, an iPad that reports
+  a fine pointer staying a tablet, and a notched iPhone's safe areas — with the insets patched
   into the page, since emulated WebKit reports 0, and a faked
   `visualViewport` standing in for the soft keyboard.
 

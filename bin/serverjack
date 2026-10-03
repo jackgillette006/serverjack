@@ -3548,9 +3548,12 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
   // Desktop: "Open" pops the session out in its own window and this page
   // stays put. Phones: same tab (a pile of browser tabs is worse there).
   // By the PRIMARY pointer: a touchscreen laptop is driven with a mouse or
-  // trackpad, so it keeps the desktop behaviour. Same test as the terminal page's.
+  // trackpad, so it keeps the desktop behaviour. An iPad stays a tablet even
+  // with a trackpad attached (its Safari calls itself a Mac, and no Mac has a
+  // touchscreen). Same test as the terminal page's.
   var touch = matchMedia('(pointer: coarse)').matches ||
-              ('ontouchstart' in window && matchMedia('(hover: none)').matches);
+              ('ontouchstart' in window && matchMedia('(hover: none)').matches) ||
+              (/iPad|Mac/.test(navigator.platform || '') && navigator.maxTouchPoints > 1);
   if (touch) document.body.classList.add('touch');
   // CRT effects: the server put .fx on <body> (so the power-on plays before any
   // script runs); localStorage overrides it either way and the toggle writes it.
@@ -4746,10 +4749,13 @@ APP_JS = r"""
   var isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || '') || /Mac OS X/.test(navigator.userAgent);
   // Touch UI (soft keys, same-tab Open, no pop-out) by the PRIMARY pointer: a
   // laptop with a touchscreen has touch events but a mouse or trackpad to
-  // drive it. A phone that misreports its pointer still has no hover. Keep in
-  // step with the landing page's copy of this line.
+  // drive it. A phone that misreports its pointer still has no hover, and an
+  // iPad is a tablet even with a trackpad attached (its Safari calls itself a
+  // Mac; no Mac has a touchscreen). This is the LAYOUT; finger swipes scroll
+  // on any device (scrollHooks). Keep in step with the landing page's copy.
   var touch = matchMedia('(pointer: coarse)').matches ||
-              ('ontouchstart' in window && matchMedia('(hover: none)').matches);
+              ('ontouchstart' in window && matchMedia('(hover: none)').matches) ||
+              (/iPad|Mac/.test(navigator.platform || '') && navigator.maxTouchPoints > 1);
 
   // ---- terminal helpers (same-origin frame, so we can reach into ttyd's page)
   function tdoc() { try { return frame.contentDocument; } catch (e) { return null; } }
@@ -4892,7 +4898,7 @@ APP_JS = r"""
     var d = tdoc(); if (!d || d.__sjScroll) return; d.__sjScroll = true;
     var w = frame.contentWindow, lastY = null, acc = 0, moved = false;
     d.addEventListener('wheel', onWheel, { capture: true, passive: false });
-    if (!touch) return;
+    // Not gated on the touch LAYOUT: a touchscreen laptop's finger scrolls too, and a mouse never fires these.
     d.addEventListener('touchstart', function (e) {
       if (e.touches.length !== 1) { lastY = null; return; }
       lastY = e.touches[0].clientY; acc = 0; moved = false;

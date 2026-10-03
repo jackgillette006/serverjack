@@ -2743,6 +2743,13 @@ class TerminalPageTests(unittest.TestCase):
         for src in (mod.APP_JS, landing):
             self.assertNotIn("|| 'ontouchstart' in window;", src)
             self.assertIn("('ontouchstart' in window && matchMedia('(hover: none)').matches)", src)
+            # An iPad is a tablet even when a trackpad makes its pointer fine.
+            self.assertIn("(/iPad|Mac/.test(navigator.platform || '') && navigator.maxTouchPoints > 1)", src)
+        # The layout flag must not gate finger scrolling: a touchscreen
+        # laptop's swipe still has to reach tmux.
+        hooks = mod.APP_JS.split("function scrollHooks()", 1)[1].split("frame.addEventListener('load'", 1)[0]
+        self.assertNotIn("if (!touch) return;", hooks)
+        self.assertIn("d.addEventListener('touchmove'", hooks)
 
     def test_term_page_safe_areas(self):
         page = mod.render_term("x")
