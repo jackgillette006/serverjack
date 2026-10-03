@@ -4791,18 +4791,46 @@ APP_JS = r"""
   }
   var KEYS = { Escape: 27, Tab: 9, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
                PageUp: 33, PageDown: 34, Enter: 13, Backspace: 8, Delete: 46, Home: 36, End: 35 };
-  function sendKey(key, mods) {
-    var ta = textarea(); if (!ta) return;
-    mods = mods || {};
-    var code = KEYS[key] || key.toUpperCase().charCodeAt(0);
-    var init = { key: key, keyCode: code, which: code, bubbles: true, cancelable: true,
-                 ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift, altKey: !!mods.alt };
-    var ev = new frame.contentWindow.KeyboardEvent('keydown', init);
+  function keyEvent(type, init, code) {
+    init.keyCode = init.which = code; init.bubbles = true; init.cancelable = true;
+    var ev = new frame.contentWindow.KeyboardEvent(type, init);
     if (ev.keyCode !== code) {           // Safari ignores keyCode in the init dict
       Object.defineProperty(ev, 'keyCode', { get: function () { return code; } });
       Object.defineProperty(ev, 'which', { get: function () { return code; } });
     }
-    ta.dispatchEvent(ev);
+    return ev;
+  }
+  function sendKey(key, mods) {
+    var ta = textarea(); if (!ta) return;
+    mods = mods || {};
+    var code = KEYS[key] || key.toUpperCase().charCodeAt(0);
+    ta.dispatchEvent(keyEvent('keydown', { key: key, ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift, altKey: !!mods.alt }, code));
+    // ...and a release. Until xterm sees a keyup it thinks a key is still
+    // down and drops dictated, predicted or emoji text, so the next dictation
+    // after any soft key used to vanish. A Shift keyup, because on any other
+    // keyup xterm focuses itself, which would raise the phone's keyboard on
+    // every soft-key tap.
+    ta.dispatchEvent(keyEvent('keyup', { key: 'Shift', code: 'ShiftLeft' }, 16));
+  }
+
+  // ---- the soft Ctrl latch: the next character typed goes as Ctrl+<char>.
+  // Letters go through sendKey (xterm maps those itself). Everything else is
+  // the control byte a terminal sends, written straight in: xterm's own
+  // table only knows some of them, so Ctrl+\ or Ctrl+_ from the latch used
+  // to send nothing and eat the character.
+  var CTRL_BYTES = { ' ': 0, '@': 0, '2': 0, '`': 0, '[': 27, '3': 27, '\\': 28, '4': 28,
+                     ']': 29, '5': 29, '^': 30, '6': 30, '~': 30, '_': 31, '/': 31, '-': 31,
+                     '7': 31, '?': 127, '8': 127 };
+  function ctrlByte(ch) {
+    return Object.prototype.hasOwnProperty.call(CTRL_BYTES, ch) ? String.fromCharCode(CTRL_BYTES[ch]) : null;
+  }
+  // Sends Ctrl+<ch>; false when <ch> has no Ctrl form (send it as typed).
+  function ctrlSend(ch) {
+    var low = ch.toLowerCase(), b = ctrlByte(ch), w = frame.contentWindow;
+    if (low >= 'a' && low <= 'z') { sendKey(low, { ctrl: true }); return true; }
+    if (b === null) return false;
+    try { if (w.term && typeof w.term.input === 'function') { w.term.input(b, true); return true; } } catch (e) {}
+    sendKey(ch, { ctrl: true }); return true;
   }
 
   // ---- inside the frame: clipboard shortcuts + Ctrl-armed soft keys
@@ -4813,8 +4841,13 @@ APP_JS = r"""
       if (!e.isTrusted) return;
       // Ctrl armed from the soft key row: next character goes as Ctrl+<char>
       if (ctrlArmed && e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault(); e.stopPropagation(); swallowInput = true;
-        disarm(); sendKey(e.key.toLowerCase(), { ctrl: true }); return;
+        disarm();
+        if (!ctrlSend(e.key)) return;
+        e.preventDefault(); e.stopPropagation();
+        // a cancelled keydown already cancels its own input event; this only
+        // guards the same keystroke, never a later dictation or emoji
+        swallowInput = true; setTimeout(function () { swallowInput = false; }, 0);
+        return;
       }
       if (isMac || !e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
       // Windows/Linux: xterm.js only offers Ctrl+Shift+C/V. Make Ctrl+V paste
@@ -4837,7 +4870,8 @@ APP_JS = r"""
     d.addEventListener('beforeinput', function (e) {
       if (swallowInput) { e.preventDefault(); swallowInput = false; return; }
       if (ctrlArmed && e.inputType === 'insertText' && e.data && e.data.length === 1) {
-        e.preventDefault(); disarm(); sendKey(e.data.toLowerCase(), { ctrl: true });
+        disarm();
+        if (ctrlSend(e.data)) e.preventDefault();
       }
     }, true);
   }
