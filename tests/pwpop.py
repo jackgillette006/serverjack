@@ -17,14 +17,22 @@ with sync_playwright() as p:
     page.goto(f"{BASE}/"); time.sleep(0.5)
     with page.expect_popup() as pi:
         page.click(f"a.open[data-name={SESS}]")
-    pop = pi.value; time.sleep(1.5)
+    pop = pi.value
+    # The window opens empty and is then sent to the session (an open one is
+    # only focused, never reloaded), so wait for that rather than sleeping:
+    # the sync API only sees the navigation while one of its calls runs.
+    try:
+        pop.wait_for_url(f"**/s/{SESS}?popout=1", timeout=8000)
+    except PlaywrightError:
+        pass
+    time.sleep(1.5)
     ok("Open pops out a window", f"/s/{SESS}" in pop.url and "popout=1" in pop.url, pop.url)
     ok("home page stays", page.url.rstrip("/") == BASE, page.url)
     ok("popout has no bar", not pop.locator("#bar").is_visible())
     # same session again => refocus, not a second window
     n = len(ctx.pages); page.click(f"a.open[data-name={SESS}]"); time.sleep(0.8)
     ok("opening again reuses the window", len(ctx.pages) == n, str(len(ctx.pages)))
-    # ☰ inside the popout closes it
+    # the logo inside the pop-out closes it (x does too: tests/pwchrome.py)
     pop.click("#handle"); time.sleep(0.2)
     # The link calls window.close() inside its click handler, so the click
     # can race the window going away: a closed target here is the success case.
@@ -33,7 +41,7 @@ with sync_playwright() as p:
     except PlaywrightError:
         pass
     time.sleep(0.6)
-    ok("☰ in popout closes the window", pop.is_closed())
+    ok("the logo in the pop-out closes the window", pop.is_closed())
     # menu: Open here navigates in-tab; SSH items exist
     page.click(f"a.open[data-name={SESS}] ~ details summary, .sess:has(a.open[data-name={SESS}]) details summary"); time.sleep(0.2)
     m = page.locator(f".sess:has(a.open[data-name={SESS}]) .menu-list")
@@ -48,7 +56,12 @@ with sync_playwright() as p:
     # in-session ↗: pops out, this tab returns to the list
     with page.expect_popup() as pi:
         page.click("#popout")
-    pop2 = pi.value; time.sleep(1.0)
+    pop2 = pi.value
+    try:
+        pop2.wait_for_url(f"**/s/{SESS}?popout=1", timeout=8000)
+    except PlaywrightError:
+        pass
+    time.sleep(1.0)
     ok("↗ pops out", "popout=1" in pop2.url, pop2.url)
     ok("...and this tab goes back to the list", page.url.rstrip("/") == BASE, page.url)
     b.close()

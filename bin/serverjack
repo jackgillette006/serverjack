@@ -3571,9 +3571,15 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     document.body.addEventListener('animationend', fire, {{once: true}});
     setTimeout(fire, 130);
   }}
+  // Named per session. An open pop-out is focused and left alone: a URL given
+  // to window.open would navigate (reload, reattach) even the window that
+  // already shows it. Same as the terminal page's popWin().
   function popout(href, name) {{
-    var w = window.open(href, 'serverjack-' + name, 'popup=yes,width=1000,height=650');
-    if (w) {{ w.focus(); return true; }} return false;   // blocked => caller falls back to navigating
+    var w = window.open('', 'serverjack-' + name, 'popup=yes,width=1000,height=650'), at = '';
+    if (!w) return false;                                 // blocked => caller opens it in this tab
+    try {{ at = w.location.pathname + w.location.search; }} catch (e) {{}}
+    if (at !== href) w.location.replace(href);
+    w.focus(); return true;
   }}
   // Confirmations live in data-confirm, never in an inline onsubmit built
   // from a session/shortcut name. Listening on the document catches forms a
@@ -3590,8 +3596,10 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
       if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button) return;
       var name = a.dataset.name || a.closest('.sess').querySelector('a.open').dataset.name;
       var wantPop = a.dataset.open === 'popout' || (!touch && !a.dataset.open);
+      // Blocked pop-up: open it here, as an ordinary tab (never the bar-less pop-out layout).
+      var to = wantPop ? '/s/' + encodeURIComponent(name) + '#popup-blocked' : a.href;
       if (wantPop && popout('/s/' + encodeURIComponent(name) + '?popout=1', name)) e.preventDefault();
-      else if (a.href) {{ e.preventDefault(); powerOff(function () {{ location.href = a.href; }}); }}
+      else if (a.href) {{ e.preventDefault(); powerOff(function () {{ location.href = to; }}); }}
       if (menu) menu.removeAttribute('open');
       return;
     }}
@@ -4602,18 +4610,43 @@ input:focus,select:focus{{outline:none;border-color:var(--accent-dim);box-shadow
 .err{{color:#ffc6c1;background:var(--danger-wash);border:1px solid var(--danger);
   border-radius:var(--radius-sm);padding:8px 10px;font:500 12px/16px var(--font-mono);display:none}}
 .err.on{{display:block}}
-/* ---- pop-out mode: bar hidden behind a corner handle */
-#handle{{display:none;position:absolute;top:8px;right:8px;z-index:10;width:34px;height:26px;
-  border:1px solid var(--glass-border);border-radius:999px;background:var(--glass-bg);
-  -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));
-  color:var(--text-muted);align-items:center;justify-content:center;cursor:pointer}}
-#handle:hover{{color:var(--accent);border-color:rgb(57 255 136 / .35)}}
-#handle:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
+/* ---- pop-out mode: the bar is hidden, and a slim strip across the top shows
+   it. The strip has a band of its own (the terminal starts below it, so it
+   covers no cells and takes no clicks meant for them), and the bar opens OVER
+   the terminal instead of pushing it down, so showing or hiding it never
+   resizes the session. Shown, the strip becomes the bar's last control. */
+#handle{{display:none;position:absolute;z-index:10;padding:0;border:0;align-items:center;
+  justify-content:center;cursor:pointer;color:var(--text-muted);-webkit-tap-highlight-color:transparent;
+  transition:color 140ms ease,background 140ms ease}}
+#handle:hover{{color:var(--accent)}}
+#handle:focus-visible{{outline:2px solid var(--accent);outline-offset:-2px}}
+#handle svg{{width:14px;height:14px}}
 body.popout #bar,body.popout #pop{{display:none}}
-body.popout #handle{{display:flex}}
-body.popout.showbar #bar{{display:flex}}
+body.popout #handle{{display:flex;top:0;left:0;right:0;height:14px;
+  background:var(--bg-secondary);border-bottom:1px solid var(--border-soft)}}
+body.popout:not(.showbar) #handle:hover{{background:var(--surface)}}
+body.popout #frame-wrap{{margin-top:14px}}
+body.popout.showbar #bar{{display:flex;position:absolute;top:0;left:0;right:0;z-index:9;
+  padding-right:50px;animation:sj-in 120ms ease}}
+body.popout.showbar #handle{{top:calc(9px + env(safe-area-inset-top));left:auto;right:8px;
+  width:34px;height:26px;border:1px solid var(--glass-border);border-radius:999px;background:var(--glass-bg)}}
+body.popout.showbar #handle:hover{{border-color:rgb(57 255 136 / .35)}}
+body.popout.showbar #handle:focus-visible{{outline-offset:2px}}
+body.popout.showbar #handle svg{{transform:rotate(180deg)}}
 body.popout.showbar #pop.open{{display:flex}}
 body.popout #popout,body.touch #popout{{display:none}}
+/* ---- a one-line notice under the bar (a pop-up the browser blocked, a
+   session that is already in a pop-out window) */
+#note{{position:absolute;z-index:13;top:calc(52px + env(safe-area-inset-top));left:8px;right:8px;
+  margin:0 auto;width:fit-content;max-width:calc(100vw - 16px);display:flex;align-items:center;gap:4px;
+  padding:4px 4px 4px 12px;background:var(--glass-bg);
+  -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));
+  border:1px solid var(--glass-border);border-radius:var(--radius-md);box-shadow:0 16px 40px rgb(0 0 0 / .45);
+  color:var(--text-primary);font:500 12px/16px var(--font-mono);animation:sj-in 140ms ease}}
+#note[hidden]{{display:none}}
+#note .ib{{min-height:32px;padding:0 10px;border-radius:var(--radius-sm);color:var(--accent)}}
+#note .ib[hidden]{{display:none}}
+#note .nt{{padding:6px 8px 6px 0}}
 /* touch: the logo is the way back to the list; x would only repeat it (and reads as "kill") */
 body.touch #close{{display:none}}
 /* ---- safe areas (viewport-fit=cover). A phone on its side has the notch and
@@ -4642,6 +4675,8 @@ body.kb #screen-text{{padding-bottom:12px}}
   .k{{height:32px}}
   #pop{{top:calc(40px + env(safe-area-inset-top))}}
   body.kb #keys{{padding-bottom:4px}}
+  body.popout.showbar #handle{{top:calc(5px + env(safe-area-inset-top))}}
+  #note{{top:calc(44px + env(safe-area-inset-top))}}
 }}
 @media (prefers-reduced-motion:reduce){{
   *,*::before,*::after{{animation-duration:.01ms!important;animation-iteration-count:1!important;
@@ -4649,7 +4684,7 @@ body.kb #screen-text{{padding-bottom:12px}}
 }}
 </style></head><body{body_class}>
 <div id="crt" aria-hidden="true"></div>
-<button id="handle" title="Show menu" aria-label="Show menu">{i_dots}</button>
+<button id="handle" type="button" title="Show bar" aria-label="Show bar" aria-expanded="false" aria-controls="bar">{i_chev}</button>
 <div id="bar">
   <a class="ib home" href="/" title="All sessions" aria-label="All sessions">{logo}</a>
   <div id="tabs"></div>
@@ -4667,6 +4702,7 @@ body.kb #screen-text{{padding-bottom:12px}}
     <button class="btn ghost" type="button" id="pop-cancel">Cancel</button></div>
 </form>
 <div id="winmenu" role="menu" aria-label="tmux windows" hidden></div>
+<div id="note" role="status" hidden><span class="nt"></span><button class="ib" type="button" hidden></button></div>
 <div id="frame-wrap"><iframe id="frame" src="{src}" title="Terminal: {name}" allow="clipboard-read; clipboard-write"></iframe>
 <div id="conn" aria-hidden="true"><span class="cap">connecting</span></div></div>
 <div id="keys">
@@ -4956,7 +4992,13 @@ APP_JS = r"""
 
   // ---- session tabs
   function pageUrl(name) { return '/s/' + encodeURIComponent(name) + (POP ? '?popout=1' : ''); }
-  function setUrl(name) { history.replaceState(null, '', pageUrl(name)); document.title = name + ' · ' + TITLE; }
+  function setUrl(name) {
+    history.replaceState(null, '', pageUrl(name)); document.title = name + ' · ' + TITLE;
+    // A pop-out window is named after the session it shows, whichever that is
+    // now: Open on that session finds it, and Open on the one it showed before
+    // no longer takes it over.
+    if (POP) { window.name = 'serverjack-' + name; announce(name); }
+  }
   function safe(f) { try { f(); } catch (e) { if (window.console) console.error(e); } }
   function noop() {}
   // Point the frame at a session WITHOUT a history entry. Assigning frame.src
@@ -4976,12 +5018,90 @@ APP_JS = r"""
   function frameArg() {
     try { return new URLSearchParams(frame.contentWindow.location.search).get('arg'); } catch (e) { return null; }
   }
-  function switchTo(name, id) {
+  function switchTo(name, id, here) {
     if (name === cur) { focusTerm(); return; }
+    if (!POP && !here && inPopout(name, id)) return;
     cur = name; curId = id || null; WINS = []; winsKey = ''; closeWins(); closePop(false);
     clearTimeout(retryT); retryT = null; retryN = 0;
     loadFrame(name);
     setUrl(name); refresh().catch(noop);
+    if (POP) setBar(false, true);          // picked: the bar was only a glance over the terminal
+  }
+
+  // ---- a notice under the bar, with at most one action
+  var noteEl = document.getElementById('note'), noteT = null;
+  function note(text, label, act) {
+    var b = noteEl.querySelector('button'), t = noteEl.querySelector('.nt');
+    clearTimeout(noteT);
+    noteEl.hidden = false; t.textContent = '';
+    setTimeout(function () { t.textContent = text; }, 0);   // role=status: text after it shows
+    b.hidden = !act; b.textContent = label || '';
+    b.onclick = function () { hideNote(); act(); };
+    noteT = setTimeout(hideNote, act ? 8000 : 6000);
+  }
+  function hideNote() { clearTimeout(noteT); noteEl.hidden = true; }
+
+  // ---- pop-out windows. Each one is named after its session, and an open one
+  // is focused and left alone: a URL handed to window.open navigates even a
+  // window that already shows it, which reattaches its terminal. Null when the
+  // browser blocked the pop-up.
+  function popWin(name) {
+    var href = '/s/' + encodeURIComponent(name) + '?popout=1', w = null, at = '';
+    try { w = window.open('', 'serverjack-' + name, 'popup=yes,width=1000,height=650'); } catch (e) {}
+    if (!w) return null;
+    try { at = w.location.pathname + w.location.search; } catch (e) {}
+    if (at !== href) w.location.replace(href);
+    w.focus();
+    return w;
+  }
+  // Pop-outs in this browser say which session they show (BroadcastChannel:
+  // same browser, same origin), so a tab here does not attach a second client
+  // to it -- two clients of different sizes make tmux resize the window to
+  // whichever typed last. Without BroadcastChannel this does nothing.
+  var chan = null, pops = {}, popId = Math.random().toString(36).slice(2);
+  try { chan = new BroadcastChannel('serverjack-pop'); } catch (e) {}
+  if (POP) window.name = 'serverjack-' + cur;
+  function tabId() {                       // one per browser tab, kept across its navigations
+    try {
+      var t = sessionStorage.getItem('sj-tab');
+      if (!t) { t = Math.random().toString(36).slice(2); sessionStorage.setItem('sj-tab', t); }
+      return t;
+    } catch (e) { return null; }
+  }
+  function openerTab() {                   // the tab that opened this pop-out
+    try { return (window.opener && window.opener.sessionStorage.getItem('sj-tab')) || null; } catch (e) { return null; }
+  }
+  function announce(name) {
+    if (chan && POP) chan.postMessage({ pop: popId, name: name, opener: name ? openerTab() : null });
+  }
+  if (chan) {
+    chan.onmessage = function (e) {
+      var m = e.data || {};
+      if (POP) { if (m.who && !gone) announce(cur); return; }
+      if (m.pop) { if (m.name) pops[m.pop] = m; else delete pops[m.pop]; }
+    };
+    if (POP) {
+      announce(cur);
+      window.addEventListener('pagehide', function () { announce(null); });
+      window.addEventListener('pageshow', function (e) { if (e.persisted) announce(cur); });
+    } else { tabId(); chan.postMessage({ who: 1 }); }
+  }
+  // name is open in a pop-out: bring that window forward instead of attaching
+  // here too. Only the tab that opened it can reach it by name -- from any
+  // other, window.open would make a new window -- so the rest just say so.
+  function inPopout(name, id) {
+    var k, m = null, me = tabId(), w = null;
+    for (k in pops) if (pops[k].name === name && (!m || pops[k].opener === me)) m = pops[k];
+    if (!m) return false;
+    if (me && m.opener === me) {
+      try { w = window.open('', 'serverjack-' + name); } catch (e) {}
+      var at = ''; try { at = w ? w.location.pathname : ''; } catch (e) {}
+      if (w && at.indexOf('/s/') !== 0) { w.close(); delete pops[m.pop]; return false; }   // it had gone
+      if (w) w.focus();
+    }
+    note('\u201c' + name + '\u201d is open in a pop-out window.', 'Open here',
+         function () { switchTo(name, id, true); });
+    return true;
   }
 
   // ---- tmux windows of the current session. They belong to the session, not
@@ -5070,7 +5190,7 @@ APP_JS = r"""
   function selectWin(index) {
     fetch('/api/window', { method: 'POST',
                            body: new URLSearchParams({ name: cur, index: index }) })
-      .then(function () { closeWins(); focusTerm(); return loadWins(); })
+      .then(function () { closeWins(); if (POP) setBar(false, true); focusTerm(); return loadWins(); })
       .catch(function () { closeWins(); });
   }
   function loadWins() {
@@ -5321,9 +5441,21 @@ APP_JS = r"""
   function frameChrome() {
     var d = tdoc(), w = frame.contentWindow;
     if (!d || !d.body || d.__sjChrome) return; d.__sjChrome = true;
-    // A press in the terminal dismisses the + panel and the window list
-    // (clicks inside the frame never reach this document's listeners).
-    d.addEventListener('pointerdown', function () { closePop(false); if (!winmenu.hidden) closeWins(); }, true);
+    // A press in the terminal dismisses the + panel and the window list, and a
+    // pop-out's bar (clicks inside the frame never reach this document's listeners).
+    d.addEventListener('pointerdown', function () {
+      closePop(false); if (!winmenu.hidden) closeWins();
+      if (barShown()) setBar(false, false);
+    }, true);
+    // Escape typed in the terminal while a pop-out's bar is out puts the bar
+    // away, and only that: the bar is an overlay, and an Escape meant for it
+    // would otherwise reach the program too (interrupting an agent's turn,
+    // or making the shell's next key a Meta chord). The next one goes through.
+    d.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape' || !e.isTrusted || !barShown()) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      setBar(false, false);
+    }, true);
     w.addEventListener('focus', freshWins);
     new MutationObserver(connSoon).observe(d.body, { childList: true, subtree: true });
   }
@@ -5415,11 +5547,11 @@ APP_JS = r"""
       .catch(function () { done(); if (pop.classList.contains('open')) showErr('request failed'); });
   };
   document.getElementById('popout').onclick = function () {
-    // "popup" asks for a window without tabs/address bar. Named per session
-    // so a second pop-out refocuses instead of attaching twice; this tab then
-    // goes back to the list so it isn't attached too.
-    var w = window.open('/s/' + encodeURIComponent(cur) + '?popout=1', 'serverjack-' + cur, 'popup=yes,width=1000,height=650');
-    if (w) { w.focus(); location.href = '/'; }
+    // "popup" asks for a window without tabs/address bar (popWin). This tab
+    // then goes back to the list so it isn't attached too -- replacing its own
+    // history entry, or Back would attach it again.
+    if (popWin(cur)) location.replace('/');
+    else note('The browser blocked the pop-out window. Allow pop-ups for this site to use it.');
   };
   if (touch) body.classList.add('touch');
   document.querySelector('#bar a.ib').onclick = function (e) {
@@ -5434,20 +5566,42 @@ APP_JS = r"""
     // list doesn't re-open the terminal just left.
     powerOff(function () { location.replace('/'); });
   };
-  document.getElementById('handle').onclick = function () {
-    body.classList.toggle('showbar');
-    if (!body.classList.contains('showbar')) { closePop(false); focusTerm(); }
-  };
+  // ---- the pop-out's bar: the handle, Escape, a press in the terminal, or
+  // picking a tab or window put it away. It lies over the terminal's top rows
+  // while shown, so a glance never resizes the session.
+  var handle = document.getElementById('handle');
+  function barShown() { return POP && body.classList.contains('showbar'); }
+  function setBar(on, refocus) {
+    if (!POP || on === barShown()) return;
+    body.classList.toggle('showbar', on);
+    handle.setAttribute('aria-expanded', on ? 'true' : 'false');
+    handle.title = on ? 'Hide bar' : 'Show bar'; handle.setAttribute('aria-label', handle.title);
+    if (on) showCur();                    // the strip had no layout while hidden: bring the current tab in
+    else { closePop(false); closeWins(); }
+    if (refocus) backToTerm();
+  }
+  // From a mouse, the keyboard stays in the terminal either way: a click
+  // focuses the button, and the next Space would press it again mid-command.
+  // From the keyboard (detail 0), showing leaves focus here so Tab reaches the bar.
+  handle.onclick = function (e) { var on = !barShown(); setBar(on, !on || e.detail > 0); };
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Escape') return;
     var menu = !winmenu.hidden;
     closeWins();
     if (closePop(false) || menu) backToTerm();      // only when it closed something
+    else if (barShown()) setBar(false, true);
+    hideNote();
   });
   document.addEventListener('click', function (e) {
     if (winmenu.hidden) return;
     if (!winmenu.contains(e.target) && !(e.target.closest && e.target.closest('#tabs .tab.on'))) closeWins();
   });
+  // The landing page could not pop this out (the browser blocked it) and
+  // opened it in its own tab instead: say so, once.
+  if (location.hash === '#popup-blocked') {
+    history.replaceState(null, '', pageUrl(cur));
+    note('The browser blocked the pop-out window, so the session opened here.');
+  }
   setInterval(function () { refresh().catch(noop); checkConn(); }, 15000);
   body.classList.add('conn');
   [function () { refresh().catch(noop); }, hook, touchCss, scrollHooks, pollMouse, focusTerm, frameLoaded].forEach(safe);
@@ -6075,7 +6229,7 @@ def render_term(name, popout=False):
     return TERM_PAGE.format(
         name=esc(name), src=esc(ttyd_src(name)), dirpicker=dir_picker(input_id="pop_dir"), kinds=kind_options(),
         title=esc(TITLE), tokens=TOKENS, pwa_links=PWA_LINKS, logo=logo_svg(28),
-        i_dots=I_DOTS, i_plus=I_PLUS, i_keys=I_KEYBOARD, i_popout=I_POPOUT,
+        i_chev=I_CHEV, i_plus=I_PLUS, i_keys=I_KEYBOARD, i_popout=I_POPOUT,
         i_close=I_CLOSE, i_send=I_SEND, i_refresh=I_REFRESH,
         fx_css=FX_CSS, fx_css_term=FX_CSS_TERM, dirpick_css=DIRPICK_CSS, dirpick_js=DIRPICK_JS,
         term_path_json=js(TERM_PATH), name_json=js(name), title_json=js(TITLE),
