@@ -5,8 +5,11 @@
                               ttyd on <runtime dir>/ttyd.sock
 
 Everything it does ends in the same place: a command running inside a tmux
-session, with a terminal on your screen. The landing page has three panels,
-in the order you actually need them from a phone:
+session, with a terminal on your screen. The landing page has these panels,
+in the order you actually need them from a phone: Sessions first whenever
+any are running (reopening and killing one is the everyday thing), then
+Start a session, Shortcuts (with Add a shortcut), and Agent servers. With
+no sessions, Start a session leads and Sessions sits under the shortcuts.
 
   1. Start a session -- a segmented Shell / <agent> choice, a directory
      picker (default ~), and, for Shell only, an optional command box: an
@@ -21,6 +24,7 @@ in the order you actually need them from a phone:
      re-reads /api/sessions every 15s while the page is visible and whenever
      the tab or home-screen app comes back, so attached dots, ages and
      sessions started or ended elsewhere show up without a reload.
+     Shortcuts -- saved one-tap commands, with Add a shortcut under them.
   3. Agent servers    -- an accordion with one collapsed row per coding CLI
      that still needs something: not installed, installed but not logged in,
      or ready with a server, daemon or extra action to offer. A tool that is
@@ -3864,7 +3868,7 @@ LAND_JS = r"""
 })();
 """
 
-START_CARD = """<h2>Start a session</h2>
+START_CARD = """<h2 id="start">Start a session</h2>
 <div class="card"><form class="row" id="startform" method="post" action="/start" autocomplete="off">
   <div class="seg">{what_options}</div>
   {dirpicker}
@@ -5259,6 +5263,8 @@ def _done_at(done, tid=""):
         return "sessions"
     if done.startswith("sc-"):
         return "shortcuts"
+    if done == "dir":                # the default directory: the Start card's own line
+        return "start"
     if tid and done in ("boot-on", "boot-off", "daemon-start", "daemon-stop", "server-stop"):
         return f"tool-{tid}"
     return ""
@@ -5409,10 +5415,10 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
                                for t, st in card_pairs)
         else:
             agents = ('<div class="empty">Nothing to set up: every agent is installed and '
-                      'starts from the top of the page.</div>')
+                      'starts from Start a session, above.</div>')
 
     dflt = default_dir()
-    body = "\n".join([
+    start_part = [
         START_CARD.format(dirpicker=dir_picker(dir_custom, "dir"), cmd=esc(cmd), label=esc(label),
                           name=esc(name), save_open=" open" if save_open else "",
                           save_checked=" checked" if save else "",
@@ -5431,10 +5437,16 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
             sc_button="Save changes" if sc_id else "Save shortcut",
             sc_id=f'<input type="hidden" name="id" value="{esc(sc_id)}">' if sc_id else "",
             sc_cancel='<a class="btn ghost wide" href="/#shortcuts">Cancel</a>' if sc_id else ""),
-        '<h2 id="sessions">Sessions</h2>', cards,
+    ]
+    sessions_part = ['<h2 id="sessions">Sessions</h2>', cards]
+    # Sessions lead whenever any are running: reopening or killing one is the
+    # everyday thing (DESIGN.md: fast paths first), and under the Start card and
+    # every shortcut no session row was on the first screen of any phone or
+    # laptop. With none, Start a session leads (and the empty note says "above").
+    body = "\n".join((sessions_part + start_part if sess else start_part + sessions_part) + [
         '<h2 id="agents">Agent servers</h2>',
         '<p class="hint">Install an agent or log in to it, or start the background server a '
-        'phone app connects to. Installed agents start from Start a session above.</p>',
+        'phone app connects to. Installed agents start from Start a session, above.</p>',
         agents,
     ])
     link = (f' <a class="btn sec sm open" href="{esc(term_href(error_link))}" '

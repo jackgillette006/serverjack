@@ -258,9 +258,10 @@ def desktop_layout(p):
         page.locator("#dd_dir").fill(ROOT_SHOW)
         wait_rows(page, "details.ddchange")
         save = page.locator('form[action="/prefs"] button[type=submit]')
-        sb = save.bounding_box()
-        hit = page.evaluate(f"document.elementFromPoint({sb['x'] + sb['width'] / 2}, {sb['y'] + sb['height'] / 2}).tagName")
-        ok("the default-dir form's Save isn't under the list", hit == "BUTTON", hit)
+        # hit_ok scrolls it into view first: with sessions running, Sessions
+        # lead the page and the Start card can start below the fold.
+        hit = hit_ok(page, 'form[action="/prefs"] button[type=submit]')
+        ok("the default-dir form's Save isn't under the list", hit == "ok", hit)
         # /prefs answers /?done=dir, which the page script then strips from
         # the address: catch the navigation itself, not the address after it.
         with page.expect_navigation(url="**done=dir**"):
@@ -282,6 +283,7 @@ def desktop_layout(p):
         # field's blur must not close the list mid-press and move Start up.
         page.locator("#dir").fill(f"{ROOT_SHOW}/kids")
         wait_rows(page, "#startform")
+        page.locator('form[action="/start"] button[type=submit]').scroll_into_view_if_needed()
         sb = page.locator('form[action="/start"] button[type=submit]').bounding_box()
         page.mouse.move(sb["x"] + sb["width"] / 2, sb["y"] + sb["height"] / 2)
         page.mouse.down()

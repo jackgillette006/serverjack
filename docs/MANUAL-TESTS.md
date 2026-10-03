@@ -11,7 +11,7 @@ one-line note; screenshots of anything odd help.
 
 You are testing a browser-based tmux terminal at https://<your-host>/ .
 Open it in Chrome (with the Claude in Chrome extension) or do the steps by hand.
-1. Landing page, top to bottom: a "Run a command" box, Shortcuts, Sessions (listed with Open buttons plus a "New shell" form with a Name box and a Directory dropdown), Agents (one collapsed row per coding tool).
+1. Landing page, top to bottom: Sessions (each row with ⋯ and Open), Start a session, Shortcuts with Add a shortcut, Agent servers (one collapsed row per coding tool that still needs something). With no sessions running, Start a session comes first and Sessions sits under the shortcuts.
 2. Create a Shell session named "t-desktop" in your home directory. You should land in a terminal with a tab bar on top and "t-desktop" highlighted.
 3. Type `echo hello` Enter. Output appears.
 4. Type `sleep 30` Enter, then press Ctrl+C with NOTHING selected. The sleep is interrupted (prompt comes back).
@@ -23,6 +23,7 @@ Open it in Chrome (with the Claude in Chrome extension) or do the steps by hand.
 9a. In the ⋯ menu of a session, tap **Rename**. A small text box unfolds in place with the current name in it, selected, and (on a phone) the keyboard up. Change it and Save: the row shows the new name without the page reloading, and `tmux ls` agrees. Try renaming it to the name of another session — refused with the reason right under the field, the menu still open and your text still in it — and to `a.b`, which the box itself refuses before sending. Nothing is renamed. If you had a second tab open on the old session, it should move itself to another session within ~15 seconds (its session name no longer exists).
 9b. In the ⋯ menu of a session: "Open here" opens it in this tab; "Copy SSH command" copies an `ssh -t ... tmux attach` line that works in a terminal; "SSH app (login only)" launches your SSH client logged in to the server (not attached to the session) if one is installed.
 9c. From an in-tab session, ↗ pops it out and this tab goes back to the list (you are not attached twice).
+9d. Leave the list tab open and, from another terminal, `tmux kill-session -t <one>` and `tmux new -d -s t-live`. Within ~15 seconds (at once if you switch away and back) the killed row is gone and t-live is listed, with no reload. A popped-out session's dot turns green ("attached") in the list.
 10. Press ✕ in the bar, confirm. You are moved to another session (or the list if none).
 11. Resize the browser window. The terminal reflows (tmux status bar stays at the bottom).
 12. Reload the page while in a session. You reconnect into the same session with its history intact.
@@ -37,7 +38,7 @@ Also check: 13. In Safari, ↗ pop-out gives a window without the address bar.
 ## iPhone (Safari)
 
 You are testing a browser-based tmux terminal at https://<your-host>/ on iPhone Safari. Do each step and report PASS/FAIL with a note.
-1. Landing page is readable, buttons are tappable, the Directory dropdown is dark (not a white box). The Run box, Shortcuts, Sessions and Agents sections are all reachable by scrolling.
+1. Landing page is readable, buttons are tappable, the Directory dropdown is dark (not a white box). With sessions running, the first session row is on the first screen without scrolling; Start a session, Shortcuts and Agent servers follow it.
 2. Create a Shell session "t-phone". The terminal opens with a tab bar at the top and a row of keys (Esc, Tab, ⇧Tab, Ctrl, arrows, ^C, PgUp, PgDn) at the bottom.
 3. Tap the terminal. The keyboard opens. Is the key row still visible above the keyboard, and is the terminal not hidden under the keyboard? (This is the most likely failure — describe exactly what you see.)
 4. Type `echo hi` and Return. Output appears.
@@ -53,6 +54,7 @@ You are testing a browser-based tmux terminal at https://<your-host>/ on iPhone 
 14. Share → Add to Home Screen. Open it from the home screen. It should open full screen with no Safari bars, and opening a session should stay inside it.
 14b. **Scrolling**: run `seq 1 500` in a session, then drag one finger up and down over the terminal (or use the mouse wheel on a desktop). The pane's history scrolls, tmux's copy-mode position shows top right, and scrolling back to the bottom leaves copy mode. A mouse drag on a desktop still selects text.
 14c. In a session with two windows (`tmux new-window`), tap the active tab: the window list opens as a comfortable, readable sheet with 44px rows, and picking one switches. Nothing overflows sideways.
+14d. In the home-screen app, scroll the session list up and down: nothing ever shows under the clock and battery (a solid strip stays behind the status bar). Tap ⋯ → Rename on a session and tap the text box: the page must not zoom in. On a 375px or smaller iPhone (mini, SE) the open menu, with Rename unfolded, fits on screen.
 15. ☰ goes back to the list; ✕ closes: in a pop-out it closes the window, in a tab it goes back to the list. The session keeps running either way (kill it from its menu on the landing page).
 Report PASS/FAIL per step and the iOS version.
 

@@ -2267,7 +2267,7 @@ class DoneNoteTests(unittest.TestCase):
                          "/?done=sc-saved&n=Deploy%20it#shortcuts")
         self.assertEqual(mod.done_url("daemon-stop", "", "codex", "daemon"),
                          "/?done=daemon-stop&open=codex&k=daemon#tool-codex")
-        self.assertEqual(mod.done_url("dir"), "/?done=dir")
+        self.assertEqual(mod.done_url("dir"), "/?done=dir#start")
 
     def test_sentences(self):
         self.assertEqual(mod.done_note("killed", "old"), ("Killed “old”.", "sessions"))
@@ -2614,6 +2614,19 @@ class SessionRowTests(unittest.TestCase):
         self.assertIn("attached</b> &middot; </span>up 1m", mod.session_facts(dict(one, attached=True)))
         self.assertEqual(mod.session_facts(dict(one, attached=True, created=0)),
                          '<span aria-hidden="true"><b class="att">attached</b></span>')
+
+    def test_sessions_lead_the_page_only_when_there_are_some(self):
+        one = [{"name": "main", "windows": 1, "attached": False, "created": 0,
+                "cmd": "bash", "path": "~"}]
+        order = lambda page: [page.index(h) for h in (
+            'id="sessions"', '<h2 id="start">Start a session</h2>', 'id="shortcuts"', 'id="agents"')]
+        o = order(self._page(one))
+        self.assertTrue(o[0] < o[1] < o[2] < o[3], o)
+        empty = self._page([])
+        o = order(empty)
+        self.assertTrue(o[1] < o[2] < o[0] < o[3], o)
+        self.assertIn("Start one above", empty)       # true in that order
+        self.assertNotIn("top of the page", self._page(one))
 
     def test_gone_session_page_escapes_the_name_and_offers_close(self):
         page = mod.render_session_gone('x"<script>alert(1)</script>')

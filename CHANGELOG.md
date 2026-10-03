@@ -7,6 +7,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed
+
+- **Running sessions come first on the landing page.** With any sessions
+  running, the page now reads Sessions, Start a session, Shortcuts, Agent
+  servers. Before, the Start card and every shortcut sat above them, so no
+  session row was on the first screen of any phone or laptop and reopening
+  or killing one -- the everyday thing -- always meant a long scroll. With
+  none running, Start a session still leads.
+
 ### Fixed
 
 - **Agent servers started from the page read "exited", and Start killed
