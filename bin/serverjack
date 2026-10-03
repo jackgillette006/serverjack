@@ -5158,6 +5158,8 @@ class Handler(BaseHTTPRequestHandler):
                 return fail(f"No daemon is configured for {t['label']}.")
             cwd = HOME
             if kind == "server" and f.get("on"):
+                # Turning it on needs the folder; turning it off must work
+                # after the folder is gone (that is when you'd want to).
                 cwd, err = resolve_dir(f.get("dir"), "", must_exist=True)
                 if err:
                     return fail(err)
