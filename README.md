@@ -253,8 +253,9 @@ it. One tap is one submit: while the page waits, Start reads *Starting…* and a
 second tap does nothing.
 
 Open "Save as a shortcut" (only offered with a Shell command) and give the
-shortcut a name, or tick *Keep this command in Shortcuts*, and the command
-becomes a one-tap button in the Shortcuts list for next time. Running it opens
+shortcut a name — that ticks *Keep this command in Shortcuts* for you; the
+tick is what counts, so untick it to not keep it — and the command becomes a
+one-tap button in the Shortcuts list for next time. Running it opens
 a session named after the shortcut ("Disk usage" runs as `disk-usage`, then
 `disk-usage-2`). The pencil on a shortcut's row opens it in the shortcut form
 to change its name, command or directory; it keeps its place in the list, and

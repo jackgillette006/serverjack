@@ -2337,6 +2337,21 @@ class LandingHandlerTests(unittest.TestCase):
         dd = page.index('class="inline ddchange"')
         self.assertGreater(page.index("Not a directory"), dd)
 
+    def test_with_the_page_script_the_keep_box_alone_decides(self):
+        # The script ticks the box when a shortcut name is typed and sends
+        # save_ui; unticking it afterwards must win over the typed name.
+        kind, _, _ = self.post("/start", what="shell", dir=self.dir, cmd="echo a",
+                               label="Not this one", save_ui="1")
+        self.assertEqual(kind, "redirect")
+        self.assertEqual(len(self.created), 1)
+        self.assertEqual(mod.load_shortcuts(), [])
+        self.post("/start", what="shell", dir=self.dir, cmd="echo b", label="This one",
+                  save="1", save_ui="1")
+        self.assertEqual([x["label"] for x in mod.load_shortcuts()], ["This one"])
+        self.assertTrue(mod.wants_save({"label": "No script"}))
+        self.assertFalse(mod.wants_save({"label": "Unticked", "save_ui": "1"}))
+        self.assertFalse(mod.wants_save({}))
+
     def test_an_edit_of_a_removed_shortcut_comes_back_as_an_add(self):
         _, status, page = self.post("/shortcuts/add", id="gone-123", label="Deploy",
                                     cmd="./deploy.sh", dir=self.dir)

@@ -153,7 +153,6 @@ and this project uses [Semantic Versioning](https://semver.org/).
   announce (Directory, Session name, Command, Shortcut name), and the
   terminal + panel's Name and Directory labels belong to their fields, so
   clicking a label focuses it and voice control can find them.
-
 - **Start a session: an error no longer wipes the directory.** Any refusal
   (a taken name, a bad name, a folder that isn't one) came back with every
   field refilled except the directory box, so the corrected retry quietly
@@ -211,9 +210,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - **"Save as a shortcut": naming it is enough.** A name typed into the panel
-  was thrown away unless the separate box was ticked too; now a name means
-  save (and ticks the box as you type). Saving with no command is refused
-  instead of silently starting a plain shell.
+  was thrown away unless the separate box was ticked too; now typing a name
+  ticks the box, and the box decides: untick it again and nothing is kept.
+  Saving with no command is refused instead of silently starting a plain
+  shell.
 - **Shortcut runs are named after the shortcut** ("Disk usage" runs as
   `disk-usage`, then `disk-usage-2`), not the command's first word -- two
   shortcuts that both start with `cd` used to share one name family.
