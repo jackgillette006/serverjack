@@ -564,6 +564,17 @@ and this project uses [Semantic Versioning](https://semver.org/).
   (`minimumContrastRatio=4.5`, sent only with the default theme), which also
   fixes text on white backgrounds and grey text under the selection in
   Chrome and Edge. Dim (SGR 2) text is still dim, by design.
+- **Terminal: no more `COLSxROWS` pill.** ttyd flashed a big grey box with
+  the terminal's size over the middle of the screen on every resize -- on a
+  phone, every keyboard open and close, every rotation and every key-row
+  toggle. It's off; `-t disableResizeOverlay=false` in `TTYD_EXTRA_ARGS`
+  brings it back.
+- **Android: terminal font.** ttyd's default font list ends in `Courier`,
+  which Android maps to a thin serif typewriter face, so Chrome there drew
+  the whole terminal in it. The list is now passed without it and Android
+  falls through to its plain monospace. Every other platform keeps exactly
+  the font it had. (Worked out from Android's font config; not yet seen on
+  a real Android phone.)
 
 ### Added
 

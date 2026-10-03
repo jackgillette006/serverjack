@@ -42,9 +42,12 @@ theme_json=$(env SERVERJACK_TERM_THEME= TTYD_EXTRA_ARGS= python3 ../bin/serverja
 # TTYD_EXTRA_ARGS). baseline_no_theme: the same minus the generated
 # -t theme=... and the -t minimumContrastRatio=4.5 that only ever comes with
 # it -- what SERVERJACK_TERM_THEME=off, or a TTYD_EXTRA_ARGS that already
-# sets its own theme, is expected to produce instead.
+# sets its own theme, is expected to produce instead. The resize overlay and
+# font options are not part of the theme and stay either way.
 baseline_no_theme=(-i "$runtime/serverjack/ttyd.sock" -W -a -O
-                    -t titleFixed=security-test -t disableLeaveAlert=true)
+                    -t titleFixed=security-test -t disableLeaveAlert=true
+                    -t disableResizeOverlay=true
+                    -t "fontFamily=Consolas,Liberation Mono,Menlo,monospace")
 baseline=("${baseline_no_theme[@]}" -t "theme=$theme_json" -t minimumContrastRatio=4.5 "$attach")
 baseline_no_theme+=("$attach")
 
