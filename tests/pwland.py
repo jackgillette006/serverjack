@@ -5,8 +5,9 @@ directory picker's touch behaviour -- the landing page otherwise has no
 engine-specific code, and the things worth proving here are server-side (a
 command really ran in a real tmux session, a shortcut was stored and removed,
 an agent card's buttons hit the right route). run.sh points the app at
-shots/cfg with a single fake tool (bin=true, login_check=true, run=bash, one
-action `hello`), a second one with nothing but a run command, and a third
+shots/cfg with a single fake tool (bin=true, login_check=true, run=bash, an
+action `hello` and an action `here` that takes the card's directory picker),
+a second one with nothing but a run command, and a third
 whose `bin` exists only in a directory named by its own tools.json "paths"
 entry (never on PATH) -- so nothing here touches a real coding CLI. It also
 seeds a nested project dir (projects/ai/3d-lab/scenes) under the fixture
@@ -382,7 +383,7 @@ with sync_playwright() as p:
     ok("the fake tool's card lists only the action and login rows (no Open)",
        [x.strip() for x in page.eval_on_selector_all(
            "#tool-fake .orow", "e => e.map(x => x.innerText.split('\\n')[0])")]
-       == ["hello", "Log in / switch account"],
+       == ["hello", "here", "Log in / switch account"],
        str(page.eval_on_selector_all("#tool-fake .orow", "e => e.map(x => x.innerText)")))
 
     # phone width: an open row must not push the page sideways

@@ -68,6 +68,13 @@ Home Screen app.
 5. In a session, tap +, then the Directory field. With the keyboard up the sheet stays below the tab bar, the list shows above the keyboard, and Start & open can be reached by scrolling the sheet. Rotate to landscape: the Name field is still reachable by scrolling the sheet.
 Report PASS/FAIL per step, the iOS version, and Safari or Home Screen app.
 
+## Directory picker (Windows desktop, classic scrollbars)
+
+Headless browsers only have overlay scrollbars, so these need a real Windows browser.
+1. Click the Start card's directory field. Drag the list's scrollbar up and down: the list scrolls, stays open, and the field keeps its focus ring.
+2. Type `~/` and, with the list open, press and hold the mouse on **Start** for about a second before letting go: the session starts (nothing below the list moves while the button is held).
+Report PASS/FAIL per step, the browser and its version.
+
 ## Run a command (any device; step 4 needs a real iPhone)
 
 1. Paste `echo RUNBOX; pwd` into the Run box and tap Run. A new tmux session opens in the terminal, the output appears, and you are left at a **shell prompt** in that session (it does not disappear).

@@ -1,8 +1,10 @@
 """The directory picker (.dirpick, DIRPICK_JS/DIRPICK_CSS in bin/serverjack):
-what a typed folder name submits, the "+ New folder" row, touch scrolling and
-drill-down, keyboard and mouse behaviour, late lookups, layout (nothing under
-the list is covered, the folder name always shows), and the server never
-creating a folder before a session really starts in it.
+what a typed folder name submits (an exact name over a partial one, a name
+the list never showed, a name the page put in the box), the "+ New folder"
+row, touch scrolling and drill-down, keyboard and mouse behaviour, late
+lookups, layout (the list is in flow, so nothing under it is covered -- real
+clicks, slow ones too -- and the folder name always shows), and the server
+never creating a folder before a session really starts in it.
 
 Self-contained: it builds its own fixture tree under the server's HOME with
 `tmux run-shell` -- so the folders belong to the account serverjack runs as,
@@ -31,6 +33,8 @@ SAME = {"Sec-Fetch-Site": "same-origin"}
 LONGP = "a-really-long-parent-directory-name-for-the-overflow-check"
 LEAF = "with-a-nested-leaf-folder"
 NEW = f"pwdp-new-{TAG}"
+EX = f"pwex{TAG}"           # a folder name that is also part of a shallower one
+DOT = f"v1.{TAG}"           # a dotted folder name, for "." meaning the default dir
 MADE = []
 fails = 0
 
@@ -123,6 +127,27 @@ def leaf_fits(page, sel):
         rest = li.querySelector('.rest');
         return {{inside: r.left >= lr.left && r.right <= lr.right, whole: b.scrollWidth <= b.clientWidth + 1,
                  cut: !!rest && rest.scrollWidth > rest.clientWidth}}; }})()""")
+
+
+def wait_index(q, want, timeout=30):
+    """Wait for the name-search index (cached ~20 s) to hold every path
+    ending in one of want for the query q."""
+    end, shows = time.time() + timeout, []
+    while time.time() < end:
+        shows = [d["show"] for d in api.get("/api/dirs?q=" + quote(q)).json().get("dirs", [])]
+        if all(any(s.endswith(w) for s in shows) for w in want):
+            break
+        time.sleep(1)
+    return shows
+
+
+def hit_ok(page, sel):
+    """Is the element itself what a click at its centre would land on?"""
+    return page.evaluate("""(s) => { const e = document.querySelector(s);
+        e.scrollIntoView({block: 'center'});
+        const r = e.getBoundingClientRect();
+        const h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return h === e || e.contains(h) ? 'ok' : (h && (h.closest('li') ? 'LI' : h.tagName)); }""", sel)
 
 
 def flash(page):
@@ -241,20 +266,55 @@ def desktop_layout(p):
         ok("...and one click saves what was typed", f"Default directory: {ROOT_SHOW}" in flash(page), flash(page))
         api.post("/prefs", form={"dir": "~"})
 
-        # Near the bottom of the window the dropdown opens upwards.
-        page.set_viewport_size({"width": 1280, "height": 600})
+        # The Start card with a mouse: the list is in flow there too, so the
+        # fields and the button under it are where they look.
         page.goto(f"{BASE}/")
-        page.click("#addsc summary")
-        page.evaluate("document.querySelector('#sc_dir').scrollIntoView({block: 'end'})")
-        page.click("#sc_dir")
-        wait_rows(page, "#addsc")
-        geo = page.evaluate("""(() => { const l = document.querySelector('#addsc .dirlist'),
-            i = document.querySelector('#sc_dir'); return {up: l.classList.contains('up'),
-            top: l.getBoundingClientRect().top, bottom: l.getBoundingClientRect().bottom,
-            itop: i.getBoundingClientRect().top}; })()""")
-        ok("a dropdown with no room below opens upwards, on screen",
-           geo["up"] and geo["top"] >= 0 and geo["bottom"] <= geo["itop"], str(geo))
-        page.set_viewport_size({"width": 1280, "height": 800})
+        page.click("#dir")
+        wait_rows(page, "#startform", "n >= 4")
+        pos = page.evaluate("getComputedStyle(document.querySelector('#startform .dirlist')).position")
+        name_hit, start_hit = hit_ok(page, "#name"), hit_ok(page, 'form[action="/start"] button[type=submit]')
+        ok("on a desktop the open list covers neither Name nor Start",
+           pos == "static" and name_hit == "ok" and start_hit == "ok", f"{pos} {name_hit} {start_hit}")
+        # A slow click (button held 400 ms) on Start with the list open: the
+        # field's blur must not close the list mid-press and move Start up.
+        page.locator("#dir").fill(f"{ROOT_SHOW}/kids")
+        wait_rows(page, "#startform")
+        sb = page.locator('form[action="/start"] button[type=submit]').bounding_box()
+        page.mouse.move(sb["x"] + sb["width"] / 2, sb["y"] + sb["height"] / 2)
+        page.mouse.down()
+        page.wait_for_timeout(400)
+        page.mouse.up()
+        s = started(page)
+        ok("...and a slow click on Start still starts it", cwd_of(s).endswith(f"/pwdp-{TAG}/kids"), cwd_of(s))
+
+        # A tool card. The picker sits in the row that uses it (run.sh's
+        # "here" action; a card with nothing that reads a directory has no
+        # picker at all), and that row's button sits beside the field. The
+        # list opens in flow under the field: a button level with the list's
+        # bottom moved every time the list opened or changed length, and a
+        # dropdown over the card covered the row below (Log in).
+        page.goto(f"{BASE}/")
+        page.click("#tool-fake summary")
+        run = '#tool-fake button[name=do][form="d-fake"]'
+        login = '#tool-fake button[value="/tools/login"]'
+        tbox = page.locator("#tool-fake .dirpick input")
+
+        def doc_y(sel):
+            return page.evaluate("""(s) => Math.round(
+                document.querySelector(s).getBoundingClientRect().top + scrollY)""", sel)
+        ys = [doc_y(run)]
+        tbox.fill(f"{ROOT_SHOW}/")                  # 16 rows: the list at its full height
+        wait_rows(page, "#tool-fake", "n >= 14")
+        ys.append(doc_y(run))
+        tbox.fill("3d")
+        wait_rows(page, "#tool-fake", HAS_3D)
+        ys.append(doc_y(run))
+        ok("a tool card's button stays where it was while its list opens and changes length",
+           len(set(ys)) == 1, f"y closed/full/3d: {ys}")
+        login_hit, run_hit = hit_ok(page, login), hit_ok(page, run)
+        page.click(run)
+        ok("...the open list covers neither it nor the row below, and one real click runs it",
+           login_hit == "ok" and run_hit == "ok" and bool(started(page)), f"{login_hit} {run_hit}")
 
         # The terminal's new-session panel.
         page.goto(f"{BASE}/s/{TAKEN}")
@@ -294,22 +354,87 @@ def submit_checks(p):
         ok("a typed name highlights its top match", top.get_attribute("aria-selected") == "true")
         ok("...and offers a new folder only as an explicit last row",
            page.locator("#startform .dirlist li").last.get_attribute("data-create") == "1")
-        # A desktop dropdown may lie over Start itself, so press it the way
-        # the browser does (the button's activation), with the list still up.
-        page.locator('form[action="/start"] button[type=submit]').dispatch_event("click")
+        page.click('form[action="/start"] button[type=submit]')     # a real click, list still up
         s = started(page)
         ok("Start with a typed name starts in the folder it matched",
            os.path.realpath(cwd_of(s)) == os.path.realpath(want), f"{cwd_of(s)!r} vs {want!r}")
         ok("...and no new folder by that name appears", not os.path.isdir(f"{HOME}/3d"))
 
+        # With the list dismissed, a partial name is never swapped unseen:
+        # Start shows the list again, and the next Start takes its highlight.
         page.goto(f"{BASE}/")
         dirbox.fill("3d")
         wait_rows(page, "#startform", HAS_3D)
         dirbox.press("Escape")
         page.click('form[action="/start"] button[type=submit]')
+        wait_rows(page, "#startform", HAS_3D)
+        sel = page.locator('#startform .dirlist li[aria-selected="true"]')
+        ok("Start with a partial name and the list dismissed shows the list again instead",
+           page.url.rstrip("/") == BASE and sel.count() == 1 and sel.get_attribute("data-show") == want_show
+           and page.evaluate("document.activeElement.id") == "dir", page.url)
+        page.click('form[action="/start"] button[type=submit]')
         s = started(page)
-        ok("...the same with the list dismissed first",
+        ok("...and Start again starts in the highlighted match",
            os.path.realpath(cwd_of(s)) == os.path.realpath(want), f"{cwd_of(s)!r} vs {want!r}")
+
+        # An exact folder name beats a shallower partial match: pwexN is
+        # ~/pwdp-N/d00/pwexN, though ~/pwdp-N/x-pwexN ranks above it.
+        shows = wait_index(EX, [f"/x-{EX}", f"/d00/{EX}"])
+        page.goto(f"{BASE}/")
+        dirbox.fill(EX)
+        wait_rows(page, "#startform", "n >= 2")
+        sel = page.locator('#startform .dirlist li[aria-selected="true"]')
+        ok("a typed name highlights the folder of exactly that name, not the top row",
+           page.locator("#startform .dirlist li").first.get_attribute("data-show").endswith(f"/x-{EX}")
+           and sel.get_attribute("data-show") == f"{ROOT_SHOW}/d00/{EX}", str(shows))
+        dirbox.press("Escape")
+        page.click('form[action="/start"] button[type=submit]')
+        s = started(page)
+        ok("...and with the list dismissed Start goes straight there (one folder of that name)",
+           cwd_of(s).endswith(f"/d00/{EX}"), cwd_of(s))
+
+        # A name the page put in the box (a restored draft) was never looked
+        # up: Start looks it up first rather than sending it as a new folder.
+        page.goto(f"{BASE}/")
+        page.evaluate(f"document.querySelector('#dir').value = '{EX}'")
+        page.click('form[action="/start"] button[type=submit]')
+        s = started(page)
+        ok("a name put in the box by the page starts in its folder, not a new one",
+           cwd_of(s).endswith(f"/d00/{EX}") and not os.path.isdir(f"{HOME}/{EX}"), cwd_of(s))
+        page.goto(f"{BASE}/")
+        page.evaluate("window.__dirDelay = 300; document.querySelector('#dir').value = '3d'")
+        page.click('form[action="/start"] button[type=submit]')
+        wait_rows(page, "#startform", HAS_3D)
+        ok("...and a partial one shows the list rather than starting anywhere",
+           page.url.rstrip("/") == BASE and not os.path.isdir(f"{HOME}/3d"), page.url)
+        page.evaluate("window.__dirDelay = 0")
+
+        # "." is the default directory (~ for this run), not a search for dots.
+        wait_index(".", [f"/{DOT}"])
+        page.goto(f"{BASE}/")
+        dirbox.fill(".")
+        page.wait_for_timeout(400)
+        page.click('form[action="/start"] button[type=submit]')
+        s = started(page)
+        ok('"." starts in the default directory, not a dotted folder',
+           os.path.realpath(cwd_of(s)) == os.path.realpath(HOME), cwd_of(s))
+
+        # What a script without a submit (a tool card's "start at boot") gets.
+        page.goto(f"{BASE}/")
+        page.click("#tool-fake summary")
+        tbox = page.locator("#tool-fake .dirpick input")
+        tbox.fill("3d")
+        wait_rows(page, "#tool-fake", HAS_3D)
+        tbox.press("Escape")
+        got = page.evaluate("document.querySelector('#tool-fake .dirpick input').dirValue()")
+        page.wait_for_timeout(200)
+        ok("dirValue(): a partial name with the list dismissed is null, and the list shows again",
+           got is None and list_open(page, "#tool-fake"), repr(got))
+        tbox.fill(EX)
+        wait_rows(page, "#tool-fake", f"n >= 2 && l.querySelector('li').dataset.show.endsWith('/x-{EX}')")
+        tbox.press("Escape")
+        got = page.evaluate("document.querySelector('#tool-fake .dirpick input').dirValue()")
+        ok("...and an exact one is that folder", got == f"{ROOT_SHOW}/d00/{EX}", repr(got))
 
         page.goto(f"{BASE}/")
         dirbox.fill(NEW)
@@ -435,6 +560,15 @@ def phone(p, name):
             ok("...and tapping a row picks it", dirbox.input_value() == f"{ROOT_SHOW}/kids/inner",
                dirbox.input_value())
 
+            # A name the page put in the box, then a tap on Start: looked up
+            # first, then sent as its folder.
+            wait_index(EX, [f"/d00/{EX}"])
+            page.goto(f"{BASE}/")
+            page.evaluate(f"document.querySelector('#dir').value = '{EX}'")
+            page.tap('form[action="/start"] button[type=submit]')
+            s = started(page)
+            ok("a name the page put in the box, then Start: its folder", cwd_of(s).endswith(f"/d00/{EX}"), cwd_of(s))
+
         # The folder name stays visible under a long parent.
         page.goto(f"{BASE}/")
         dirbox.tap()
@@ -535,8 +669,8 @@ with sync_playwright() as p:
     OLD_DEFAULT = m.group(1) if m else "~"
     api.post("/prefs", form={"dir": "~"})
     ROOT_SHOW, ROOT = f"~/pwdp-{TAG}", f"{HOME}/pwdp-{TAG}"
-    tmux("run-shell", f"mkdir -p {ROOT}/kids/inner {ROOT}/{LONGP}/{LEAF} "
-         + " ".join(f"{ROOT}/d{i:02d}" for i in range(12)))
+    tmux("run-shell", f"mkdir -p {ROOT}/kids/inner {ROOT}/{LONGP}/{LEAF} {ROOT}/x-{EX} {ROOT}/d00/{EX} "
+         + f"{ROOT}/{DOT} " + " ".join(f"{ROOT}/d{i:02d}" for i in range(12)))
     TAKEN = api.get("/api/sessions").json()[0]["name"]
     try:
         block("server (no folder before a session starts)", server_checks)

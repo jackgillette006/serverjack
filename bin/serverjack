@@ -2527,17 +2527,14 @@ body.fx.conn #conn{display:block}
 DIRPICK_CSS = """
 .dirpick{position:relative}
 .tool .dirpick{margin:var(--space-2) 0 0}
-.dirlist{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:6;margin:0;padding:4px;
-  list-style:none;max-height:40vh;overflow:auto;overscroll-behavior:contain;background:var(--bg-primary);
-  border:1px solid var(--border);border-radius:var(--radius-sm);
-  box-shadow:0 16px 40px rgb(0 0 0 / .45);font:13px/1.3 var(--font-mono)}
-.dirlist.up{top:auto;bottom:calc(100% + 4px)}
+/* In flow under the field, pushing what follows down rather than covering
+   it: a dropdown over the form would sit on the next field or the form's
+   own buttons (a tool card's Start is right where a row ends), and a click
+   or tap aimed at those would pick a folder instead. */
+.dirlist{margin:4px 0 0;padding:4px;list-style:none;max-height:min(30vh,220px);overflow:auto;
+  overscroll-behavior:contain;background:var(--bg-primary);
+  border:1px solid var(--border);border-radius:var(--radius-sm);font:13px/1.3 var(--font-mono)}
 .dirlist[hidden]{display:none}
-/* In flow -- pushing what follows down rather than covering it -- wherever
-   covering would steal a tap: right above a form's own button (the
-   default-dir form, the terminal's new-session panel), and on touch
-   screens everywhere, where the next field is under your finger. */
-.ddchange .dirlist,#pop .dirlist{position:static;margin-top:4px;box-shadow:none;max-height:min(30vh,220px)}
 /* One row: muted parent path, bold folder name, then the drill-in arrow.
    The parent is what gives way when the row is too narrow -- cut from its
    left end (an rtl box; the <bdi dir=ltr> inside keeps "~/" reading the
@@ -2559,13 +2556,13 @@ DIRPICK_CSS = """
 .dirlist li[aria-selected="true"] b,.dirlist li[aria-selected="true"] .rest,
 .dirlist li[aria-selected="true"] .tag,.dirlist li[aria-selected="true"] .into{color:var(--on-accent)}
 @media (pointer:coarse){
-  .dirlist{position:static;margin-top:4px;box-shadow:none;max-height:min(30vh,212px)}
+  .dirlist{max-height:min(30vh,212px)}
   .dirlist li{padding:0 0 0 12px;min-height:44px}
   .dirlist li.new{padding-right:12px}
   .dirlist li .into{align-self:stretch;display:flex;align-items:center;justify-content:center;
     width:44px;padding:0;font-size:18px;border-left:1px solid var(--border-soft)}
 }
-/* The terminal's new-session panel holds the list in flow, so it scrolls
+/* The terminal's new-session panel grows with the list in it, so it scrolls
    rather than growing off the screen -- above the keyboard too, since the
    page is sized to the visible viewport then -- and stops under the bar,
    whose + is what closes it. */
@@ -2582,11 +2579,27 @@ body.touch #pop{max-height:calc(100% - 48px - env(safe-area-inset-top))}
 DIRPICK_JS = r"""
 (function () {
   'use strict';
-  // A bare folder name -- no "/", no leading "~" -- is a search term. What
-  // it submits is a match (the highlighted one, the top one by default),
-  // never a new folder by that name: that takes the "+ New folder" row, or
-  // a typed path.
-  function isName(v) { return !!v && v.indexOf('/') < 0 && v.charAt(0) !== '~'; }
+  // A bare folder name -- no "/", no leading "~", not "." or ".." -- is a
+  // search term: what it submits is one of its matches (see pickFor()). A
+  // typed path is taken as typed.
+  function isName(v) {
+    return !!v && v !== '.' && v !== '..' && v.indexOf('/') < 0 && v.charAt(0) !== '~';
+  }
+  function leaf(show) { var s = show.replace(/\/+$/, ''); return s.slice(s.lastIndexOf('/') + 1); }
+  // The existing folders in dirs whose own name is exactly v, any case.
+  function exact(v, dirs) {
+    v = v.toLowerCase();
+    return dirs.filter(function (d) { return !d.create && leaf(d.show || d.path).toLowerCase() === v; });
+  }
+  // A press in progress (pointer down, not up yet). The list is in flow, so
+  // closing it moves everything under it: a blur's close waits for the
+  // press to end, so the button that was under the pointer when it went
+  // down is still there when the click lands.
+  var pressAt = 0;
+  document.addEventListener('pointerdown', function () { pressAt = Date.now(); }, true);
+  document.addEventListener('pointerup', function () { pressAt = 0; }, true);
+  document.addEventListener('pointercancel', function () { pressAt = 0; }, true);
+  function pressing() { return !!pressAt && Date.now() - pressAt < 2000; }
   function row(d) {
     var li = document.createElement('li');
     li.setAttribute('role', 'option');
@@ -2618,7 +2631,7 @@ DIRPICK_JS = r"""
     path.appendChild(b);
     li.appendChild(path);
     if (!d.create) {
-      var into = document.createElement('span');   // tap: show its subfolders (Tab does it from a keyboard)
+      var into = document.createElement('span');   // click/tap: show its subfolders (Tab does it from a keyboard)
       into.className = 'into';
       into.setAttribute('aria-hidden', 'true');
       li.appendChild(into);
@@ -2637,10 +2650,10 @@ DIRPICK_JS = r"""
   function wire(box) {
     var input = box.querySelector('input[name=dir]'), list = box.querySelector('.dirlist');
     if (!input || !list) return;
-    var uid = 'dp' + Math.random().toString(36).slice(2);
+    var form = input.form, uid = 'dp' + Math.random().toString(36).slice(2);
     var items = [], active = -1, kbd = -1, shown = null, hover = false;
     var seq = 0, gotSeq = 0, got = null, kept = null, qT = null, blurT = null;
-    var typed = false, moved = false, enterWait = false;
+    var typed = false, moved = false, enterWait = false, held = false, pass = false;
     var existing = box.hasAttribute('data-existing');   // a form that never creates a folder
     list.id = uid + '-list';
     input.setAttribute('aria-controls', list.id);
@@ -2652,7 +2665,6 @@ DIRPICK_JS = r"""
       clearTimeout(qT); seq++; enterWait = false;
       list.hidden = true; list.innerHTML = ''; items = []; active = kbd = -1;
       shown = null; hover = false;
-      list.classList.remove('up'); list.style.maxHeight = '';
       input.setAttribute('aria-expanded', 'false');
       input.removeAttribute('aria-activedescendant');
     }
@@ -2667,20 +2679,17 @@ DIRPICK_JS = r"""
         input.removeAttribute('aria-activedescendant');
       }
     }
+    // Scroll the list itself (never the page) so row li shows.
+    function reveal(li) {
+      var lr = list.getBoundingClientRect(), r = li.getBoundingClientRect();
+      if (r.bottom > lr.bottom) list.scrollTop += r.bottom - lr.bottom + 4;
+      else if (r.top < lr.top) list.scrollTop -= lr.top - r.top + 4;
+    }
+    // Scroll the opened list into view, but never the field out of it.
     function place() {
       var vv = window.visualViewport, top = vv ? vv.offsetTop : 0,
           bottom = top + (vv ? vv.height : window.innerHeight),
-          ir = input.getBoundingClientRect();
-      if (getComputedStyle(list).position === 'absolute') {
-        // A dropdown over the page: opens upwards when there's no room below.
-        var below = bottom - ir.bottom, above = ir.top - top,
-            up = below < 200 && above > below, room = (up ? above : below) - 12;
-        list.classList.toggle('up', up);
-        list.style.maxHeight = room < window.innerHeight * 0.4 ? Math.max(room, 96) + 'px' : '';
-        return;
-      }
-      // In flow: scroll the list into view, but never the field out of it.
-      var sc = scroller(box), lr = list.getBoundingClientRect();
+          ir = input.getBoundingClientRect(), lr = list.getBoundingClientRect(), sc = scroller(box);
       if (sc) {
         var sr = sc.getBoundingClientRect();
         top = Math.max(top, sr.top); bottom = Math.min(bottom, sr.bottom);
@@ -2698,30 +2707,43 @@ DIRPICK_JS = r"""
       list.hidden = false;
       list.scrollTop = 0;
       input.setAttribute('aria-expanded', 'true');
-      kbd = isName(q) ? 0 : -1;     // a typed name: the top match is what Enter, Go and Start take
+      // A typed name: the folder with exactly that name if there is one
+      // (the shallowest), else the top match -- what Enter, Go and Start take.
+      kbd = -1;
+      if (isName(q)) { var ex = exact(q, dirs); kbd = ex.length ? dirs.indexOf(ex[0]) : 0; }
       highlight(kbd, true);
+      if (kbd > 0) reveal(items[kbd]);
       place();
     }
     function query() { clearTimeout(qT); qT = setTimeout(run, 80); }
-    function run() {
-      if (!focused()) return;
-      var q = input.value.trim(), mine = ++seq;
+    // GET /api/dirs for q. The newest answer is kept in got (dirs [] when
+    // the lookup failed), then done(dirs) -- null for a failure.
+    function lookup(q, mine, done) {
       fetch('/api/dirs?q=' + encodeURIComponent(q), {cache: 'no-store'})
         .then(function (r) { if (!r.ok) throw 0; return r.json(); })
         .then(function (data) {
           var dirs = (data.dirs || []).slice(), c = data.create;
           if (c && !existing) dirs.push({path: c.path, show: c.show, create: true});
           if (mine > gotSeq) { gotSeq = mine; got = {q: q, dirs: dirs}; }
-          if (mine !== seq || !focused()) return;
-          var wait = enterWait;
-          open(q, dirs);
-          if (wait && active >= 0 && items[active]) take(items[active]);
-          enterWait = false;
+          return dirs;
+        }, function () {
+          if (mine > gotSeq) { gotSeq = mine; got = {q: q, dirs: []}; }   // no answer: as typed
+          return null;
         })
-        .catch(function () {
-          if (mine > gotSeq) { gotSeq = mine; got = {q: q, dirs: []}; }   // no answer: submit goes as typed
-          if (mine === seq) close();
-        });
+        .then(done);
+    }
+    function run() {
+      if (!focused()) return;
+      var q = input.value.trim(), mine = ++seq;
+      lookup(q, mine, function (dirs) {
+        if (mine !== seq) return;
+        if (!dirs) { close(); return; }
+        if (!focused()) return;
+        var wait = enterWait;
+        open(q, dirs);
+        if (wait && active >= 0 && items[active]) take(items[active]);
+        enterWait = false;
+      });
     }
     function take(li) { input.value = li.dataset.show; close(); }
     function drill(li) {
@@ -2729,6 +2751,51 @@ DIRPICK_JS = r"""
       input.value = li.dataset.show.replace(/\/+$/, '') + '/';
       typed = true; moved = false;
       query();
+    }
+    // What the folder name v in the box stands for when the form is sent:
+    // the row the list shows highlighted, or showed when you left the field
+    // -- you saw that one. With the list closed, the one folder named
+    // exactly v. A string: send that. null: that's for you to choose
+    // (several or no folders of that exact name, or just a new one).
+    // undefined: no answer for v yet.
+    function pickFor(v) {
+      if (!list.hidden && shown === v && active >= 0 && items[active]) return items[active].dataset.show;
+      if (kept && kept.q === v) return kept.show;
+      if (!got || got.q !== v) return undefined;
+      if (!got.dirs.length) return v;       // the lookup failed: as typed
+      var ex = exact(v, got.dirs);
+      return ex.length === 1 ? ex[0].show : null;
+    }
+    // Show the list for what's in the box, so you can choose.
+    function ask() {
+      var v = input.value.trim();
+      if (!focused()) input.focus();
+      if (got && got.q === v && got.dirs.length) { clearTimeout(qT); open(v, got.dirs); }
+      else query();
+    }
+    function resubmit(sub) {
+      pass = true;
+      try { form.requestSubmit(sub && sub.form === form ? sub : undefined); } finally { pass = false; }
+    }
+    // A name sent with no answer for it yet -- submitted straight after
+    // typing, or put in the box by the page rather than typed: hold the
+    // submit, look it up, then send what it stands for. A lookup slower than
+    // 3 s, or a failed one, sends it as typed.
+    function hold(e, v) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (held) return;
+      held = true;
+      var sub = e.submitter, finished = false, t = setTimeout(go, 3000);
+      function go() {
+        if (finished) return;
+        finished = true; held = false; clearTimeout(t);
+        if (input.value.trim() !== v) return;    // edited meanwhile
+        var p = pickFor(v);
+        if (p === null) { ask(); return; }
+        if (p) input.value = p;
+        resubmit(sub);
+      }
+      lookup(v, ++seq, go);
     }
 
     input.addEventListener('focus', function () {
@@ -2757,10 +2824,10 @@ DIRPICK_JS = r"""
           take(items[active]);
         } else if (isName(v) && !(got && got.q === v)) {
           // A name the list hasn't caught up with yet (Go pressed right
-          // after typing): take its top match as soon as the answer lands.
+          // after typing): take its match as soon as the answer lands.
           e.preventDefault();
           enterWait = true; clearTimeout(qT); run();
-        }   // else the form submits -- a name still goes as its match (see submit below)
+        }   // else the form submits -- a name still goes as what it stands for (pickFor)
       } else if (k === 'Tab') {
         // Completes only what you typed or arrowed to: an untouched field,
         // and Shift+Tab always, let focus move on.
@@ -2795,30 +2862,47 @@ DIRPICK_JS = r"""
     list.addEventListener('pointerleave', function () {
       if (hover) { hover = false; highlight(kbd, true); }
     });
+    // Leaving the field closes the list after a beat (a click on a row still
+    // lands) and never mid-press. What it showed highlighted is kept for a
+    // submit that follows (pickFor).
     input.addEventListener('blur', function () {
-      blurT = setTimeout(function () {
+      clearTimeout(blurT);
+      blurT = setTimeout(function later() {
+        if (pressing()) { blurT = setTimeout(later, 40); return; }
         kept = (!list.hidden && shown && active >= 0 && items[active])
           ? {q: shown, show: items[active].dataset.show} : null;
         close();
       }, 150);
     });
     // Submitting -- Start, Save, Start & open, or Enter/Go with no list up --
-    // with a folder name still in the box sends the match it stands for,
-    // the one Enter would have taken. Capture phase on document, so this
-    // runs before the form's own handlers (the terminal panel's fetch). With
-    // no answer yet (a slow network) the text goes as typed.
+    // with a folder name in the box sends what it stands for (pickFor), or
+    // stops and shows the list when that's for you to choose. Capture phase
+    // on document, so this runs before the form's own handlers (the
+    // terminal panel's fetch, a confirm) and a dropped submit never reaches
+    // them.
     document.addEventListener('submit', function (e) {
-      if (e.target !== input.form) return;
-      var v = input.value.trim(), pick = null;
-      if (isName(v)) {
-        if (!list.hidden && shown === v && active >= 0 && items[active]) pick = items[active].dataset.show;
-        else if (kept && kept.q === v) pick = kept.show;
-        else if (got && got.q === v && got.dirs.length) pick = got.dirs[0].show;
-        if (pick) input.value = pick;
+      if (!form || e.target !== form) return;
+      var v = input.value.trim();
+      if (!pass && isName(v)) {
+        var p = pickFor(v);
+        if (p === undefined && form.requestSubmit && 'submitter' in e) { hold(e, v); return; }
+        if (p === null) { e.preventDefault(); e.stopImmediatePropagation(); ask(); return; }
+        if (p) input.value = p;
       }
       kept = null;
       close();
     }, true);
+    // For a script that sends the field's value without a submit (a tool
+    // card's "start at boot" box): the value to send, or null when a folder
+    // name still has to be chosen -- the list is shown for that.
+    input.dirValue = function () {
+      var v = input.value.trim();
+      if (!isName(v)) return v;
+      var p = pickFor(v);
+      if (typeof p === 'string') return p;
+      ask();
+      return null;
+    };
   }
   Array.prototype.forEach.call(document.querySelectorAll('.dirpick'), wire);
 })();
@@ -3082,7 +3166,7 @@ details.tool[open] .chev{transform:rotate(180deg)}
 .orow .olabel{font:600 13px/18px var(--font-mono)}
 .orow .onote{margin:2px 0 0;color:var(--text-secondary);font:400 12px/17px var(--font-ui)}
 .orow .ob{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;flex:none}
-.orow .hint{flex:1 1 100%}
+.orow .ol .hint{margin-top:var(--space-2)}
 .orow.end{justify-content:flex-end}
 @media (max-width:560px){
   .orow{flex-direction:column;align-items:stretch}
@@ -3108,9 +3192,14 @@ details.tool[open] .chev{transform:rotate(180deg)}
 .pill::before,.state b::before{flex:none}
 .state .pill{max-width:100%;min-width:0;white-space:nowrap}
 .state .pill .pl{min-width:0;overflow:hidden;text-overflow:ellipsis}
-/* an agent card's directory picker sits in the option row that uses it */
+/* an agent card's directory picker sits in the option row that uses it, and
+   that row's buttons on the field's own line: the list opens in flow under
+   the field, so nothing beside it moves as it opens, grows or shrinks (on a
+   phone the buttons go under the field, list and all) */
 .orow .odir{margin-top:var(--space-2)}
-.orow:has(.odir) .ob{align-self:flex-end}
+.orow .dline{display:flex;align-items:baseline;gap:var(--space-2)}
+.orow .dline .dirpick{flex:1 1 auto;min-width:0}
+@media (max-width:560px){.orow .dline{flex-direction:column;align-items:stretch}}
 .seg .hint{flex:1 1 100%}
 .seg .hint a{color:var(--text-secondary)}
 /* "start at boot" -- a checkbox in the option row that posts on change */
@@ -3221,7 +3310,10 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     if (cb.dataset.picker && cb.form.elements.dir) {{
       var card = cb.closest('details.tool');
       var input = card && card.querySelector('.dirpick input[name=dir]');
-      cb.form.elements.dir.value = (input && input.value.trim()) || '';
+      // A folder name means what Start would use (DIRPICK_JS); null: pick one first.
+      var v = !input ? '' : input.dirValue ? input.dirValue() : input.value.trim();
+      if (v === null) {{ cb.checked = !cb.checked; return; }}
+      cb.form.elements.dir.value = v;
     }}
     cb.form.submit();
   }});
@@ -3973,10 +4065,12 @@ def dir_picker(value="", input_id=None, label="Directory", create=True):
     -- the placeholder names it, e.g. "~/projects · folder name or path", so
     an empty box always shows where it will actually land. A folder name is
     a search: Enter, Go or the form's own submit button take the highlighted
-    (by default the top) match, never a new folder by that name. A new folder
-    is made only on purpose -- the list's "+ New folder" row, or a typed path
-    (anything with a "/" or a leading "~") -- and only when a session
-    actually starts in it. label is the input's accessible name (aria-label),
+    row (the folder of exactly that name, else the top match); with the list
+    closed, only an exact name with one folder is used unseen, anything else
+    shows the list again (see pickFor() in DIRPICK_JS). A new folder comes
+    from the list's "+ New folder" row or a typed path (anything with a "/"
+    or a leading "~", or "."), and is made only when a session actually
+    starts in it. label is the input's accessible name (aria-label),
     the same word a visible <label for=input_id> shows where there is one.
     create=False is for forms that only take a folder that already exists
     (the default directory, a shortcut): no "+ New folder" row there."""
@@ -4005,14 +4099,16 @@ CONFIRM = ' data-confirm="Stop {}?"'
 
 def orow(label, note_text, buttons, hint="", cls="", extra=""):
     """One option row: what it is + the one-line difference, then the button.
-    extra: more of the left column under the note (the directory picker)."""
+    extra: more of the left column under the note (the directory picker,
+    which then holds the row's buttons itself: buttons is ""). hint: a last
+    line of the left column, under the picker too."""
     left = ""
-    if label or note_text or extra:
+    if label or note_text or extra or hint:
         left = ('<div class="ol"><div class="olabel">' + label + "</div>"
                 + (f'<p class="onote">{note_text}</p>' if note_text else "")
-                + extra + "</div>")
-    return (f'<div class="orow{cls}">' + left + '<div class="ob">' + buttons + "</div>"
-            + (f'<span class="hint">{hint}</span>' if hint else "") + "</div>")
+                + extra + (f'<p class="hint">{hint}</p>' if hint else "") + "</div>")
+    return (f'<div class="orow{cls}">' + left
+            + (f'<div class="ob">{buttons}</div>' if buttons else "") + "</div>")
 
 
 def summary_pill(label, word, cls="", title=""):
@@ -4082,14 +4178,24 @@ def tool_card(t, st, open_=False):
     dform = f"d-{esc(tid)}"
     placed = []
 
-    def picker_here():
-        """The labelled picker, the first time a row asks for it."""
+    def picker_here(buttons):
+        """The labelled picker, the first time a row asks for it ("" after
+        that), with that row's buttons on the field's own line."""
         if placed:
             return ""
         placed.append(1)
-        return (f'<div class="odir"><label for="dp-{esc(tid)}">Directory</label>'
+        return (f'<div class="odir"><label for="dp-{esc(tid)}">Directory</label><div class="dline">'
                 + dir_picker(input_id=f"dp-{tid}").replace("<input ", f'<input form="{dform}" ', 1)
-                + "</div>")
+                + f'<div class="ob">{buttons}</div></div></div>')
+
+    def picker_row(label, note_text, buttons, hint=""):
+        """A row whose buttons read the directory. The first one holds the
+        picker, and its buttons sit beside the field rather than beside the
+        row: the list opens in flow under the field, so a button level with
+        the list's bottom moved every time it opened or changed length, and
+        a click aimed where Start had been met empty space."""
+        pk = picker_here(buttons)
+        return orow(label, note_text, "" if pk else buttons, hint=hint, extra=pk)
 
     def dir_button(route, word):
         return (f'<button class="btn sm sec" type="submit" form="{dform}" name="do" '
@@ -4149,8 +4255,8 @@ def tool_card(t, st, open_=False):
         for i, a in enumerate(actions):
             label = esc(a.get("label") or a.get("cmd", ""))
             if a.get("dir"):
-                rows.append(orow(label, esc(a.get("note", "")),
-                                 dir_button(f"/tools/action:{i}", "Open"), extra=picker_here()))
+                rows.append(picker_row(label, esc(a.get("note", "")),
+                                       dir_button(f"/tools/action:{i}", "Open")))
             else:
                 rows.append(orow(label, esc(a.get("note", "")),
                                  '<button class="btn sm sec" type="submit" name="do" '
@@ -4195,8 +4301,8 @@ def tool_card(t, st, open_=False):
                 else:
                     btns, why = abox, "Set to start at boot, but the directory is gone. Untick to forget it."
                 rows.append(orow(f'{esc(label)} &middot; <code>{esc(_dir_show(d))}</code>', why, btns))
-            rows.append(orow(f"Start {esc(label)}", esc(server.get("note", "")),
-                             dir_button("/tools/server", "Start"), extra=picker_here()))
+            rows.append(picker_row(f"Start {esc(label)}", esc(server.get("note", "")),
+                                   dir_button("/tools/server", "Start")))
         elif server:
             # One server at a time, so at most one "start at boot" entry, in
             # whichever directory it was ticked: the box shows that entry.
@@ -4230,10 +4336,9 @@ def tool_card(t, st, open_=False):
                 if sstate == "exited":
                     btns += f'<a class="btn sm sec" href="{esc(term_href(st["server_session"]))}">Open</a>'
                 btns += dir_button("/tools/server", "Start")
-                rows.append(orow(esc(label), esc(server.get("note", "")) + on_boot, btns,
-                                 hint=("It exited; Open shows why. Start replaces it."
-                                       if sstate == "exited" else ""),
-                                 extra=picker_here()))
+                rows.append(picker_row(esc(label), esc(server.get("note", "")) + on_boot, btns,
+                                       hint=("It exited; Open shows why. Start replaces it."
+                                             if sstate == "exited" else "")))
 
         if daemon:
             label = daemon.get("label") or "daemon"

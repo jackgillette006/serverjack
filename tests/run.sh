@@ -190,7 +190,8 @@ chmod +x "$TOOLPATH_DIR/pathfake"
 cat > "$CFG/tools.json" <<JSON
 [{"id": "fake", "label": "Fake tool", "bin": "true", "login": "echo LOGIN_RAN",
   "login_check": "true", "run": "bash",
-  "actions": [{"label": "hello", "cmd": "echo ACTION_RAN"}]},
+  "actions": [{"label": "hello", "cmd": "echo ACTION_RAN"},
+              {"label": "here", "cmd": "echo HERE_RAN", "dir": true}]},
  {"id": "fake2", "label": "Fake two", "bin": "true", "run": "bash"},
  {"id": "pathfake", "label": "Path fixture", "bin": "pathfake", "run": "pathfake",
   "paths": ["$TOOLPATH_DIR"]}]
