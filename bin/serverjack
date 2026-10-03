@@ -4855,10 +4855,39 @@ APP_JS = r"""
     sendKey(ch, { ctrl: true }); return true;
   }
 
+  // ttyd's xterm.js Terminal (window.term in the frame), or null
+  function xterm() { try { return frame.contentWindow.term || null; } catch (e) { return null; } }
+  function clearSel() { var t = xterm(); try { if (t && t.hasSelection()) t.clearSelection(); } catch (e) {} }
+  // Copy the terminal's selection, as Ctrl+C and Ctrl+Shift+C do; false when
+  // nothing was selected (xterm's copy handler only acts on a selection). The
+  // selection goes once it is copied, as in Windows Terminal: it used to stay,
+  // so every later Ctrl+C copied it again and none of them interrupted.
+  function copySelection(d) {
+    var copied = false;
+    function seen(ev) { copied = ev.defaultPrevented; }
+    d.addEventListener('copy', seen);
+    try { d.execCommand('copy'); } catch (_) {}
+    d.removeEventListener('copy', seen);
+    if (copied) clearSel();
+    return copied;
+  }
+
   // ---- inside the frame: clipboard shortcuts + Ctrl-armed soft keys
   var ctrlArmed = false, swallowInput = false;
   function hook() {
     var d = tdoc(); if (!d || d.__sj) return; d.__sj = true;
+    // Copies lose the padding tmux draws: in copy mode it writes real spaces
+    // to the end of every row, and xterm copied them (lines 160 wide). This
+    // runs after xterm's own copy handler (bubble phase) and only when xterm
+    // has a selection, so copySelection() still tells a copy from a ^C.
+    d.addEventListener('copy', function (e) {
+      var t = xterm();
+      try {
+        if (!t || !t.hasSelection() || !e.clipboardData) return;
+        e.clipboardData.setData('text/plain', t.getSelection().replace(/[ \t]+(\r?)$/gm, '$1'));
+        e.preventDefault();
+      } catch (_) {}
+    });
     d.addEventListener('keydown', function (e) {
       if (!e.isTrusted) return;
       // The screen-text view covers the terminal: nothing typed may reach it
@@ -4877,18 +4906,20 @@ APP_JS = r"""
         swallowInput = true; setTimeout(function () { swallowInput = false; }, 0);
         return;
       }
-      if (isMac || !e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
-      // Windows/Linux: xterm.js only offers Ctrl+Shift+C/V. Make Ctrl+V paste
-      // (stop xterm seeing it, so the browser's native paste fires xterm's
-      // paste handler) and Ctrl+C copy when there is a selection, else SIGINT.
-      if (e.key === 'v' || e.key === 'V') { e.stopPropagation(); return; }
-      if (e.key === 'c' || e.key === 'C') {
-        var copied = false;
-        function seen(ev) { copied = ev.defaultPrevented; }   // xterm preventDefaults only when it copied a selection
-        d.addEventListener('copy', seen);
-        try { d.execCommand('copy'); } catch (_) {}
-        d.removeEventListener('copy', seen);
-        if (copied) { e.preventDefault(); e.stopPropagation(); }
+      // Windows/Linux. xterm.js has no copy or paste keys of its own (Ctrl+Shift+V
+      // is the browser's paste-as-plain-text). Ctrl+V pastes: stop xterm seeing
+      // it, so the browser's native paste fires xterm's paste handler. Ctrl+C
+      // copies when there is a selection, else goes on as ^C (SIGINT).
+      // Ctrl+Shift+C, the Windows Terminal / Linux terminal copy, copies too,
+      // and is always kept from the browser, whose own Ctrl+Shift+C opens the
+      // DevTools element picker.
+      if (!isMac && e.ctrlKey && !e.altKey && !e.metaKey) {
+        var k = (e.key || '').toLowerCase();
+        if (e.shiftKey && (k === 'c' || e.code === 'KeyC')) {
+          copySelection(d); e.preventDefault(); e.stopPropagation(); return;
+        }
+        if (!e.shiftKey && k === 'v') { e.stopPropagation(); return; }
+        if (!e.shiftKey && k === 'c' && copySelection(d)) { e.preventDefault(); e.stopPropagation(); return; }
       }
     }, true);
     // WebKit also fires keypress for Ctrl+V; xterm would turn it into ^V.
@@ -4906,11 +4937,17 @@ APP_JS = r"""
   // Feed text to the terminal exactly as a paste (xterm applies bracketed
   // paste when the app asked for it, so multi-line text is safe).
   function sendText(text) {
-    var ta = textarea(), w = frame.contentWindow; if (!ta || !text) return false;
+    if (!text) return false;
+    var ta = textarea(), w = frame.contentWindow, t = xterm(); if (!ta) return false;
+    // xterm's own paste(): brackets and newline handling included. The event
+    // route below is for a ttyd without window.term.
+    try { if (t && typeof t.paste === 'function') { t.paste(text); return true; } } catch (e) {}
     try {
       var dt = new w.DataTransfer(); dt.setData('text/plain', text);
       var ev = new w.ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
-      if (!ev.clipboardData) throw new Error('no clipboardData');
+      // Firefox ignores clipboardData here and hands xterm an empty one, which
+      // pasted nothing at all (an empty bracketed paste)
+      if (!ev.clipboardData || ev.clipboardData.getData('text/plain') !== text) throw new Error('no clipboardData');
       ta.dispatchEvent(ev); return true;
     } catch (e) {
       // Older WebKit: InputEvent path (no bracketed paste, but text arrives)
@@ -5117,7 +5154,8 @@ APP_JS = r"""
     if (!navigator.clipboard || !navigator.clipboard.readText) { pasteHint(); focusTerm(); return; }
     navigator.clipboard.readText().then(function (t) {
       if (!t) { flash(btn, 'empty'); return; }
-      sendText(t); focusTerm();
+      if (!sendText(t)) pasteHint();
+      focusTerm();
     }).catch(function () { pasteHint(); focusTerm(); });
   }
   tapButton(document.getElementById('paste'), doPaste, { click: true });

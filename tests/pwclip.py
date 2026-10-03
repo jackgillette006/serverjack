@@ -15,9 +15,9 @@ def ok(label, cond, extra="", known=False):
     tag = "  PASS " if cond else ("  KNOWN " if known else "  FAIL ")
     print(tag + label + (("  -- " + extra) if extra and not cond else ""))
 
-# Linux WebKit (the Playwright build; Epiphany-style) does not wire Ctrl+C to
-# the system clipboard, so the copy checks fail there while Mac and iOS use
-# Cmd. Report them, but do not let them fail the suite.
+# Playwright's WebKit (on Linux) reports a Mac user agent, so the page takes
+# the Mac path there -- Cmd copies, Ctrl+C always interrupts -- and the
+# Ctrl+C copy checks fail. Report them, but do not let them fail the suite.
 LINUX_WEBKIT = sys.platform.startswith("linux")
 
 with sync_playwright() as p:
@@ -42,7 +42,8 @@ with sync_playwright() as p:
         page.mouse.click(box["x"] + 100, y, click_count=3, delay=75); time.sleep(0.3)
         page.keyboard.press("Control+c"); time.sleep(0.6)
         ok("Ctrl+C with selection does not interrupt", cmd() == "sleep", cmd(), known=(bt == "webkit" and LINUX_WEBKIT))
-        page.mouse.click(box["x"] + 400, box["y"] + 300); time.sleep(0.2)     # clear selection
+        # The copy dropped the selection, so the next Ctrl+C interrupts with
+        # no click in between (it used to copy again, and again).
         page.keyboard.press("Control+c"); time.sleep(0.6)
         ok("Ctrl+C without selection interrupts", cmd() != "sleep", cmd())
         page.keyboard.type("echo PASTE:"); page.keyboard.press("Control+v"); time.sleep(0.5); page.keyboard.press("Enter"); time.sleep(0.8)
