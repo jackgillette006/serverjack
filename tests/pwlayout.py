@@ -192,7 +192,7 @@ with sync_playwright() as p:
            and lr["nmText"] == longname, str(lr))
         ok(f"{w}px: every row's meta starts with the short facts (attached, windows, age)",
            rows and all(r["factsLeft"] <= 1
-                        and re.match(r"(attached · )?(\d+ windows · )?up (<1m|\d+[mhd])$", r["facts"])
+                        and re.match(r"(attached( on \d+ screens)? · )?(\d+ windows · )?up (<1m|\d+[mhd])$", r["facts"])
                         for r in rows),
            str([(r["n"], r["facts"], r["factsLeft"]) for r in rows]))
         if w >= 390:

@@ -364,6 +364,9 @@ try:
         for _ in range(2):
             page.evaluate("document.getElementById('frame').contentDocument.activeElement.blur(); document.activeElement.blur()")
             before = page.evaluate(KEYSTATE)
+            if not page.locator("#copy").is_visible():
+                flips.append("the key row went away")
+                break
             page.tap("#copy"); time.sleep(0.5)
             page.tap("#screen-close"); time.sleep(0.6)
             after = page.evaluate(KEYSTATE)
@@ -421,6 +424,7 @@ try:
         ok("tap on Paste with no clipboard access shows the long-press hint",
            "on" in (page.get_attribute("#hint", "class") or "") and "Long-press" in page.inner_text("#hint"),
            page.inner_text("#hint"))
+
         b.close()
 
         b = p.webkit.launch()
