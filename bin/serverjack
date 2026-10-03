@@ -2040,8 +2040,8 @@ def _dir_search_path(q):
         parent, partial = HOME, ""
     else:
         expanded = _expand_home(q)
-        if not os.path.isabs(expanded):
-            expanded = os.path.join(HOME, expanded)
+        if not os.path.isabs(expanded):     # relative: against the default dir, as resolve_dir() does
+            expanded = os.path.join(default_dir(), expanded)
         parent, partial = os.path.split(expanded)
         parent = parent or "/"
     partial = partial.lower()
@@ -2093,8 +2093,24 @@ def _dir_show(path):
     return path.replace(HOME, "~", 1) if path == HOME or path.startswith(HOME + os.sep) else path
 
 
+def _dir_create(q):
+    """The folder submitting q as typed would create -- resolve_dir()'s own
+    answer, so the two can't disagree -- or None when that folder already
+    exists, q is empty, or q names something that isn't a directory. The
+    picker offers it as an explicit "+ New folder" row, so a new folder is a
+    choice you can see rather than a side effect of a search term."""
+    if not q.strip():
+        return None
+    d, err = resolve_dir(q)
+    if err or os.path.isdir(d):
+        return None
+    return {"path": d, "show": _dir_show(d)}
+
+
 def dir_search(q):
-    """Body of GET /api/dirs?q=. Returns (http_status, json_obj)."""
+    """Body of GET /api/dirs?q=. Returns (http_status, json_obj): "dirs",
+    the existing matches, and "create", the new folder a submit of q would
+    make (see _dir_create()), present only when there is one."""
     if len(q) > 512:
         return 400, {"error": "query too long"}
     if not q:
@@ -2103,8 +2119,12 @@ def dir_search(q):
         dirs, truncated = _dir_search_path(q)
     else:
         dirs, truncated = _dir_search_name(q)
-    return 200, {"q": q, "dirs": [{"path": p, "show": _dir_show(p)} for p in dirs],
-                 "truncated": truncated}
+    out = {"q": q, "dirs": [{"path": p, "show": _dir_show(p)} for p in dirs],
+           "truncated": truncated}
+    create = _dir_create(q)
+    if create:
+        out["create"] = create
+    return 200, out
 
 
 def system_stats():
