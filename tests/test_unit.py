@@ -2736,6 +2736,14 @@ class TerminalPageTests(unittest.TestCase):
         self.assertNotIn("list[0]", mod.APP_JS)
         self.assertIn("'/?ended='", mod.APP_JS)
 
+    def test_touch_ui_follows_the_primary_pointer(self):
+        # A touchscreen laptop exposes touch events but drives with a mouse:
+        # 'ontouchstart' alone must not switch either page to the phone UI.
+        landing = mod.PAGE
+        for src in (mod.APP_JS, landing):
+            self.assertNotIn("|| 'ontouchstart' in window;", src)
+            self.assertIn("('ontouchstart' in window && matchMedia('(hover: none)').matches)", src)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
