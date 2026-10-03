@@ -402,7 +402,7 @@ for a in "${explicit_args[@]}"; do
   esac
 done
 [[ ${#suites[@]} -eq 0 && ${#explicit_args[@]} -eq 0 ]] \
-  && suites=(pwtest pwclip pwmobile pwinput pwpop pwland pwlayout pwauth pwwin pwagents pwdirpick pwflows pwchrome)
+  && suites=(pwtest pwclip pwmobile pwinput pwpop pwland pwlayout pwauth pwwin pwagents pwdirpick pwflows pwchrome pwtmux)
 for suite in "${suites[@]}"; do
   [[ $suite =~ ^[a-zA-Z0-9_-]+$ && -f $suite.py ]] \
     || { echo "unknown test suite: $suite" >&2; exit 2; }
