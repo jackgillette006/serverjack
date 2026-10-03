@@ -44,8 +44,9 @@ Routes
     GET  /                     the landing page; ?done=<what>&n=<name> shows a
                                one-shot note after an in-place action,
                                ?edit_sc=<id> opens a shortcut in the editor
-    POST /                     303 to GET / (WebKit reloads an error page whose
-                               URL the page script reset as a POST to "/")
+    POST /                     303 to GET /, same query (WebKit reloads an error
+                               page whose URL the page script reset as a POST
+                               to it)
     GET  /s/<name>             the terminal wrapper for one session
     GET  /app.js               the wrapper's script
     GET  /manifest.webmanifest, /icon.svg, /icon-180.png     PWA bits
@@ -1733,7 +1734,10 @@ def clean_cmd(cmd):
 def load_shortcuts():
     """The saved shortcuts. Commands are cleaned on the way in, so one saved
     with CRLF line endings before clean_cmd() existed runs correctly too
-    (shortcuts.json itself is rewritten the next time anything is saved)."""
+    (shortcuts.json itself is rewritten the next time anything is saved).
+    The file is documented and hand-edited, so an id, label or dir written
+    as a number is read as text: the page links to /?edit_sc=<id> and
+    compares ids with the form's strings."""
     try:
         with open(SHORTCUTS_FILE) as f:
             data = json.load(f)
@@ -1742,6 +1746,9 @@ def load_shortcuts():
         return []
     for x in items:
         x["cmd"] = clean_cmd(str(x["cmd"]))
+        for k in ("id", "label", "dir"):
+            if x.get(k) is not None and not isinstance(x[k], str):
+                x[k] = str(x[k])
     return [x for x in items if x["cmd"]]
 
 
@@ -3500,11 +3507,14 @@ START_CARD = """<h2>Start a session</h2>
   </form>
 </details></div>"""
 
-# The landing page's form flows, loaded after the page's own script (menus,
-# copy buttons, the Start card's Shell/agent switch) and DIRPICK_JS. All of it
-# is an enhancement: with scripts off every form still posts and redirects.
+# The landing page's form flows, loaded LAST: after the page's own script
+# (menus, copy buttons, the Start card's Shell/agent switch, and the confirm()
+# listener whose cancel this checks for) and DIRPICK_JS. All of it is an
+# enhancement: with scripts off every form still posts and redirects.
 #  - The address bar: an error page is the answer to a POST, and ?done= notes
-#    are one-shot, so the history entry becomes a plain GET of "/".
+#    are one-shot, so the history entry becomes a plain GET of "/". The one
+#    piece of view state kept is ?edit_sc= (the shortcut editor is open), so
+#    a reload keeps the editor and its Cancel link is a real navigation.
 #  - Notes (?done=) and card errors move next to the card they are about.
 #  - The Start card's typed fields survive the page's OTHER forms (change the
 #    default directory, a shortcut, start at boot, ...): stashed in
@@ -3521,7 +3531,11 @@ FLOWS_JS = r"""
 
   if (history.replaceState) {
     var q = new URLSearchParams(location.search);
-    ['done', 'n', 'open', 'k', 'edit_sc', 'dir_note'].forEach(function (k) { q.delete(k); });
+    ['done', 'n', 'open', 'k', 'dir_note'].forEach(function (k) { q.delete(k); });
+    // The editor's state is the page's, whatever the URL said: an edit that
+    // came back with an error keeps it, a shortcut that is gone drops it.
+    var ed = document.querySelector('#addsc input[name=id]');
+    if (ed) q.set('edit_sc', ed.value); else q.delete('edit_sc');
     var url = '/' + (q.toString() ? '?' + q.toString() : '') + location.hash;
     if (url !== location.pathname + location.search + location.hash) history.replaceState(null, '', url);
   }
@@ -5550,10 +5564,13 @@ class Handler(BaseHTTPRequestHandler):
         # the page script swaps that entry's URL for "/" (Back and reload must
         # never re-run an action). WebKit then reloads it as a POST to "/" --
         # the same method and body, only the URL changed -- so answer that
-        # with the page itself, by redirect. (After form(): the body must be
-        # read off a keep-alive connection either way.)
+        # with the page itself, by redirect, keeping the query: an edit of a
+        # shortcut that was refused sits at "/?edit_sc=<id>", and its reload
+        # should still be the editor. (After form(): the body must be read off
+        # a keep-alive connection either way.)
         if path == "/":
-            return self.redirect("/")
+            query = urlparse(self.path).query
+            return self.redirect("/" + (f"?{query}" if query else ""))
 
         # An agent card is one form with several submit buttons, so the button
         # carries the route it wants ("/tools/action:0" -> /tools/action, i=0).
@@ -5625,10 +5642,11 @@ class Handler(BaseHTTPRequestHandler):
             cmd = clean_cmd(f.get("cmd"))
             sid = f.get("id", "")
 
-            def sc_fail(msg, status=400):         # the whole form comes back, directory included
+            def sc_fail(msg, status=400, editing=True):   # the whole form comes back, directory included
                 return self.send_html(render(msg, sc_label=f.get("label", ""), sc_cmd=cmd,
                                              sc_dir=f.get("dir_custom") or f.get("dir", ""),
-                                             sc_id=sid, addsc_open=True, error_at="addsc"), status)
+                                             sc_id=sid if editing else "", addsc_open=True,
+                                             error_at="addsc"), status)
             if not cmd:
                 return sc_fail("A shortcut needs a command.")
             cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"), must_exist=True)
@@ -5637,7 +5655,11 @@ class Handler(BaseHTTPRequestHandler):
             if sid:
                 label, err = update_shortcut(sid, f.get("label", ""), cmd, cwd)
                 if err:
-                    return sc_fail(err, 404)
+                    # Removed meanwhile (another tab, a hand edit): what was
+                    # typed comes back as a new shortcut, not as an edit that
+                    # would 404 again on every retry.
+                    return sc_fail(err + " Save it again to add it as a new one.", 404,
+                                   editing=False)
                 return self.redirect(done_url("sc-updated", label))
             label = add_shortcut(f.get("label", ""), cmd, cwd)
             return self.redirect(done_url("sc-saved", label))

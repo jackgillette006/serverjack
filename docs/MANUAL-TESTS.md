@@ -88,7 +88,7 @@ Report PASS/FAIL per step, the browser and its version.
 1. In the Start card's command box, enter `df -h /`, open "Save as a shortcut", give it a name (the *Keep this command* box ticks itself), Start.
 2. Go back to the list: the shortcut appears in the Shortcuts section. Tap Run: it runs in a new session named after the shortcut and leaves you at a prompt.
 3. `cat ~/.config/serverjack/shortcuts.json` in a terminal shows it.
-4. Tap the pencil on its row: the shortcut form opens filled in. Change the command, Save changes: the page comes back at Shortcuts saying "Updated shortcut", the row shows the new command, and there is still only one of it.
+4. Tap the pencil on its row: the shortcut form opens filled in. Tap Cancel: the form goes back to "Add a shortcut", closed. Tap the pencil again, change the command, Save changes: the page comes back at Shortcuts saying "Updated shortcut", the row shows the new command, and there is still only one of it.
 5. Delete the shortcut from the page. It disappears from the list and from the JSON file, and the page says so under the Shortcuts heading.
 
 ## Agents accordion (any device)

@@ -257,7 +257,8 @@ shortcut a name, or tick *Keep this command in Shortcuts*, and the command
 becomes a one-tap button in the Shortcuts list for next time. Running it opens
 a session named after the shortcut ("Disk usage" runs as `disk-usage`, then
 `disk-usage-2`). The pencil on a shortcut's row opens it in the shortcut form
-to change its name, command or directory; it keeps its place in the list.
+to change its name, command or directory; it keeps its place in the list, and
+*Cancel* leaves it as it was.
 Shortcuts live in `~/.config/serverjack/shortcuts.json`. **Add a shortcut**
 (and the default directory) only take a folder that already exists — a typo
 there is an error, not a new empty folder.
