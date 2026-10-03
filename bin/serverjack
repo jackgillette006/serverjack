@@ -41,7 +41,11 @@ session has more than one tmux window the active tab carries a "2/3" badge and
 tapping it opens a window list.
 
 Routes
-    GET  /                     the landing page
+    GET  /                     the landing page; ?done=<what>&n=<name> shows a
+                               one-shot note after an in-place action,
+                               ?edit_sc=<id> opens a shortcut in the editor
+    POST /                     303 to GET / (WebKit reloads an error page whose
+                               URL the page script reset as a POST to "/")
     GET  /s/<name>             the terminal wrapper for one session
     GET  /app.js               the wrapper's script
     GET  /manifest.webmanifest, /icon.svg, /icon-180.png     PWA bits
@@ -62,7 +66,7 @@ Routes
     POST /api/window           select a tmux window
     POST /run                  legacy alias for /start's "shell + command"
                                case, kept working for anything still using it
-    POST /shortcuts/add, /shortcuts/del, /shortcuts/run
+    POST /shortcuts/add (with id=: save an edit), /shortcuts/del, /shortcuts/run
     POST /prefs                the Start card's "change" default-directory form
     POST /tools (dispatches to /tools/install, /tools/login, /tools/open,
          /tools/action, /tools/server, /tools/daemon, /tools/autostart)
@@ -1716,25 +1720,74 @@ def save_private_json(path, items):
             pass
 
 
+def clean_cmd(cmd):
+    """A typed command line, ready to run. Browsers submit every newline in a
+    <textarea> as CRLF (the urlencoded form serializer does that on every
+    engine), and bash splits words on newlines only -- so each line but the
+    last ran with a stray "\\r" glued to its last word ("cd: $'projects\\r':
+    No such file or directory"). A lone CR becomes a newline too rather than
+    vanishing, or two old-Mac-style lines would run as one."""
+    return (cmd or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
 def load_shortcuts():
+    """The saved shortcuts. Commands are cleaned on the way in, so one saved
+    with CRLF line endings before clean_cmd() existed runs correctly too
+    (shortcuts.json itself is rewritten the next time anything is saved)."""
     try:
         with open(SHORTCUTS_FILE) as f:
             data = json.load(f)
-        return [x for x in data if isinstance(x, dict) and x.get("id") and x.get("cmd")]
+        items = [x for x in data if isinstance(x, dict) and x.get("id") and x.get("cmd")]
     except (OSError, ValueError):
         return []
+    for x in items:
+        x["cmd"] = clean_cmd(str(x["cmd"]))
+    return [x for x in items if x["cmd"]]
 
 
 def save_shortcuts(items):
     save_private_json(SHORTCUTS_FILE, items)
 
 
+def _shortcut_label(label, cmd):
+    """The label as stored: what was typed, else the command's first word."""
+    return ((label or "").strip() or cmd.split()[0])[:60]
+
+
 def add_shortcut(label, cmd, cwd):
-    label = label.strip() or cmd.strip().split()[0]
+    """Append one shortcut. Returns the label it was saved under."""
+    cmd = clean_cmd(cmd)
+    label = _shortcut_label(label, cmd)
     items = load_shortcuts()
     sid = f"{int(time.time())}-{len(items)}"
-    items.append({"id": sid, "label": label[:60], "cmd": cmd.strip(), "dir": cwd})
+    items.append({"id": sid, "label": label, "cmd": cmd, "dir": cwd})
     save_shortcuts(items)
+    return label
+
+
+def update_shortcut(sid, label, cmd, cwd):
+    """Edit one shortcut in place: same id, same position in the list.
+    Returns (label, None), or (None, error) for an id that isn't a saved
+    shortcut -- including the built-in Update row, which can't be edited."""
+    cmd = clean_cmd(cmd)
+    items = load_shortcuts()
+    for x in items:
+        if x["id"] == sid and sid != UPDATE_ID:
+            x.update(label=_shortcut_label(label, cmd), cmd=cmd, dir=cwd)
+            save_shortcuts(items)
+            return x["label"], None
+    return None, "That shortcut no longer exists."
+
+
+def shortcut_session_name(sc, cwd):
+    """A shortcut run is named after the shortcut ("Disk usage" -> disk-usage,
+    then disk-usage-2), not its command's first word: two shortcuts that both
+    start with `cd` or `docker` would otherwise share one name family, and the
+    tab strip would never say which shortcut a session came from. A label
+    with nothing usable in it (all punctuation or emoji) falls back to the
+    command, as a Start with no name does."""
+    base = re.sub(r"[^a-z0-9_-]+", "-", (sc.get("label") or "").lower()).strip("-")[:60]
+    return auto_name(base) if base else default_session_name("shell", cwd, sc["cmd"])
 
 
 # ---------- the one built-in shortcut: update serverjack itself
@@ -1751,8 +1804,21 @@ UPDATE_ID = "builtin-update"
 SERVERJACK_CTL_PATH = os.path.join(HOME, ".local", "bin", "serverjack-ctl")
 if CHANNEL == "release":
     UPDATE_CMD = shlex.quote(SERVERJACK_CTL_PATH) + " update"
+    UPDATE_WHAT = ("Downloads and verifies the latest release, switches to it, and rolls "
+                   "back if it doesn't come up; the terminal reconnects when it restarts.")
 else:
     UPDATE_CMD = f"cd {shlex.quote(REPO)} && git pull --ff-only && bash install.sh"
+    UPDATE_WHAT = ("Pulls the latest commit and re-runs the installer, which restarts "
+                   "serverjack; the terminal reconnects when it restarts.")
+
+
+def update_cmd_show():
+    """UPDATE_CMD as the Update row displays it: the same command with the
+    home directory written as ~, like every other path on the page. Display
+    only -- UPDATE_CMD (quoted, absolute) is what runs."""
+    if CHANNEL == "release":
+        return _dir_show(SERVERJACK_CTL_PATH) + " update"
+    return f"cd {_dir_show(REPO)} && git pull --ff-only && bash install.sh"
 
 
 def update_available():
@@ -3116,6 +3182,20 @@ select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outl
 .flash{background:var(--accent-wash);border:1px solid var(--accent-dim);color:var(--text-primary);
   padding:10px 14px;border-radius:var(--radius-sm);margin-bottom:var(--space-3);
   font:500 13px/18px var(--font-mono)}
+/* landing flows (LAND_JS): a button whose form is on its way; notes and errors
+   moved next to the card they are about, which the page then scrolls to */
+.btn.busy{opacity:.6;cursor:progress}
+h2[id],details.tool,#addsc{scroll-margin-top:calc(env(safe-area-inset-top) + var(--space-3))}
+.tool .tbody > .flash,.tool .tbody > .err{margin:var(--space-2) 0 var(--space-3)}
+.menu-list details.ren .err{margin:0 6px 6px;padding:8px 10px}
+.hint.sc-empty{margin:0 0 var(--space-2)}
+.meta.wrap{overflow-wrap:anywhere}
+.meta.wrap .w{display:inline-block;max-width:100%}
+@media (pointer:coarse){
+  .menu-list details.ren form input[type=text]{font-size:16px}
+  .save{min-height:44px}
+  .save label{flex:1;padding:12px 0}
+}
 .opt{color:var(--text-muted);font-weight:400}
 .hint,.note,.foot{color:var(--text-muted);font-size:12px;line-height:18px}
 .hint{margin:0}
@@ -3392,11 +3472,12 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 }})();
 </script>
 <script>{dirpick_js}</script>
+<script>{land_js}</script>
 </main></body></html>
 """
 
 START_CARD = """<h2>Start a session</h2>
-<div class="card"><form class="row" id="startform" method="post" action="/start">
+<div class="card"><form class="row" id="startform" method="post" action="/start" autocomplete="off">
   <div class="seg">{what_options}</div>
   {dirpicker}
   <input id="name" name="name" aria-label="Session name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Name (optional), e.g. 3d-lab" value="{name}">
@@ -3404,37 +3485,260 @@ START_CARD = """<h2>Start a session</h2>
     <textarea id="cmd" name="cmd" aria-label="Command" rows="2" autocapitalize="off" spellcheck="false"
       placeholder="Optional: a command to run, e.g. sudo apt install ffmpeg">{cmd}</textarea>
     <details class="inline"{save_open}><summary>Save as a shortcut</summary>
-      <div class="save"><input type="checkbox" id="save" name="save" value="1"><label for="save">Keep this command in Shortcuts</label></div>
-      <input name="label" aria-label="Shortcut name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Name it, e.g. Update packages" value="{label}">
+      <div class="save"><input type="checkbox" id="save" name="save" value="1"{save_checked}><label for="save">Keep this command in Shortcuts</label></div>
+      <input name="label" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Shortcut name" placeholder="Shortcut name (optional), e.g. Update packages" value="{label}">
     </details>
   </div>
   <p class="hint" id="toolhint" hidden></p>
   <button class="btn wide" type="submit">Start</button>
-  <p class="hint">Opens a new terminal session, named after the type and directory unless you name it. A shell stays open after its command finishes, so password prompts work.</p>
+  <p class="hint" id="starthint">Runs in a real terminal, so sudo prompts work, and leaves you at a prompt when it finishes. Leave Name blank to name it after the command and folder.</p>
 </form>
 <details class="inline ddchange"{dd_open}><summary>Starts in {default_dir_show} &middot; change</summary>
-  <form class="row" method="post" action="/prefs">
+  {dd_err}<form class="row" method="post" action="/prefs">
     {default_dirpicker}
     <button class="btn sec wide" type="submit">Save</button>
   </form>
 </details></div>"""
 
-ADD_SHORTCUT_CARD = """<details class="card" id="addsc"{addsc_open}><summary>Add a shortcut</summary>
-<form class="row" method="post" action="/shortcuts/add">
+# The landing page's form flows, loaded after the page's own script (menus,
+# copy buttons, the Start card's Shell/agent switch) and DIRPICK_JS. All of it
+# is an enhancement: with scripts off every form still posts and redirects.
+#  - The address bar: an error page is the answer to a POST, and ?done= notes
+#    are one-shot, so the history entry becomes a plain GET of "/".
+#  - Notes (?done=) and card errors move next to the card they are about.
+#  - The Start card's typed fields survive the page's OTHER forms (change the
+#    default directory, a shortcut, start at boot, ...): stashed in
+#    sessionStorage on the way out, put back on the next load, once.
+#  - One submit per form until the page changes (a double tap used to run a
+#    command twice or land on "already exists" for your own new session).
+#  - Kill and Rename go through /api/kill and /api/rename and update the row in
+#    place: no reload, no lost scroll position, errors under the field.
+LAND_JS = r"""
+(function () {
+  'use strict';
+  var start = document.getElementById('startform');
+  var DRAFT = 'sj-start-draft', DRAFT_TTL = 120000;
+
+  if (history.replaceState) {
+    var q = new URLSearchParams(location.search);
+    ['done', 'n', 'open', 'k', 'edit_sc', 'dir_note'].forEach(function (k) { q.delete(k); });
+    var url = '/' + (q.toString() ? '?' + q.toString() : '') + location.hash;
+    if (url !== location.pathname + location.search + location.hash) history.replaceState(null, '', url);
+  }
+
+  // A note or error that names a section or card (data-at) goes inside or
+  // right under it, and the page lands there.
+  function place(el) {
+    var t = el.dataset.at && document.getElementById(el.dataset.at);
+    if (!t) return;
+    if (t.tagName === 'H2') t.parentNode.insertBefore(el, t.nextSibling);
+    else if (t.querySelector('.tbody')) t.querySelector('.tbody').insertBefore(el, t.querySelector('.tbody').firstChild);
+    else if (t.tagName === 'DETAILS') t.insertBefore(el, t.querySelector('summary').nextSibling);
+    else t.parentNode.insertBefore(el, t);
+    t.scrollIntoView({block: 'start'});
+  }
+  document.querySelectorAll('main > .flash[data-at], main > .err[data-at]').forEach(place);
+  // Not focused: that would open the folder suggestions over its Save button.
+  var dd = document.querySelector('.ddchange[open] .err');
+  if (dd) dd.scrollIntoView({block: 'center'});
+
+  function field(n) { return start && start.elements.namedItem(n); }
+  function stash() {
+    if (!start) return;
+    var w = start.querySelector('input[name=what]:checked'), save = field('save');
+    var d = {t: Date.now(), what: w ? w.value : 'shell', dir: field('dir').value,
+             name: field('name').value, cmd: field('cmd').value, label: field('label').value,
+             save: !!(save && save.checked), open: !!start.querySelector('details.inline[open]')};
+    try {
+      if (d.what === 'shell' && !d.dir && !d.name && !d.cmd && !d.label && !d.save) sessionStorage.removeItem(DRAFT);
+      else sessionStorage.setItem(DRAFT, JSON.stringify(d));
+    } catch (e) {}
+  }
+  function restore() {
+    var d = null;
+    try { d = JSON.parse(sessionStorage.getItem(DRAFT) || 'null'); sessionStorage.removeItem(DRAFT); } catch (e) {}
+    if (!d || !start || !(Date.now() - d.t < DRAFT_TTL)) return;
+    // A re-render of the Start card's own error already carries its fields.
+    if (field('cmd').value || field('name').value || field('dir').value || field('label').value) return;
+    start.querySelectorAll('input[name=what]').forEach(function (r) { if (r.value === d.what) r.checked = true; });
+    field('dir').value = d.dir || ''; field('name').value = d.name || '';
+    field('cmd').value = d.cmd || ''; field('label').value = d.label || '';
+    if (field('save')) field('save').checked = !!d.save;
+    var det = start.querySelector('details.inline');
+    if (det && d.open) det.open = true;
+  }
+  // Re-run the Shell/agent switch for whatever radio is checked now: after a
+  // restore, and after Back (Chrome restores a checked radio without a change
+  // event, which left two pills lit and the command box showing for an agent).
+  function syncStart() {
+    var r = start && start.querySelector('input[name=what]:checked');
+    if (r) r.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+  // The shell hint (sudo prompts, naming after the command) is about shells.
+  var hint = document.getElementById('starthint');
+  document.addEventListener('change', function (e) {
+    if (e.target.name === 'what' && hint) hint.hidden = e.target.value !== 'shell';
+  });
+  // Naming the shortcut is asking for it: tick the box, so what will happen shows.
+  document.addEventListener('input', function (e) {
+    if (field('save') && e.target === field('label') && e.target.value.trim()) field('save').checked = true;
+  });
+  // Leaving for one of the page's other forms or its own links: keep the draft.
+  // Capture phase -- start at boot submits from its own change listener.
+  document.addEventListener('change', function (e) {
+    if (e.target.classList && e.target.classList.contains('autostart')) stash();
+  }, true);
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('a[href]');
+    if (a && a.origin === location.origin && a.pathname === '/') stash();
+  }, true);
+  restore();
+  syncStart();
+
+  function unbusy(f) {
+    delete f.dataset.busy;
+    clearTimeout(f._sjT);
+    var b = f._sjBtn;
+    if (!b) return;
+    b.disabled = false; b.classList.remove('busy'); b.removeAttribute('aria-busy');
+    if (b.dataset.label) { b.textContent = b.dataset.label; delete b.dataset.label; }
+  }
+  function busy(f, b) {
+    f.dataset.busy = '1';
+    f._sjT = setTimeout(function () { unbusy(f); }, 20000);   // a request that never came back
+    if (!b) return;
+    f._sjBtn = b;
+    b.classList.add('busy'); b.setAttribute('aria-busy', 'true');
+    if (f === start) { b.dataset.label = b.textContent; b.textContent = 'Starting…'; }
+    // Not synchronously: a submitter disabled inside the submit event is left
+    // out of the form data, and an agent card's buttons carry their route there.
+    setTimeout(function () { b.disabled = true; }, 0);
+  }
+  addEventListener('pageshow', function (e) {
+    document.querySelectorAll('form[data-busy]').forEach(unbusy);
+    if (e.persisted) document.querySelectorAll('.flash').forEach(function (n) { n.remove(); });
+    syncStart();
+  });
+
+  function post(url, data) {
+    return fetch(url, {method: 'POST', body: new URLSearchParams(data), credentials: 'same-origin',
+                       cache: 'no-store'})
+      .then(function (r) {
+        return r.json().catch(function () { return {error: 'serverjack answered ' + r.status + '.'}; });
+      });
+  }
+  function cardOf(name, root) {
+    var a = Array.prototype.filter.call((root || document).querySelectorAll('.sess a.open[data-name]'),
+                                        function (x) { return x.dataset.name === name; })[0];
+    return a ? a.closest('.sess') : null;
+  }
+  function inlineErr(f, msg) {
+    var p = f.parentNode.querySelector('.err');
+    if (!msg) { if (p) p.remove(); return; }
+    if (!p) {
+      p = document.createElement('p'); p.className = 'err'; p.setAttribute('role', 'alert');
+      f.parentNode.appendChild(p);
+    }
+    p.textContent = msg;
+  }
+  // The renamed row, fresh from the server: the name is in a dozen places in
+  // it (links, hidden fields, the SSH command), so re-rendering beats patching.
+  function refreshCard(oldName, newName) {
+    var card = cardOf(oldName);
+    return fetch('/', {cache: 'no-store', credentials: 'same-origin'})
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        var fresh = cardOf(newName, new DOMParser().parseFromString(html, 'text/html'));
+        if (!card || !fresh) throw new Error('no row');
+        fresh = document.importNode(fresh, true);
+        card.replaceWith(fresh);
+        var s = fresh.querySelector('details.menu > summary');
+        if (s) s.focus({preventScroll: true});
+      })
+      .catch(function () {
+        stash();
+        location.replace('/?done=renamed&n=' + encodeURIComponent(newName) + '#sessions');
+      });
+  }
+  function rename(e, f) {
+    e.preventDefault();
+    var input = f.elements.namedItem('new'), old = f.elements.namedItem('name').value;
+    var b = f.querySelector('button');
+    f.dataset.busy = '1'; b.disabled = true;
+    post('/api/rename', {name: old, 'new': input.value})
+      .then(function (r) {
+        if (r.error) { inlineErr(f, r.error); input.focus(); return; }
+        inlineErr(f, '');
+        return refreshCard(old, r.name);
+      }, function () { inlineErr(f, 'Couldn’t reach serverjack. Try again.'); })
+      .then(function () { delete f.dataset.busy; b.disabled = false; });
+  }
+  function kill(e, f) {
+    e.preventDefault();
+    var name = f.elements.namedItem('name').value, card = f.closest('.sess');
+    f.dataset.busy = '1';
+    post('/api/kill', {name: name})
+      .then(function (r) {
+        if (r.error || !card) throw new Error(r.error || 'no row');
+        document.querySelectorAll('.flash[data-live]').forEach(function (x) { x.remove(); });
+        var n = document.createElement('div');
+        n.className = 'flash'; n.setAttribute('role', 'status'); n.dataset.live = '1';
+        n.textContent = 'Killed “' + name + '”.';
+        card.replaceWith(n);
+        if (!document.querySelector('.sess a.open[data-name]')) {
+          var em = document.createElement('div');
+          em.className = 'empty'; em.textContent = 'No sessions running. Start one above.';
+          n.parentNode.insertBefore(em, n.nextSibling);
+        }
+      })
+      .catch(function () { delete f.dataset.busy; stash(); f.submit(); });   // the plain POST
+  }
+  // Rename: open the field focused and selected, in the same tap (iOS raises
+  // the keyboard only for a focus() made inside the user's own gesture).
+  document.addEventListener('click', function (e) {
+    var s = e.target.closest && e.target.closest('details.ren > summary');
+    if (!s) return;
+    e.preventDefault();
+    var d = s.parentNode;
+    d.open = !d.open;
+    var i = d.open && d.querySelector('input[name=new]');
+    if (i) { i.focus(); i.select(); }
+  });
+
+  // After the page's confirm() listener: a cancelled Kill is defaultPrevented.
+  document.addEventListener('submit', function (e) {
+    var f = e.target;
+    if (e.defaultPrevented || !f || f.tagName !== 'FORM') return;
+    if (f.dataset.busy) { e.preventDefault(); return; }
+    var act = f.getAttribute('action');
+    if (act === '/rename') return rename(e, f);
+    if (act === '/kill') return kill(e, f);
+    if (f === start) { try { sessionStorage.removeItem(DRAFT); } catch (x) {} }
+    else stash();
+    busy(f, e.submitter || f.querySelector('[type=submit]'));
+  });
+})();
+"""
+
+# Also the edit form: /?edit_sc=<id> renders it open, pre-filled, with a
+# hidden id (sc_id) that makes /shortcuts/add replace that entry in place.
+ADD_SHORTCUT_CARD = """<details class="card" id="addsc"{addsc_open}><summary>{sc_title}</summary>
+<form class="row" method="post" action="/shortcuts/add">{sc_id}
   <div><label for="sc_label">Name</label>
   <input id="sc_label" name="label" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. Deploy" value="{sc_label}"></div>
   <div><label for="sc_cmd">Command to run</label>
   <textarea id="sc_cmd" name="cmd" rows="2" required autocapitalize="off" spellcheck="false" placeholder="e.g. ./deploy.sh &amp;&amp; docker compose logs -f">{sc_cmd}</textarea></div>
   <div><label for="sc_dir">Directory</label>
   {dirpicker}</div>
-  <button class="btn wide" type="submit">Save shortcut</button>
+  <button class="btn wide" type="submit">{sc_button}</button>{sc_cancel}
 </form></details>"""
 
 SHORTCUT_CARD = """<div class="card sess">
   <div class="info">
     <div class="name">{label}</div>
-    <div class="meta"><code>{cmd}</code> &middot; {dir}</div>
+    <div class="meta wrap"><code>{cmd}</code> &middot; {dir}</div>
   </div>
+  <a class="btn ghost icon sc-edit" href="/?edit_sc={id_q}#addsc" title="Edit shortcut" aria-label="Edit shortcut “{label}”">{edit}</a>
   <form method="post" action="/shortcuts/del" data-confirm="Remove shortcut “{label}”?">
     <input type="hidden" name="id" value="{id}"><button class="btn ghost icon del" type="submit" title="Remove shortcut" aria-label="Remove shortcut">{trash}</button>
   </form>
@@ -3446,10 +3750,10 @@ SHORTCUT_CARD = """<div class="card sess">
 UPDATE_CARD = """<div class="card sess" id="sc-update">
   <div class="info">
     <div class="name">Update serverjack <i class="pill">built-in</i></div>
-    <div class="meta"><code>{cmd}</code></div>
-    <div class="meta wrap">pulls the latest and re-runs the installer; the terminal reconnects when it restarts.</div>
+    <div class="meta wrap"><code>{cmd}</code></div>
+    <div class="meta wrap">{what}</div>
   </div>
-  <form method="post" action="/shortcuts/run">
+  <form method="post" action="/shortcuts/run" data-confirm="Update serverjack and restart it? Open terminals will reconnect.">
     <input type="hidden" name="id" value="{id}"><button class="btn" type="submit">Run</button>
   </form>
 </div>"""
@@ -3469,7 +3773,8 @@ SESSION_CARD = """<div class="card sess">
         <form method="post" action="/rename">
           <input type="hidden" name="name" value="{name}">
           <input type="text" name="new" value="{name}" required maxlength="60" autocomplete="off"
-            autocapitalize="off" spellcheck="false" aria-label="New name for {name}">
+            autocapitalize="off" spellcheck="false" aria-label="New name for {name}"
+            pattern="\\s*[^\\s:.$][^:.]*" title="No “:” or “.”, and not starting with “$” (tmux rules)">
           <button class="btn sm" type="submit">Save</button>
         </form>
       </details>
@@ -4069,6 +4374,14 @@ def esc(s):
     return html.escape(str(s), quote=True)
 
 
+def words(s):
+    """A command or path shown in a row's wrapping meta line, escaped, each
+    word an unbreakable span (.w): the line breaks between words, never
+    after a hyphen inside one ("ls -" / "la", "--" / "ff-only"). A word
+    longer than the line still wraps inside itself (CSS .meta.wrap .w)."""
+    return " ".join(f'<span class="w">{esc(w)}</span>' for w in str(s).split())
+
+
 def term_href(name):                 # the wrapper page with the menu bar
     return f"/s/{quote(name, safe='')}"
 
@@ -4165,7 +4478,7 @@ def summary_pill(label, word, cls="", title=""):
             f'<span>{esc(word)}</span></i>')
 
 
-def tool_card(t, st, open_=False):
+def tool_card(t, st, open_=False, dir_value=""):
     """One row of the agents accordion: a summary that is readable while
     collapsed, and a body with one option row per way of starting the tool."""
     tid = t["id"]
@@ -4226,12 +4539,13 @@ def tool_card(t, st, open_=False):
 
     def picker_here(buttons):
         """The labelled picker, the first time a row asks for it ("" after
-        that), with that row's buttons on the field's own line."""
+        that), with that row's buttons on the field's own line. dir_value:
+        what was typed, on an error re-render."""
         if placed:
             return ""
         placed.append(1)
         return (f'<div class="odir"><label for="dp-{esc(tid)}">Directory</label><div class="dline">'
-                + dir_picker(input_id=f"dp-{tid}").replace("<input ", f'<input form="{dform}" ', 1)
+                + dir_picker(dir_value, input_id=f"dp-{tid}").replace("<input ", f'<input form="{dform}" ', 1)
                 + f'<div class="ob">{buttons}</div></div></div>')
 
     def picker_row(label, note_text, buttons, hint=""):
@@ -4432,9 +4746,85 @@ def wants_agent_card(t, st):
     return bool(t.get("server") or t.get("daemon") or t.get("actions"))
 
 
+# ---- one-shot confirmations after an in-place action: a kill, a rename, a
+# shortcut saved or removed, "start at boot", a daemon or server started or
+# stopped. Each of those POSTs answers with a redirect to
+# /?done=<what>&n=<name>[&open=<tool id>]#<section>, never a bare "/", so the
+# page comes back at the row or card the action was on, with the card open,
+# saying what happened. The sentence is built here from fixed templates and
+# is never echoed from the URL (a crafted link can't make the page say
+# anything it wouldn't say anyway). The page script moves the note next to
+# what it is about and strips these parameters from the address bar, so a
+# reload or Back doesn't show it again -- the URL carries it because this
+# app keeps no cookies or server-side session.
+
+def _done_at(done, tid=""):
+    """The element id a ?done= note belongs next to (also the redirect's
+    #fragment): a section heading, a tool card, or "" for the top."""
+    if done in ("killed", "renamed"):
+        return "sessions"
+    if done.startswith("sc-"):
+        return "shortcuts"
+    if tid and done in ("boot-on", "boot-off", "daemon-start", "daemon-stop", "server-stop"):
+        return f"tool-{tid}"
+    return ""
+
+
+def done_url(done, n="", tid="", kind=""):
+    """Where an in-place action redirects to; see done_note()."""
+    url = "/?done=" + quote(done, safe="")
+    for key, val in (("n", n), ("open", tid), ("k", kind)):
+        if val:
+            url += f"&{key}=" + quote(val, safe="")
+    at = _done_at(done, tid)
+    return url + (f"#{quote(at, safe='')}" if at else "")
+
+
+def done_note(done, n="", tid="", kind=""):
+    """(sentence, element id it belongs next to) for a ?done= redirect, or
+    ("", "") for anything unknown."""
+    n = (n or "")[:120]
+    t = find_tool(tid) if tid else None
+    tool = (t.get("label") or t["id"]) if t else ""
+    part = (t.get(kind) or {}) if t and kind in ("server", "daemon") else {}
+    thing = part.get("label") or {"server": "Server", "daemon": "Daemon"}.get(kind, "")
+    msgs = {
+        "killed": f"Killed “{n}”.",
+        "renamed": f"Renamed to “{n}”.",
+        "sc-saved": f"Saved shortcut “{n}”.",
+        "sc-updated": f"Updated shortcut “{n}”.",
+        "sc-removed": f"Removed shortcut “{n}”.",
+        # From the saved prefs, not the URL: a stale link can't claim an old default.
+        "dir": f"Default directory: {_dir_show(default_dir())}",
+    }
+    if t and thing:
+        where = f" in {n}" if n else ""
+        msgs.update({
+            "boot-on": f"{tool}: {thing}{where} will start at boot.",
+            "boot-off": f"{tool}: {thing}{where} won't start at boot.",
+            "daemon-start": f"{tool}: {thing} started.",
+            "daemon-stop": f"{tool}: {thing} stopped.",
+        })
+    if t and n:
+        msgs["server-stop"] = f"{tool}: stopped “{n}”."
+    msg = msgs.get(done, "")
+    return (msg, _done_at(done, tid)) if msg else ("", "")
+
+
 def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc_cmd="",
            addsc_open=False, save_open=False, open_tool="", what="shell",
-           flash="", dd_open=False, dd_value=None):
+           flash="", dd_open=False, dd_value=None, save=False, sc_dir="", sc_id="",
+           tool_dir="", dd_err="", error_link="", flash_at="", error_at=""):
+    """The landing page. Every form's own fields come back through these
+    arguments on an error re-render, so nothing typed is lost: the Start
+    card (what, dir_custom = its directory box, name, cmd, label, save and
+    save_open), Add a shortcut (sc_label, sc_cmd, sc_dir, and sc_id when it
+    is editing one), the failing tool card (open_tool, tool_dir) and the
+    default-directory form (dd_open, dd_value, dd_err -- shown inside that
+    form, not at the top). error_link: a session name to offer an Open
+    button for, next to error; error_at: the id of the card the error is
+    about. flash: a one-line confirmation; flash_at: the id of what it is
+    about (see done_note()). The page script moves both next to that."""
     tools, tools_error = load_tools()
     pairs = list(zip(tools, tool_states(tools))) if tools else []
     # Sessions serverjack started as an agent's server get a "server" tag.
@@ -4458,15 +4848,21 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
     scs = load_shortcuts()
     # The built-in row first, and only when this really is a git checkout --
     # a tarball copy has nothing to pull.
-    builtin = (UPDATE_CARD.format(id=esc(UPDATE_ID), cmd=esc(UPDATE_CMD))
+    builtin = (UPDATE_CARD.format(id=esc(UPDATE_ID), cmd=words(update_cmd_show()),
+                                  what=esc(UPDATE_WHAT))
                if update_available() else "")
     if scs:
         shortcuts = builtin + "\n" + "\n".join(SHORTCUT_CARD.format(
-            id=esc(x["id"]), label=esc(x.get("label") or x["cmd"]), cmd=esc(x["cmd"]),
-            trash=I_TRASH,
-            dir=esc((x.get("dir") or HOME).replace(HOME, "~", 1))) for x in scs)
+            id=esc(x["id"]), id_q=esc(quote(x["id"], safe="")),
+            label=esc(x.get("label") or x["cmd"]), cmd=words(x["cmd"]),
+            trash=I_TRASH, edit=I_EDIT,
+            dir=words(_dir_show(x.get("dir") or HOME))) for x in scs)
     else:
-        shortcuts = builtin + '\n<div class="empty">None yet. Tick “Save as a shortcut” above to keep a command here.</div>'
+        # A muted line, not a second card stacked on Add a shortcut -- and
+        # "saved", since the built-in Update row may be right above it.
+        shortcuts = builtin + ('\n<p class="hint sc-empty">No saved shortcuts yet. Open '
+                               '“Save as a shortcut” when you start a command, or add one '
+                               'below.</p>')
 
     # Start-a-session's segmented choice: Shell, then every installed tool
     # with a run command, in registry order -- the same test tool_kinds()
@@ -4491,7 +4887,8 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
         # All rows collapsed, except the one whose button produced this error.
         card_pairs = [(t, st) for t, st in pairs if wants_agent_card(t, st)]
         if card_pairs:
-            agents = "\n".join(tool_card(t, st, open_=(t["id"] == open_tool))
+            agents = "\n".join(tool_card(t, st, open_=(t["id"] == open_tool),
+                                         dir_value=tool_dir if t["id"] == open_tool else "")
                                for t, st in card_pairs)
         else:
             agents = ('<div class="empty">Nothing to set up: every agent is installed and '
@@ -4501,25 +4898,37 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
     body = "\n".join([
         START_CARD.format(dirpicker=dir_picker(dir_custom, "dir"), cmd=esc(cmd), label=esc(label),
                           name=esc(name), save_open=" open" if save_open else "",
+                          save_checked=" checked" if save else "",
                           what_options="\n".join(what_opts),
                           default_dir_show=esc(_dir_show(dflt)),
                           dd_open=" open" if dd_open else "",
+                          dd_err=f'<div class="err" role="alert">{esc(dd_err)}</div>' if dd_err else "",
                           default_dirpicker=dir_picker(
                               dd_value if dd_value is not None else _dir_show(dflt), "dd_dir",
                               label="Default directory", create=False)),
-        "<h2>Shortcuts</h2>", shortcuts,
-        ADD_SHORTCUT_CARD.format(dirpicker=dir_picker(input_id="sc_dir", create=False), sc_label=esc(sc_label),
-                                 sc_cmd=esc(sc_cmd), addsc_open=" open" if addsc_open else ""),
-        "<h2>Sessions</h2>", cards,
+        '<h2 id="shortcuts">Shortcuts</h2>', shortcuts,
+        ADD_SHORTCUT_CARD.format(
+            dirpicker=dir_picker(sc_dir, "sc_dir", create=False), sc_label=esc(sc_label),
+            sc_cmd=esc(sc_cmd), addsc_open=" open" if addsc_open else "",
+            sc_title="Edit shortcut" if sc_id else "Add a shortcut",
+            sc_button="Save changes" if sc_id else "Save shortcut",
+            sc_id=f'<input type="hidden" name="id" value="{esc(sc_id)}">' if sc_id else "",
+            sc_cancel='<a class="btn ghost wide" href="/#shortcuts">Cancel</a>' if sc_id else ""),
+        '<h2 id="sessions">Sessions</h2>', cards,
         '<h2 id="agents">Agent servers</h2>',
         '<p class="hint">Install an agent or log in to it, or start the background server a '
         'phone app connects to. Installed agents start from Start a session above.</p>',
         agents,
     ])
-    err = "".join(f'<div class="err">{esc(e)}</div>' for e in (error, tools_error) if e)
-    flash_html = f'<div class="flash">{esc(flash)}</div>' if flash else ""
+    link = (f' <a class="btn sec sm open" href="{esc(term_href(error_link))}" '
+            f'data-name="{esc(error_link)}">Open “{esc(error_link)}”</a>') if error_link else ""
+    at = f' data-at="{esc(error_at)}"' if error_at else ""
+    err = (f'<div class="err"{at}>{esc(error)}{link}</div>' if error else "") + (
+        f'<div class="err">{esc(tools_error)}</div>' if tools_error else "")
+    flash_html = (f'<div class="flash" id="note" role="status" data-at="{esc(flash_at)}">'
+                  f'{esc(flash)}</div>') if flash else ""
     return PAGE.format(css=CSS, error=flash_html + err, body=body, title=esc(TITLE), glyph=I_LOGO,
-                       pwa_links=PWA_LINKS, dirpick_js=DIRPICK_JS,
+                       pwa_links=PWA_LINKS, dirpick_js=DIRPICK_JS, land_js=LAND_JS,
                        sysline=system_line(), fx_class=FX_CLASS, version=esc(VERSION))
 
 
@@ -4785,11 +5194,26 @@ class Handler(BaseHTTPRequestHandler):
         if path == TERM_PREFIX or path.startswith(TERM_PATH):
             return self.proxy_term()
         if path == "/":
-            # dir_note: the /prefs redirect's one-shot confirmation, e.g.
-            # "Default directory: ~/projects" -- in the URL, not a cookie or
-            # server-side session, since this app keeps none of either.
-            note = (parse_qs(urlparse(self.path).query).get("dir_note") or [""])[0]
-            return self.send_html(render(flash=note))
+            # ?done=: an in-place action's one-shot confirmation (see
+            # done_note()). ?dir_note= is the older spelling /prefs used,
+            # still understood -- its text is no longer echoed, though.
+            # ?edit_sc=<id>: open Add a shortcut as that shortcut's editor.
+            q = parse_qs(urlparse(self.path).query)
+
+            def arg(key):
+                return (q.get(key) or [""])[0]
+            done = arg("done") or ("dir" if arg("dir_note") else "")
+            note, at = done_note(done, arg("n"), arg("open"), arg("k"))
+            kw = {}
+            sid = arg("edit_sc")
+            if sid:
+                sc = next((x for x in load_shortcuts() if x["id"] == sid), None)
+                if not sc:
+                    kw["error"] = "That shortcut no longer exists."
+                else:
+                    kw.update(sc_id=sid, sc_label=sc.get("label") or "", sc_cmd=sc["cmd"],
+                              sc_dir=_dir_show(sc.get("dir") or HOME), addsc_open=True)
+            return self.send_html(render(flash=note, flash_at=at, open_tool=arg("open"), **kw))
         if path.startswith("/s/"):
             name = unquote(path[3:])
             if not session_exists(name):
@@ -5031,7 +5455,7 @@ class Handler(BaseHTTPRequestHandler):
         cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
         if err:
             return None, err
-        cmd = f.get("cmd") if kind == "shell" else None
+        cmd = clean_cmd(f.get("cmd")) if kind == "shell" else None
         name, err = validate_name(f.get("name", ""), required=False,
                                   base=default_session_name(kind, cwd, cmd))
         if err:
@@ -5047,16 +5471,28 @@ class Handler(BaseHTTPRequestHandler):
         left blank, the session is named for its type and directory (see
         default_session_name()). Any error re-renders the page with the
         form's own state -- what, dir, the typed command, the typed name --
-        so the right radio is still checked and nothing typed is lost."""
+        so the right radio is still checked and nothing typed is lost.
+
+        "Save as a shortcut": ticking its box, or just typing a name for the
+        shortcut, both mean save -- a name typed into that panel used to be
+        thrown away unless the box was ticked too."""
         what = f.get("what") or "shell"
-        cmd = f.get("cmd", "").strip()
+        cmd = clean_cmd(f.get("cmd"))
         label = f.get("label", "")
         name_in = f.get("name", "")
-        save_open = bool(f.get("save"))
+        save = bool(f.get("save")) or bool(label.strip())
 
-        def fail(msg, status=400):
-            return self.send_html(render(msg, dir_custom=f.get("dir_custom", ""), cmd=cmd,
-                                         label=label, name=name_in, save_open=save_open, what=what), status)
+        def fail(msg, status=400, link=""):
+            # The directory box echoes what the form posted (dir_custom first,
+            # the same precedence resolve_dir() uses), never the default.
+            return self.send_html(render(msg, dir_custom=f.get("dir_custom") or f.get("dir", ""),
+                                         cmd=cmd, label=label, name=name_in, save=save,
+                                         save_open=save, what=what, error_link=link), status)
+
+        def name_fail(err):
+            # The one error with somewhere to go: offer to open the session.
+            taken = name_in.strip()
+            return fail(err, link=taken if err == taken_msg(taken) else "")
 
         if what != "shell" and what not in tool_kinds():
             return fail("Unknown session type.")
@@ -5066,21 +5502,23 @@ class Handler(BaseHTTPRequestHandler):
             return fail(err)
 
         if what == "shell":
+            if save and not cmd:
+                return fail("Nothing to save as a shortcut: type a command first.")
             if cmd:
                 name, err = validate_name(name_in, required=False,
                                           base=default_session_name("shell", cwd, cmd))
                 if err:
-                    return fail(err)
+                    return name_fail(err)
                 err = create_session("shell", name, cwd, command=cmd)
                 if err:
                     return fail(err, 500)
-                if f.get("save"):
+                if save:
                     add_shortcut(label, cmd, cwd)
             else:
                 name, err = validate_name(name_in, required=False,
                                           base=default_session_name("shell", cwd))
                 if err:
-                    return fail(err)
+                    return name_fail(err)
                 err = create_session("shell", name, cwd, command=None)
                 if err:
                     return fail(err, 500)
@@ -5088,7 +5526,7 @@ class Handler(BaseHTTPRequestHandler):
 
         name, err = validate_name(name_in, required=False, base=default_session_name(what, cwd))
         if err:
-            return fail(err)
+            return name_fail(err)
         err = create_session(what, name, cwd)
         clear_tool_cache(what)
         if err:
@@ -5108,6 +5546,15 @@ class Handler(BaseHTTPRequestHandler):
         if f is None:
             return
 
+        # An error page is the answer to a POST, so its history entry is one;
+        # the page script swaps that entry's URL for "/" (Back and reload must
+        # never re-run an action). WebKit then reloads it as a POST to "/" --
+        # the same method and body, only the URL changed -- so answer that
+        # with the page itself, by redirect. (After form(): the body must be
+        # read off a keep-alive connection either way.)
+        if path == "/":
+            return self.redirect("/")
+
         # An agent card is one form with several submit buttons, so the button
         # carries the route it wants ("/tools/action:0" -> /tools/action, i=0).
         if path == "/tools":
@@ -5124,7 +5571,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/new":                        # the terminal page's own new-session form
             name, err = self.new_from_form(f)
             if err:
-                return self.send_html(render(err, dir_custom=f.get("dir_custom", ""), cmd=f.get("cmd", "")), 400)
+                return self.send_html(render(err, dir_custom=f.get("dir_custom") or f.get("dir", ""),
+                                             cmd=clean_cmd(f.get("cmd"))), 400)
             return self.redirect(term_href(name))
 
         if path == "/api/new":                   # menu bar
@@ -5135,11 +5583,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if path in ("/kill", "/api/kill"):
             name = f.get("name", "")
-            if name and session_exists(name):
+            killed = bool(name) and session_exists(name)
+            if killed:
                 tmux("kill-session", "-t", f"={name}")
             if path == "/api/kill":
                 return self.send_json({"ok": True})
-            return self.redirect("/")
+            return self.redirect(done_url("killed", name) if killed else "/#sessions")
 
         if path in ("/rename", "/api/rename"):
             new, err = rename_session(f.get("name", ""), f.get("new", ""))
@@ -5148,8 +5597,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": err}, 400)
                 return self.send_json({"ok": True, "name": new})
             if err:
-                return self.send_html(render(err), 400)
-            return self.redirect("/")
+                return self.send_html(render(f"Couldn’t rename “{f.get('name', '')}”: {err}"), 400)
+            return self.redirect(done_url("renamed", new))
 
         if path == "/api/window":
             name = f.get("name", "")
@@ -5172,27 +5621,44 @@ class Handler(BaseHTTPRequestHandler):
             scroll_session(name, lines)
             return self.send_json({"ok": True})
 
-        if path == "/shortcuts/add":
-            cmd = f.get("cmd", "").strip()
+        if path == "/shortcuts/add":             # also saves an edit: id names the shortcut
+            cmd = clean_cmd(f.get("cmd"))
+            sid = f.get("id", "")
+
+            def sc_fail(msg, status=400):         # the whole form comes back, directory included
+                return self.send_html(render(msg, sc_label=f.get("label", ""), sc_cmd=cmd,
+                                             sc_dir=f.get("dir_custom") or f.get("dir", ""),
+                                             sc_id=sid, addsc_open=True, error_at="addsc"), status)
             if not cmd:
-                return self.send_html(render("A shortcut needs a command.", sc_label=f.get("label", ""), addsc_open=True), 400)
+                return sc_fail("A shortcut needs a command.")
             cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"), must_exist=True)
             if err:
-                return self.send_html(render(err, sc_label=f.get("label", ""), sc_cmd=cmd, addsc_open=True), 400)
-            add_shortcut(f.get("label", ""), cmd, cwd)
-            return self.redirect("/")
+                return sc_fail(err)
+            if sid:
+                label, err = update_shortcut(sid, f.get("label", ""), cmd, cwd)
+                if err:
+                    return sc_fail(err, 404)
+                return self.redirect(done_url("sc-updated", label))
+            label = add_shortcut(f.get("label", ""), cmd, cwd)
+            return self.redirect(done_url("sc-saved", label))
 
         if path == "/prefs":                      # the Start card's "change" default-dir form
             d, err = validate_default_dir(f.get("dir") or f.get("dir_custom"))
             if err:
-                return self.send_html(render(err, dd_open=True, dd_value=f.get("dir", "")), 400)
+                # Inside the open "change" form, right under where it was typed.
+                return self.send_html(render(dd_err=err, dd_open=True,
+                                             dd_value=f.get("dir", "")), 400)
             save_prefs({**load_prefs(), "default_dir": d})
-            return self.redirect("/?dir_note=" + quote(f"Default directory: {_dir_show(d)}"))
+            return self.redirect(done_url("dir"))
 
         if path == "/shortcuts/del":
             sid = f.get("id", "")
-            save_shortcuts([x for x in load_shortcuts() if x["id"] != sid])
-            return self.redirect("/")
+            items = load_shortcuts()
+            gone = next((x for x in items if x["id"] == sid), None)
+            save_shortcuts([x for x in items if x["id"] != sid])
+            if not gone:
+                return self.redirect("/#shortcuts")
+            return self.redirect(done_url("sc-removed", gone.get("label") or gone["cmd"]))
 
         if path == "/shortcuts/run":
             sid = f.get("id", "")
@@ -5209,25 +5675,28 @@ class Handler(BaseHTTPRequestHandler):
             cwd = sc.get("dir") or HOME
             if not os.path.isdir(cwd):
                 return self.send_html(render(f"Shortcut directory is gone: {_dir_show(cwd)}"), 400)
-            name = default_session_name("shell", cwd, sc["cmd"])
+            name = shortcut_session_name(sc, cwd)
             err = create_session("shell", name, cwd, command=sc["cmd"])
             if err:
                 return self.send_html(render(err), 500)
             return self.redirect(term_href(name))
 
         if path == "/run":                       # legacy alias for /start's "shell + cmd" case
-            cmd = f.get("cmd", "").strip()
+            cmd = clean_cmd(f.get("cmd"))
             label = f.get("label", "")
+            save = bool(f.get("save")) or bool(label.strip())
             if not cmd:
                 return self.send_html(render("Paste a command to run first."), 400)
+            kept = dict(cmd=cmd, label=label, save=save, save_open=save,
+                        dir_custom=f.get("dir_custom") or f.get("dir", ""))
             cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
             if err:
-                return self.send_html(render(err, cmd=cmd, label=label, save_open=bool(f.get("save"))), 400)
+                return self.send_html(render(err, **kept), 400)
             name = auto_name(cmd.split()[0])
             err = create_session("shell", name, cwd, command=cmd)
             if err:
-                return self.send_html(render(err, cmd=cmd, label=label, save_open=bool(f.get("save"))), 500)
-            if f.get("save"):
+                return self.send_html(render(err, **kept), 500)
+            if save:
                 add_shortcut(label, cmd, cwd)
             return self.redirect(term_href(name))
 
@@ -5241,8 +5710,10 @@ class Handler(BaseHTTPRequestHandler):
     # Every one of these ends the same way: a command running in a tmux
     # session, and you looking at it. serverjack does not read the output.
 
-    def fail(self, msg, status=400, tid=""):
-        return self.send_html(render(msg, open_tool=tid), status)
+    def fail(self, msg, status=400, tid="", dir=""):
+        # dir: what the card's directory picker held, so it comes back typed.
+        return self.send_html(render(msg, open_tool=tid, tool_dir=dir,
+                                     error_at=f"tool-{tid}" if tid else ""), status)
 
     def do_tool(self, path, f):
         t = find_tool(f.get("id", ""))
@@ -5251,7 +5722,7 @@ class Handler(BaseHTTPRequestHandler):
         tid = t["id"]
         st = tool_state(t)
         # Every failure below re-renders the page with this tool's row open.
-        fail = lambda msg, status=400: self.fail(msg, status, tid)      # noqa: E731
+        fail = lambda msg, status=400: self.fail(msg, status, tid, f.get("dir", ""))  # noqa: E731
 
         if path == "/tools/install":
             if st["installed"]:
@@ -5322,9 +5793,11 @@ class Handler(BaseHTTPRequestHandler):
                     return fail("Not a directory.")
                 cwd = os.path.join(default_dir(),
                                    os.path.expanduser((f.get("dir") or "").strip()))
-            set_autostart(tid, kind, cwd, bool(f.get("on")),
-                          per_dir=bool((t.get("server") or {}).get("per_dir")))
-            return self.redirect("/")
+            per_dir = bool((t.get("server") or {}).get("per_dir"))
+            set_autostart(tid, kind, cwd, bool(f.get("on")), per_dir=per_dir)
+            return self.redirect(done_url("boot-on" if f.get("on") else "boot-off",
+                                          _dir_show(cwd) if kind == "server" and per_dir else "",
+                                          tid, kind))
 
         if path == "/tools/server":
             server = t.get("server") or {}
@@ -5350,7 +5823,9 @@ class Handler(BaseHTTPRequestHandler):
                 drop_autostart(lambda e: e.get("tool") == tid and e.get("kind") == "server"
                                and (not per_dir or (bool(gone) and same_dir(e.get("dir"), gone))))
                 clear_tool_cache(tid)
-                return self.redirect("/")
+                # The note names the session actually stopped (a single
+                # server's Stop may post no session name).
+                return self.redirect(done_url("server-stop", inst["session"] if inst else target, tid))
             # Start in the directory picked on the card: Claude's server opens
             # its sessions there.
             cwd, err = resolve_dir(f.get("dir"), f.get("dir_custom"))
@@ -5383,7 +5858,8 @@ class Handler(BaseHTTPRequestHandler):
                 return fail(f"“{cmd}” exited with status {r.returncode}. {tail}", 500)
             if action == "stop":
                 drop_autostart(lambda e: e.get("tool") == tid and e.get("kind") == "daemon")
-            return self.redirect("/")
+            return self.redirect(done_url("daemon-stop" if action == "stop" else "daemon-start",
+                                          "", tid, "daemon"))
 
         return fail("Unknown action.", 404)
 

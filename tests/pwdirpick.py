@@ -261,8 +261,10 @@ def desktop_layout(p):
         sb = save.bounding_box()
         hit = page.evaluate(f"document.elementFromPoint({sb['x'] + sb['width'] / 2}, {sb['y'] + sb['height'] / 2}).tagName")
         ok("the default-dir form's Save isn't under the list", hit == "BUTTON", hit)
-        save.click()
-        page.wait_for_url("**dir_note=**")
+        # /prefs answers /?done=dir, which the page script then strips from
+        # the address: catch the navigation itself, not the address after it.
+        with page.expect_navigation(url="**done=dir**"):
+            save.click()
         ok("...and one click saves what was typed", f"Default directory: {ROOT_SHOW}" in flash(page), flash(page))
         api.post("/prefs", form={"dir": "~"})
 
@@ -651,8 +653,8 @@ def pixel(p):
         page.locator("#dd_dir").tap()
         page.locator("#dd_dir").fill(ROOT_SHOW)
         wait_rows(page, "details.ddchange")
-        page.tap('form[action="/prefs"] button[type=submit]')
-        page.wait_for_url("**dir_note=**")
+        with page.expect_navigation(url="**done=dir**"):
+            page.tap('form[action="/prefs"] button[type=submit]')
         ok("one tap on the default-dir form's Save saves what was typed",
            f"Default directory: {ROOT_SHOW}" in flash(page), flash(page))
         api.post("/prefs", form={"dir": "~"})

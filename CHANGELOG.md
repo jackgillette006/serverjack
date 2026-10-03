@@ -154,6 +154,48 @@ and this project uses [Semantic Versioning](https://semver.org/).
   terminal + panel's Name and Directory labels belong to their fields, so
   clicking a label focuses it and voice control can find them.
 
+- **Start a session: an error no longer wipes the directory.** Any refusal
+  (a taken name, a bad name, a folder that isn't one) came back with every
+  field refilled except the directory box, so the corrected retry quietly
+  started in `~` -- a pasted `./deploy.sh` ran in the wrong place. The
+  directory now comes back too, and so does the *Keep this command in
+  Shortcuts* tick (it used to come back unticked, so the retry didn't save
+  the shortcut either). Same for Add a shortcut, a failing agent card and
+  the terminal page's `/new`.
+- **Multi-line commands run line by line.** Browsers send every newline in a
+  text box as CR+LF, and each line but the last ran with a stray carriage
+  return glued to its last word (`cd: $'projects\r': No such file or
+  directory`). Fixed for the Start card, Add a shortcut and `/run`; shortcuts
+  already saved that way are repaired when they're read.
+- **One tap is one submit.** On a slow link a second tap on Start (or Run,
+  Save, an agent button) sent the form again: the command ran twice, a saved
+  shortcut appeared twice, or you landed on "already exists" for the session
+  you had just made. A form now ignores further submits until the page
+  changes; Start reads *Starting…* meanwhile, and Back gives you a usable form.
+- **Back and reload never re-run a form.** An error page stayed at its POST
+  address (`/start`, `/tools`, `/rename`, ...): Back to it showed Chrome's
+  "Confirm Form Resubmission" or Firefox's "Document Expired", and WebKit
+  silently sent the form again. The address bar now reads `/` with the form
+  still filled in.
+- **Kill, Rename, shortcuts, start at boot and the Codex daemon land where
+  you were.** Each used to reload the page at the top with every card
+  closed and no word about what happened; on a phone the result was one to
+  two screens down. The page now comes back at that section or agent card,
+  open, with one line saying what happened ("Killed “main”.", "Saved
+  shortcut “Deploy”.", "Codex: Remote control daemon stopped."), and
+  anything half-typed in the Start card is kept. The note shows once: a
+  reload or Back doesn't bring it back (the old "Default directory: ..." note
+  did, on every reload).
+- **Kill and Rename happen in place.** No reload: the row goes away or shows
+  its new name. Rename opens focused with the old name selected, refuses `:`
+  and `.` before sending, and shows a refusal right under the field with the
+  menu still open and your text kept.
+- Changing the default directory ("Starts in ~ · change") no longer empties a
+  half-filled Start card, and a folder it refuses is reported inside that
+  form instead of at the top of the page, off-screen on a phone.
+- Back after starting an agent left Chrome showing two chips lit, the command
+  box up and the previous command ready to run again. The Start card now
+  comes back clean and consistent.
 - Renaming a session to a name starting with `-` failed with tmux's raw
   "unknown flag" error, although creating one worked.
 - A session name starting with `$` was accepted, and the session then
@@ -166,12 +208,37 @@ and this project uses [Semantic Versioning](https://semver.org/).
   starting a session; a rename now says "Another session is already called
   “main”. Pick a different name."
 
+### Changed
+
+- **"Save as a shortcut": naming it is enough.** A name typed into the panel
+  was thrown away unless the separate box was ticked too; now a name means
+  save (and ticks the box as you type). Saving with no command is refused
+  instead of silently starting a plain shell.
+- **Shortcut runs are named after the shortcut** ("Disk usage" runs as
+  `disk-usage`, then `disk-usage-2`), not the command's first word -- two
+  shortcuts that both start with `cd` used to share one name family.
+- **Update serverjack asks before it runs** ("Update serverjack and restart
+  it?"): one stray tap used to pull new code and restart every open
+  terminal. The row shows its whole command (wrapped, home as `~`) and says
+  what it does for this install.
+- The duplicate-name error on the Start card now has an **Open** button for
+  the session that has the name; its text no longer says "Open it instead."
+- Start card copy: the hint says why `sudo` prompts work (a real terminal)
+  and hides when an agent is picked; the shortcut-name box says it names the
+  shortcut. The empty Shortcuts hint says "No saved shortcuts yet" (the
+  built-in Update row is right above it) and is a line, not a second card.
+- Shortcut rows wrap a long command instead of cutting it off.
+
 ### Added
 
 - Directory picker: a **›** at the end of each suggestion shows that
   folder's subfolders -- the touch equivalent of Tab, and clickable with a
   mouse too -- while tapping or clicking the row itself still picks it.
   Tapping the field again after a pick brings the list back.
+
+- **Edit a shortcut.** A pencil on each saved shortcut opens it in the
+  shortcut form; *Save changes* replaces it in place, same position in the
+  list. The built-in Update row has none.
 
 ## 1.5.0 - 2026-09-16
 

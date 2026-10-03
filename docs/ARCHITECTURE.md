@@ -411,6 +411,13 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   swipe/drill-down, Tab/Shift+Tab, hover and right-click, late lookups, and
   that the list (in flow) never covers the fields and buttons below it, with
   real and slow clicks, on desktop engines and emulated iPhones.
+- `pwflows.py` — what happens around a landing-page submit: an error keeps
+  every typed field (the directory included) and its address is a plain
+  GET of `/`, so reload and Back never resubmit; a double tap through a
+  delaying proxy is one POST; Kill and Rename work in place; in-place
+  actions land back at their section or card with a one-shot note;
+  shortcuts can be edited; multi-line commands run line by line. Chromium,
+  WebKit's iPhone 14 emulation and Firefox.
 - `pwauth.py` — `SERVERJACK_ALLOW` end-to-end against a second scratch
   instance, with Playwright forging (or withholding) the
   `Tailscale-User-Login` header itself: wrong/missing header is a 403 that
@@ -419,8 +426,8 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   client spawned — proving identity covers the proxied terminal too.
 
 **`security_http.py`** (host-side) checks HTTP-parser behavior needing no
-browser: the two `OPEN_PATHS` still require identity on **POST** against
-the restricted instance, and a table of malformed `Content-Length` values
+browser: the two `OPEN_PATHS` (and `POST /`, which only redirects) still
+require identity on **POST** against the restricted instance, and a table of malformed `Content-Length` values
 (`invalid`, `-1`, `65537`) each get the exact status `form()` produces
 (400, 400, 413), sent over a raw socket to bypass `http.client`'s own
 validation.

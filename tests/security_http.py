@@ -43,7 +43,9 @@ def raw_content_length(value):
 
 
 headers = {"Sec-Fetch-Site": "same-origin", "Content-Length": "0"}
-for path in ("/healthz", "/api/status"):
+# "/" too: POST / only redirects to the page, but it must not be reachable
+# without an identity any more than the page itself is.
+for path in ("/healthz", "/api/status", "/"):
     status = request_status(AUTH, "POST", path, headers)
     ok(f"restricted POST {path} requires identity", status == 403, str(status))
 
