@@ -82,6 +82,47 @@ with sync_playwright() as p:
        and r.body()[:8] == b"\x89PNG\r\n\x1a\n", f"{r.status} {r.headers.get('content-type')}")
     ctx.close()
 
+    # ------------------------- the terminal's frame while ttyd loads (F15) --
+    # The dark color-scheme belongs to the landing page only. Declared on the
+    # terminal page too (it shares TOKENS), the iframe around ttyd's document
+    # -- which declares none -- gets an opaque WHITE canvas until xterm paints:
+    # a white terminal on every open, tab switch and reconnect. A bare
+    # document at /term/ stands in for "ttyd not painted yet".
+    frm = make(f"pwlay-frame-{TAG}")
+
+    def bare_term(route):
+        if route.request.resource_type == "document":
+            route.fulfill(status=200, content_type="text/html",
+                          body="<!doctype html><html><head></head><body></body></html>")
+        else:
+            route.continue_()
+    from PIL import Image
+    for bt in ("chromium", "firefox", "webkit"):
+        eb = b if bt == "chromium" else getattr(p, bt).launch()
+        tc = eb.new_context(viewport={"width": 900, "height": 500})
+        tp = tc.new_page()
+        tp.route("**/term/**", bare_term)
+        tp.goto(f"{BASE}/s/{frm}")
+        tp.wait_for_timeout(1200)
+        # The CRT "connecting" scanline sweeps over the frame while ttyd hasn't
+        # answered (it never will here); a sample landing on it isn't a white
+        # canvas, so take it out of the picture.
+        tp.add_style_tag(content="#conn{display:none!important}")
+        fb = tp.locator("#frame").bounding_box()
+        tp.screenshot(path=f"shots/layout-frame-{bt}.png")
+        im = Image.open(f"shots/layout-frame-{bt}.png").convert("RGB")
+        px = [im.getpixel((int(fb["x"] + fb["width"] * fx), int(fb["y"] + fb["height"] * fy)))
+              for fx in (.25, .5, .75) for fy in (.25, .5, .75)] if fb else []
+        ok(f"{bt}: the terminal frame stays dark while ttyd's page loads (no white flash)",
+           px and all(max(c) < 64 for c in px), str(px[:3]))
+        cs = tp.evaluate("['pop', 'screen', 'winmenu', 'frame'].map(i =>"
+                         " getComputedStyle(document.getElementById(i)).colorScheme)")
+        ok(f"{bt}: the + panel, Copy view and window list draw dark scrollbars; the frame doesn't",
+           cs[:3] == ["dark"] * 3 and cs[3] != "dark", str(cs))
+        tc.close()
+        if eb is not b:
+            eb.close()
+
     # ------------------------------------------- status-bar strip (iPhone) --
     print("webkit iphone 14:")
     wk = p.webkit.launch()
@@ -100,7 +141,6 @@ with sync_playwright() as p:
     ok("a fixed, opaque strip sits behind the status bar above menus",
        bool(strip) and strip[0] == "fixed" and strip[1] == "rgb(8, 15, 14)" and strip[2] > 6, str(strip))
     ipage.screenshot(path="shots/layout-statusbar.png", clip={"x": 0, "y": 0, "width": 390, "height": 60})
-    from PIL import Image
     img = Image.open("shots/layout-statusbar.png").convert("RGB")
     sx = img.width / 390.0
     band = {img.getpixel((int(x * sx), int(y * sx))) for x in range(0, 390, 13) for y in range(2, 45, 7)}

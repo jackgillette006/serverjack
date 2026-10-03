@@ -2506,7 +2506,7 @@ class LandingHandlerTests(unittest.TestCase):
 
 class PageChromeTests(unittest.TestCase):
     """Landing-layout fixes that are pure functions of module state: the header
-    title, the dark color-scheme in the shared tokens, and a client hanging up
+    title, the dark color-scheme (landing CSS only), and a client hanging up
     mid-response."""
 
     def setUp(self):
@@ -2528,10 +2528,13 @@ class PageChromeTests(unittest.TestCase):
         mod.TITLE = "<b>x</b>"
         self.assertEqual(mod.title_small(), " <small>&lt;b&gt;x&lt;/b&gt;</small>")
 
-    def test_tokens_declare_a_dark_color_scheme(self):
+    def test_landing_css_declares_a_dark_color_scheme_but_the_tokens_do_not(self):
         # Without it Chromium/Firefox draw light scrollbars and white
-        # checkboxes on the dark-only UI. TOKENS is shared by both pages.
-        self.assertIn("color-scheme:dark;", mod.TOKENS)
+        # checkboxes on the dark-only UI. It must stay out of TOKENS, which
+        # the terminal page shares: a dark embedder around ttyd's light-scheme
+        # document gives the iframe an opaque white canvas while it loads.
+        self.assertIn("color-scheme:dark", mod.CSS)
+        self.assertNotIn("color-scheme", mod.TOKENS)
         self.assertEqual(mod._token("bg-primary"), "#080f0e")
 
     def test_landing_and_deny_pages_render_the_header_once(self):
