@@ -1401,30 +1401,64 @@ def auto_name(base="shell"):
 
 
 CMD_WRAPPERS = ("sudo", "env", "nohup", "nice", "time")
+# A wrapper's options that take the NEXT word as their value: "sudo -u
+# postgres psql" runs psql, not "postgres". Short forms only -- a long option
+# ("--user=postgres") carries its value in the same word anyway.
+WRAPPER_VALUE_FLAGS = {
+    "sudo": ("-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T"),
+    "nice": ("-n",),
+    "env": ("-u", "-C", "-S"),
+    "time": ("-f", "-o"),
+}
 
 
 def default_session_name(kind, cwd, cmd=None):
     """The name a session gets when nothing was typed: "<type>-<directory>",
     either half optional. Type: the tool id for an agent session; for a shell
-    session, the first word of `cmd` (basename only) that isn't a wrapper
-    like sudo/env/nohup/nice/time -- so "sudo apt install ffmpeg" names
-    itself after "apt", not "sudo" -- or "shell" if nothing sensible remains
-    (or there's no command at all). Directory: cwd's basename, omitted when
-    cwd is HOME. The combined base is sanitized with auto_name's own rules
-    and made unique the same way it already makes any base unique."""
+    session, the command `cmd` actually runs (basename only): wrappers like
+    sudo/env/nohup/nice/time are skipped, and so are their options (with the
+    value of one that takes a value) and any VAR=value assignment -- so
+    "sudo apt install ffmpeg" names itself after "apt", "sudo -u nobody true"
+    after "true", "env FOO=1 printenv FOO" after "printenv" -- or "shell" if
+    nothing sensible remains (or there's no command at all). Directory: cwd's
+    basename, omitted when cwd is HOME. The combined base is sanitized with
+    auto_name's own rules and made unique the same way it already makes any
+    base unique."""
     if kind == "shell":
         kind_part = "shell"
-        for word in (cmd or "").split():
-            word = os.path.basename(word)
-            if word not in CMD_WRAPPERS:
-                kind_part = word
-                break
+        try:
+            words = shlex.split(cmd or "")
+        except ValueError:              # an unbalanced quote must never stop a start
+            words = (cmd or "").split()
+        wrapper, skip = None, False
+        for word in words:
+            if skip:                    # the value of a wrapper option like sudo -u
+                skip = False
+                continue
+            base = os.path.basename(word)
+            if base in CMD_WRAPPERS:
+                wrapper = base
+                continue
+            if word.startswith("-"):    # an option, not the command
+                skip = wrapper is not None and word in WRAPPER_VALUE_FLAGS.get(wrapper, ())
+                continue
+            if re.match(r"[A-Za-z_][A-Za-z0-9_]*=", word):    # FOO=1 before the command
+                continue
+            kind_part = base
+            break
     else:
         kind_part = kind
     cwd = (cwd or HOME).rstrip("/")
     dir_part = "" if cwd == HOME.rstrip("/") else os.path.basename(cwd)
     base = "-".join(p for p in (kind_part, dir_part) if p).lower()
     return auto_name(base[:60])
+
+
+def taken_msg(name):
+    """validate_name()'s duplicate-name error. Context-free on purpose: the
+    landing page adds an "Open" button next to it, a rename says something
+    else entirely (see rename_session())."""
+    return f"A session called “{name}” already exists."
 
 
 def validate_name(name, required=True, base="shell"):
@@ -1435,8 +1469,14 @@ def validate_name(name, required=True, base="shell"):
         return auto_name(base), None
     if any(c in name for c in ":.\t\n") or len(name) > 60:
         return None, "Session names can't contain ':' or '.' (tmux rule) or be longer than 60 chars."
+    # tmux reads "=$x" (how every lookup here targets a session by exact
+    # name) as the session *id* $x: a "$x" session could be created, then
+    # never opened, killed or renamed -- and "$3" would hit session id 3.
+    # Must be checked before session_exists(), which misreads it the same way.
+    if name.startswith("$"):
+        return None, "Session names can't start with “$” (tmux reads that as a session id)."
     if session_exists(name):
-        return None, f"A session called “{name}” already exists. Open it instead."
+        return None, taken_msg(name)
     return name, None
 
 
@@ -1449,12 +1489,18 @@ def rename_session(old, new):
     old = (old or "").strip()
     if not old or not session_exists(old):
         return None, f"No session called “{old}” (it may have exited)."
-    if (new or "").strip() == old:
+    typed = (new or "").strip()
+    if typed == old:
         return old, None            # no-op, and validate_name would call it a duplicate
-    new, err = validate_name(new or "", required=True)
+    new, err = validate_name(typed, required=True)
     if err:
+        if err == taken_msg(typed):     # the new-session wording would make no sense here
+            err = f"Another session is already called “{typed}”. Pick a different name."
         return None, err
-    r = tmux("rename-session", "-t", f"={old}", new)
+    # "--": the new name is a bare positional argument, so tmux's getopt would
+    # read "-x" as a flag ("unknown flag -x") -- although creating "-x" works,
+    # since there the name is -s's value.
+    r = tmux("rename-session", "-t", f"={old}", "--", new)
     if r.returncode != 0:
         return None, (r.stderr or r.stdout).strip() or "tmux rename-session failed"
     return new, None
