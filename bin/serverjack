@@ -144,8 +144,9 @@ Configuration is by environment variables (see install.sh / README):
     SERVERJACK_TOOLS  comma-separated agent ids to show, in that order
                       (default: every tool in the registry below)
     SERVERJACK_TERM   URL path this app serves the terminal on  default /term/
-    SERVERJACK_SSH    user@host for the "open in an SSH app" menu item,
-                      or "off" to hide it   (default: the tailnet name)
+    SERVERJACK_SSH    user@host for the "Copy SSH command" and "SSH app
+                      (login only)" menu items, or "off" to hide them
+                      (default: the tailnet name)
     SERVERJACK_CONFIG config dir  (default ~/.config/serverjack)
     SERVERJACK_AUTOSTART_DELAY
                       seconds to wait after startup before running
@@ -2357,14 +2358,36 @@ def status():
     return out
 
 
-def ago(ts):
-    if not ts:
+def session_facts(s):
+    """The short half of a session row's meta line, as HTML: "attached" (as a
+    word, not just the dot's colour, and first so a phone's ellipsis can't
+    cut it), the window count when there is more than one, and the age. The
+    path and command follow it and are what a narrow row gives up first.
+    "attached" is aria-hidden because the dot already says it to a screen
+    reader. LAND_JS's facts() rebuilds the same thing in place."""
+    rest = " · ".join(x for x in (
+        f"{s['windows']} windows" if s["windows"] > 1 else "",
+        session_age(s["created"])) if x)
+    att = ""
+    if s["attached"]:
+        att = '<span aria-hidden="true"><b class="att">attached</b>' + (" &middot; " if rest else "") + "</span>"
+    return att + esc(rest).replace(" · ", " &middot; ")
+
+
+def session_age(created, now=None):
+    """How long a session has existed, in the word the sysline already uses
+    for the machine ("up 12d 4h"), to one unit so it fits a phone's row:
+    "up <1m", "up 5m", "up 3h", "up 2d". It is the session's age, not its
+    last activity -- a bare "5m ago" read as the latter. The landing page's
+    script computes the same string in place (age() in LAND_JS), so the two
+    must stay in step."""
+    if not created:
         return ""
-    s = int(time.time()) - ts
+    s = max(0, int(time.time() if now is None else now) - int(created))
     for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
         if s >= n:
-            return f"{s // n}{unit} ago"
-    return "just now"
+            return f"up {s // n}{unit}"
+    return "up <1m"
 
 
 # ------------------------------------------------------------ self-check ---
@@ -3157,13 +3180,22 @@ h2:first-of-type{margin-top:var(--space-4)}
 .sess:not(.sess + .sess):has(+ :not(.sess)){border-radius:var(--radius-md)}
 .sess .info{flex:1;min-width:0}
 .sess .name{font:600 15px/22px var(--font-mono);display:flex;align-items:center;gap:var(--space-2);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  min-width:0;white-space:nowrap}
 /* text-overflow does nothing on a flex container's bare text, so the visible
    name is its own shrinking span and the pill/dot beside it never shrink */
 .sess .name .nm{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .sess .name .pill{flex:none}
 .sess .meta{color:var(--text-muted);font:400 12px/18px var(--font-mono);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* two-part meta: the short facts first, the long where-part (command, path)
+   after it. The facts never shrink (only clamp to the row, then ellipsis);
+   the where-part takes whatever is left, down to nothing. It starts with a
+   no-break space: a flex item drops a leading ordinary one. */
+.meta.split{display:flex}
+.meta.split > span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.meta.split .facts{flex:none;max-width:100%}
+.meta.split .where{flex:0 1 auto}
+.meta .att{color:var(--accent);font-weight:500}
 .meta code{font:inherit;color:var(--text-secondary)}
 .meta.wrap{white-space:normal;overflow:visible;text-overflow:clip}
 .sess .name .pill{font:500 10px/14px var(--font-mono);text-transform:uppercase;letter-spacing:.06em}
@@ -3293,13 +3325,24 @@ details.card[open] summary::before,details.inline[open] summary::before{content:
 .menu-list details.ren > summary:hover .i{color:var(--accent)}
 .menu-list details.ren form{display:flex;gap:6px;align-items:center;border-top:0;margin:0;
   padding:0 6px 6px}
-.menu-list details.ren input[type=text]{flex:1 1 auto;min-width:0;width:auto;padding:8px 10px;
-  font:13px/1.3 var(--font-mono)}
+/* 16px: anything smaller makes iOS Safari zoom the page when it is focused */
+.menu-list details.ren input[type=text]{flex:1 1 auto;min-width:0;width:auto;padding:7px 10px;
+  font:16px/1.3 var(--font-mono)}
 /* the menu's own button rule would flatten Save into a menu item */
 .menu-list details.ren form button{flex:none;width:auto;justify-content:center;padding:8px 14px;
   min-height:36px;background:var(--accent);color:var(--on-accent)}
 .menu-list details.ren form button:hover{background:#5cffa0;color:var(--on-accent)}
 .menu-list:has(details.ren[open]){min-width:290px}
+/* Phones: the ⋯ sits ~100px in from the edge (Open is beside it), so a list
+   anchored to its right edge ran off the left of the screen. Anchor it to the
+   whole row instead: it drops in under the row, the row's width. */
+@media (max-width:480px){
+  .sess{position:relative}
+  .menu{position:static}
+  /* two rules, not one list: a browser without :has() drops a whole list */
+  .menu-list{left:var(--space-2);right:var(--space-2);min-width:0}
+  .menu-list:has(details.ren[open]){min-width:0}
+}
 @media (pointer:coarse){.menu-list details.ren > summary{min-height:44px}}
 @keyframes sj-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 body.touch .desktop-only{display:none}
@@ -3525,7 +3568,7 @@ START_CARD = """<h2>Start a session</h2>
       placeholder="Optional: a command to run, e.g. sudo apt install ffmpeg">{cmd}</textarea>
     <details class="inline"{save_open}><summary>Save as a shortcut</summary>
       <div class="save"><input type="checkbox" id="save" name="save" value="1"{save_checked}><label for="save">Keep this command in Shortcuts</label></div>
-      <input name="label" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Shortcut name" placeholder="Shortcut name (optional), e.g. Update packages" value="{label}">
+      <input name="label" maxlength="60" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Shortcut name" placeholder="Shortcut name (optional), e.g. Update packages" value="{label}">
     </details>
   </div>
   <p class="hint" id="toolhint" hidden></p>
@@ -3854,7 +3897,7 @@ FLOWS_JS = r"""
 ADD_SHORTCUT_CARD = """<details class="card" id="addsc"{addsc_open}><summary>{sc_title}</summary>
 <form class="row" method="post" action="/shortcuts/add">{sc_id}
   <div><label for="sc_label">Name</label>
-  <input id="sc_label" name="label" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. Deploy" value="{sc_label}"></div>
+  <input id="sc_label" name="label" maxlength="60" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. Deploy" value="{sc_label}"></div>
   <div><label for="sc_cmd">Command to run</label>
   <textarea id="sc_cmd" name="cmd" rows="2" required autocapitalize="off" spellcheck="false" placeholder="e.g. ./deploy.sh &amp;&amp; docker compose logs -f">{sc_cmd}</textarea></div>
   <div><label for="sc_dir">Directory</label>
@@ -3864,21 +3907,21 @@ ADD_SHORTCUT_CARD = """<details class="card" id="addsc"{addsc_open}><summary>{sc
 
 SHORTCUT_CARD = """<div class="card sess">
   <div class="info">
-    <div class="name">{label}</div>
-    <div class="meta wrap"><code>{cmd}</code> &middot; {dir}</div>
+    <div class="name" title="{label}"><span class="nm">{label}</span></div>
+    <div class="meta wrap"><span class="facts">{dir}</span> &middot; <code>{cmd}</code></div>
   </div>
   <a class="btn ghost icon sc-edit" href="/?edit_sc={id_q}#addsc" title="Edit shortcut" aria-label="Edit shortcut “{label}”">{edit}</a>
   <form method="post" action="/shortcuts/del" data-confirm="Remove shortcut “{label}”?">
-    <input type="hidden" name="id" value="{id}"><button class="btn ghost icon del" type="submit" title="Remove shortcut" aria-label="Remove shortcut">{trash}</button>
+    <input type="hidden" name="id" value="{id}"><button class="btn ghost icon del" type="submit" title="Remove shortcut {label}" aria-label="Remove shortcut {label}">{trash}</button>
   </form>
   <form method="post" action="/shortcuts/run">
-    <input type="hidden" name="id" value="{id}"><button class="btn" type="submit">Run</button>
+    <input type="hidden" name="id" value="{id}"><button class="btn" type="submit" aria-label="Run {label}">Run</button>
   </form>
 </div>"""
 
 UPDATE_CARD = """<div class="card sess" id="sc-update">
   <div class="info">
-    <div class="name">Update serverjack <i class="pill">built-in</i></div>
+    <div class="name"><span class="nm">Update serverjack</span> <i class="pill">built-in</i></div>
     <div class="meta wrap"><code>{cmd}</code></div>
     <div class="meta wrap">{what}</div>
   </div>
@@ -3887,13 +3930,13 @@ UPDATE_CARD = """<div class="card sess" id="sc-update">
   </form>
 </div>"""
 
-SESSION_CARD = """<div class="card sess">
+SESSION_CARD = """<div class="card sess" data-session="{name}" data-created="{created}">
   <div class="info">
-    <div class="name"><span class="dot{on}"></span><span class="nm">{name}</span>{tag}</div>
-    <div class="meta">{cmd} &middot; {path} &middot; {windows} &middot; {ago}{attached}</div>
+    <div class="name" title="{name}"><span class="dot{on}" role="img" aria-label="{state}" title="{state}"></span><span class="nm">{name}</span>{tag}</div>
+    <div class="meta split"><span class="facts">{facts}</span><span class="where">&nbsp;&middot; {cmd} &middot; {path}</span></div>
   </div>
   <details class="menu">
-    <summary class="btn ghost icon" title="More" aria-label="More">{dots}</summary>
+    <summary class="btn ghost icon" title="More actions for {name}" aria-label="More actions for {name}">{dots}</summary>
     <div class="menu-list">
       <a href="{href}" data-open="here">{i_here}<span>Open here</span></a>
       <a href="{href}?popout=1" data-open="popout" class="desktop-only">{i_popout}<span>Pop out</span></a>
@@ -3912,11 +3955,11 @@ SESSION_CARD = """<div class="card sess">
       </form>
     </div>
   </details>
-  <a class="btn sec open" href="{href}" data-name="{name}">Open</a>
+  <a class="btn sec open" href="{href}" data-name="{name}" aria-label="Open {name}">Open</a>
 </div>"""
 
 SSH_ITEMS = """<button type="button" data-copy="{cmd}">{i_copy}<span class="lbl">Copy SSH command</span></button>
-      <a href="{url}" data-open="ssh">{i_link}<span>Open in SSH app</span></a>"""
+      <a href="{url}" data-open="ssh" title="Opens your SSH app logged in to this server. An ssh:// link can't attach a session: use Copy SSH command for that.">{i_link}<span>SSH app (login only)</span></a>"""
 
 TERM_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>{name} &middot; {title}</title>
@@ -5003,10 +5046,9 @@ def render(error=None, dir_custom="", cmd="", label="", name="", sc_label="", sc
         cards = "\n".join(SESSION_CARD.format(
             on=" on" if s["attached"] else "", name=esc(s["name"]), cmd=esc(s["cmd"]),
             tag=' <i class="pill">server</i>' if s["name"] in served else "",
-            path=esc(s["path"]),
-            windows=f"{s['windows']} window{'s' if s['windows'] != 1 else ''}",
-            ago=ago(s["created"]),
-            attached=" &middot; attached" if s["attached"] else "",
+            path=esc(s["path"]), created=int(s["created"]),
+            state="attached" if s["attached"] else "not attached",
+            facts=session_facts(s),
             href=esc(term_href(s["name"])),
             dots=I_DOTS, i_here=I_HERE, i_popout=I_POPOUT, i_trash=I_TRASH, i_edit=I_EDIT,
             ssh_items=SSH_ITEMS.format(cmd=esc(ssh_cmd(s["name"])), url=esc("ssh://" + SSH_TARGET),

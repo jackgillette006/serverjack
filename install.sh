@@ -313,7 +313,7 @@ TTYD_EXTRA_ARGS=
 # The terminal uses the app's own color theme by default. Set to off (or
 # 0/no/false) to leave ttyd's stock xterm.js look instead.
 #SERVERJACK_TERM_THEME=off
-# user@host used by "Copy SSH command" / "Open in SSH app" (auto: tailnet name); "off" hides them
+# user@host used by "Copy SSH command" / "SSH app (login only)" (auto: tailnet name); "off" hides them
 #SERVERJACK_SSH=
 # Sessions opened from the page get tmux's status line hidden (the page bar
 # shows tabs and window count). Set to on to leave tmux's status line alone.

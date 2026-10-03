@@ -2572,5 +2572,59 @@ class PageChromeTests(unittest.TestCase):
                 mod.Handler.handle(mock.Mock())
 
 
+class SessionRowTests(unittest.TestCase):
+    """The landing page's session rows: what the meta line says, in which
+    order, and the per-row names assistive tech and Voice Control get."""
+
+    def _page(self, sess):
+        with mock.patch.object(mod, "sessions", return_value=sess), \
+                mock.patch.object(mod, "load_tools", return_value=([], None)), \
+                mock.patch.object(mod, "load_shortcuts", return_value=[]), \
+                mock.patch.object(mod, "update_available", return_value=False):
+            return mod.render()
+
+    def test_age_is_labelled_as_uptime_in_one_unit(self):
+        now = 1_000_000
+        self.assertEqual(mod.session_age(now - 5, now), "up <1m")
+        self.assertEqual(mod.session_age(now - 600, now), "up 10m")
+        self.assertEqual(mod.session_age(now - 3 * 3600 - 59, now), "up 3h")
+        self.assertEqual(mod.session_age(now - 2 * 86400, now), "up 2d")
+        self.assertEqual(mod.session_age(0, now), "")
+        self.assertEqual(mod.session_age(now + 30, now), "up <1m")   # clock skew
+
+    def test_short_facts_come_first_and_attached_is_a_word(self):
+        now = int(time.time())
+        page = self._page([{"name": "main", "windows": 3, "attached": True,
+                            "created": now - 120, "cmd": "bash", "path": "~/projects/game"}])
+        facts = page.split('class="facts">', 1)[1].split("</span><span", 1)[0]
+        self.assertTrue(facts.startswith('<span aria-hidden="true"><b class="att">attached</b>'), facts)
+        self.assertIn("3 windows &middot; up 2m", facts)
+        where = page.split('class="where">', 1)[1].split("</span>", 1)[0]
+        self.assertIn("bash", where)
+        self.assertIn("~/projects/game", where)
+        self.assertNotIn(" ago", page.split("<h2", 1)[1].split("Agent servers", 1)[0])
+        self.assertIn('role="img" aria-label="attached"', page)
+
+    def test_a_single_window_is_not_spelled_out(self):
+        now = int(time.time())
+        one = {"name": "x", "windows": 1, "attached": False, "created": now - 60,
+               "cmd": "bash", "path": "~"}
+        self.assertEqual(mod.session_facts(one), "up 1m")
+        self.assertEqual(mod.session_facts(dict(one, windows=2)), "2 windows &middot; up 1m")
+        self.assertIn("attached</b> &middot; </span>up 1m", mod.session_facts(dict(one, attached=True)))
+        self.assertEqual(mod.session_facts(dict(one, attached=True, created=0)),
+                         '<span aria-hidden="true"><b class="att">attached</b></span>')
+
+    def test_row_controls_are_named_for_their_row_and_escaped(self):
+        page = self._page([{"name": 'a"b<c>', "windows": 1, "attached": False,
+                            "created": 0, "cmd": "bash", "path": "~"}])
+        self.assertIn('aria-label="More actions for a&quot;b&lt;c&gt;"', page)
+        self.assertIn('aria-label="Open a&quot;b&lt;c&gt;"', page)
+        self.assertIn('title="a&quot;b&lt;c&gt;"', page)
+        self.assertIn('data-session="a&quot;b&lt;c&gt;"', page)
+        self.assertIn('aria-label="not attached"', page)
+        self.assertNotIn('a"b<c>', page)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

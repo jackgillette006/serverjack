@@ -293,10 +293,17 @@ process is listening.
 
 ## Sessions
 
-Every tmux session on the box is a row: a status dot, the command, the
-directory, how many windows, and how long it has been there. **Open** attaches
-(a pop-out window on a desktop, the same tab on a phone). The ⋯ menu has
-*Open here*, *Pop out*, the two SSH hand-offs, **Rename**, and *Kill session*.
+Every tmux session on the box is a row: a status dot and its name, then the
+short facts first -- **attached** (in words, when any terminal is on it), the
+window count when there is more than one, and how long it has been up
+(`up 5m`, `up 3h`, `up 2d`: its age, not its last activity) -- and after them
+the command and directory, which are what a narrow phone row cuts short. A
+long name ends in `…`; hover it on a desktop for the whole thing. **Open**
+attaches (a pop-out window on a desktop, the same tab on a phone). The ⋯ menu
+has *Open here*, *Pop out*, the two SSH hand-offs (*Copy SSH command*, which
+attaches this session, and *SSH app (login only)*, an `ssh://` link that can
+only log in to the server -- the scheme has no way to carry a command),
+**Rename**, and *Kill session*.
 
 A session serverjack started as an agent's background server (see
 [Agent servers](#agent-servers)) carries a small **server** tag.

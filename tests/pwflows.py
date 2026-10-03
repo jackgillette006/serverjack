@@ -272,7 +272,7 @@ with sync_playwright() as p:
     page.wait_for_load_state()
     ok("Back from the terminal lands on / without re-POSTing",
        page.url == f"{BASE}/" and not any(m == "POST" for m, _ in reqs), f"{page.url} {reqs[:4]}")
-    card = page.locator(f'.card.sess:has(.name:text-is("{sclabel}"))')
+    card = page.locator(f'.card.sess:has(.name .nm:text-is("{sclabel}"))')
     ok("the shortcut asked for before the error was saved by the retry", card.count() == 1)
 
     # Naming the shortcut is enough; ticking with no command is refused.
@@ -453,7 +453,7 @@ with sync_playwright() as p:
     page.reload()
     ok("the note is one-shot: a reload doesn't bring it back", page.locator(".flash").count() == 0)
 
-    card = page.locator(f'.card.sess:has(.name:text-is("{addlabel}"))')
+    card = page.locator(f'.card.sess:has(.name .nm:text-is("{addlabel}"))')
     ok("the built-in Update row has no edit button", page.locator("#sc-update a.sc-edit").count() == 0)
     card.locator("a.sc-edit").click()
     page.wait_for_selector("#addsc[open]")
@@ -481,7 +481,7 @@ with sync_playwright() as p:
     page.fill("#sc_cmd", "cd /tmp\necho SC_TWO")
     page.click('#addsc button[type=submit]')
     page.wait_for_selector("#note")
-    card = page.locator(f'.card.sess:has(.name:text-is("{addlabel}"))')
+    card = page.locator(f'.card.sess:has(.name .nm:text-is("{addlabel}"))')
     ok("Save changes replaces it in place (still one, new command)",
        card.count() == 1 and "SC_TWO" in card.inner_text()
        and "Updated shortcut" in page.locator("#note").inner_text(), card.inner_text())
@@ -498,7 +498,7 @@ with sync_playwright() as p:
     ok("...and its multi-line command ran line by line", "SC_TWO" in out and "$'" not in out, out[-200:])
     page.goto(f"{BASE}/")
     for label in (addlabel, sclabel, f"Label only {TAG}"):
-        c = page.locator(f'.card.sess:has(.name:text-is("{label}"))')
+        c = page.locator(f'.card.sess:has(.name .nm:text-is("{label}"))')
         if c.count():
             c.first.locator('form[action="/shortcuts/del"] button').click()
             page.wait_for_selector("#note")
@@ -605,7 +605,7 @@ with sync_playwright() as p:
        and sp.evaluate("document.documentElement.scrollWidth <= innerWidth"),
        str(sp.evaluate("[document.querySelectorAll('a.sc-edit').length, "
                        "document.documentElement.scrollWidth, innerWidth]")))
-    c = sp.locator(f'.card.sess:has(.name:text-is("{narrow}"))')
+    c = sp.locator(f'.card.sess:has(.name .nm:text-is("{narrow}"))')
     c.first.locator("a.sc-edit").tap()
     sp.wait_for_selector("#addsc[open]")
     fill_dir(sp, "#sc_dir", "/etc/hostname")
@@ -620,7 +620,7 @@ with sync_playwright() as p:
     sp.wait_for_timeout(300)
     ok("iPhone 320px: Cancel leaves the editor", editor(sp) == ["Add a shortcut", 0, False],
        f"{editor(sp)} {sp.url}")
-    c = sp.locator(f'.card.sess:has(.name:text-is("{narrow}"))')
+    c = sp.locator(f'.card.sess:has(.name .nm:text-is("{narrow}"))')
     if c.count():
         c.first.locator('form[action="/shortcuts/del"] button').click()
         sp.wait_for_selector("#note")
