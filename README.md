@@ -410,23 +410,26 @@ the bottom. Nothing in your tmux config is touched, and a mouse drag still
 selects text (a selection is dropped when the pane scrolls, since the text
 moves under it). **Typing returns to the live prompt**, as in any terminal:
 whatever you type, paste or tap on the key row while scrolled back leaves
-copy mode first and then arrives exactly as typed. That holds on every
-screen with the session open, not just the one that scrolled. Esc only
-leaves the scrollback; it isn't sent on, so it can't interrupt an agent.
-Copy mode you enter yourself (prefix `[`) is left alone. Ctrl+wheel and a
-trackpad pinch zoom the page and never reach the session. Because tmux
-keeps the history, the terminal's own (xterm.js) scrollback is set to 0
-(unless you set one with `-t scrollback=` in `TTYD_EXTRA_ARGS`) and its
-scrollbar hidden: there is never anything for it to scroll, and the grid
-gets the full width of the window.
+copy mode first and then arrives exactly as typed. Another screen with the
+session open does the same once it knows about the scroll: it checks at
+once when you click or tap in it, and every 2 seconds while it has focus.
+Esc (the key row's too, and Ctrl+[) only leaves the scrollback; it isn't
+sent on, so it can't interrupt an agent. PgUp and PgDn page through the
+scrollback instead of leaving it. Copy mode you enter yourself (prefix `[`)
+is left alone. Ctrl+wheel and a trackpad pinch zoom the page and never
+reach the session. Because tmux keeps the history, the terminal's own
+(xterm.js) scrollback is set to 0 (unless you set one with `-t scrollback=`
+in `TTYD_EXTRA_ARGS`) and its scrollbar hidden: there is never anything for
+it to scroll, and the grid gets the full width of the window.
 
-If a session has `mouse on`, tmux gets the wheel directly instead; the page
-follows the session's current setting, even if it changes while the page is
-open. With `mouse on` a plain drag selects in tmux, into tmux's own buffer
-and not the system clipboard: hold Shift while dragging to get a selection
-the browser can copy. On a Mac that takes Option, and only with
-`-t macOptionClickForcesSelection=true` in `TTYD_EXTRA_ARGS`; otherwise use
-the Copy key.
+If a session has `mouse on`, tmux gets the wheel directly instead, and the
+copy mode it scrolls into is tmux's own: keys go to copy mode as they always
+do in tmux. The page follows the session's current setting, even if it
+changes while the page is open. With `mouse on` a plain drag selects in
+tmux, into tmux's own buffer and not the system clipboard: hold Shift while
+dragging to get a selection the browser can copy. On a Mac that takes
+Option, and only with `-t macOptionClickForcesSelection=true` in
+`TTYD_EXTRA_ARGS`; otherwise use the Copy key.
 
 **Copy and paste** (Windows and Linux keyboards). Ctrl+C copies when text is
 selected and drops the selection, so the next Ctrl+C interrupts as usual;
@@ -1260,10 +1263,16 @@ managed-install` runs just that.
 - Copying with Ctrl+C or Ctrl+Shift+C is proven in Chromium and Firefox.
   Linux WebKit browsers (Epiphany) are untested there (the test suite's
   WebKit reports itself as a Mac); the Copy key works everywhere.
-- serverjack leaves the copy mode it entered before a page's next input. A
-  plain `tmux attach` client (ssh) on the same session still gets tmux's
+- serverjack leaves the copy mode it entered before a page's next input,
+  with three gaps. Another screen learns of a scroll at its next check
+  (every 2 seconds while it has focus, every 10 while it is only visible),
+  so a key typed there sooner can still land in copy mode. A session with
+  `mouse on` scrolls in tmux's own copy mode, which keeps tmux's behaviour.
+  And a plain `tmux attach` client (ssh) on the same session gets tmux's
   own behaviour: while scrolled back, its keys go to copy mode until it
-  scrolls to the bottom or presses Esc/`q`.
+  scrolls to the bottom or presses Esc/`q` (if you leave serverjack's copy
+  mode that way and enter your own with prefix `[` before any page has
+  looked, a page's next key can leave yours).
 - tmux sizes a session's window to the screen used last. A page takes it
   back when you use it (see [Scrolling, copying and keys](#scrolling-copying-and-keys)),
   but a phone that rotates or reconnects in the background, or an ssh

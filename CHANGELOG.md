@@ -517,8 +517,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
   belongs to the pane, a scroll on the phone did the same to the next thing
   typed on the desktop. Now whatever you type, paste or tap on the key row
   while scrolled back, on any screen, leaves the copy mode serverjack
-  entered and then arrives exactly as typed. Esc only leaves the scrollback,
-  and copy mode you enter yourself (prefix `[`) is left alone.
+  entered and then arrives exactly as typed. Esc, the key row's included,
+  only leaves the scrollback (also under tmux's vi keys, where copy mode's
+  own Esc didn't), PgUp and PgDn page through it, and copy mode you enter
+  yourself (prefix `[`) is left alone.
 - Ctrl+wheel, and a trackpad pinch, over the terminal typed Up/Down arrows
   into the session (one notch could bring back a command from shell
   history, ready to run on the next Enter) and the page never zoomed. It now
