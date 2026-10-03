@@ -103,7 +103,9 @@ with sync_playwright() as p:
     ok("landing page is 403", r.status == 403, str(r.status))
     body = page.inner_text("body")
     ok("403 page does NOT name the allowed login", "alice@example.com" not in body, body[:200])
-    ok("...and says who you are", "nobody" in body, body[:200])
+    ok("...and says no Tailscale identity reached it, not 'another tailnet user'",
+       "No Tailscale identity" in body and "tailscale serve" in body
+       and "another tailnet user" not in body and "nobody" not in body, body[:300])
     r = anon.request.get(f"{AUTH}/api/sessions")
     ok("JSON API is 403 too", r.status == 403, str(r.status))
     for asset in ("/manifest.webmanifest", "/icon.svg", "/icon-180.png", "/favicon.ico"):

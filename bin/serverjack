@@ -5144,12 +5144,12 @@ DENY_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="color-scheme" content="dark">
 <style>{css}</style></head><body><main>
 <h1>{glyph}serverjack{title_small}</h1>
-<div class="err">Not your serverjack.</div>
-<p class="tagline">This serverjack belongs to another tailnet user. You are signed in as {you}.</p>
+<div class="err">{headline}</div>
+<p class="tagline">{tagline}</p>
 <p class="foot">Identity comes from Tailscale: <code>tailscale serve</code> adds a
 <code>Tailscale-User-Login</code> header for the tailnet user on the other end, and this
 instance only answers to the logins its owner listed in <code>SERVERJACK_ALLOW</code>.
-Your own account on this machine can run its own serverjack on its own HTTPS port.</p>
+{foot_tail}</p>
 </main></body></html>
 """
 
@@ -5162,8 +5162,27 @@ def render_deny(login):
     # /icon-180.png before path dispatch, so those links would just 403 on
     # every load, and "Add to Home Screen" makes no sense for a page whose
     # whole point is that this user can't use it.
+    #
+    # No login at all is a different situation from a wrong one: the header
+    # never reached us (127.0.0.1, an SSH port-forward, a proxy uid not in
+    # SERVERJACK_TRUST_IDENTITY_UIDS, a tagged device). That is most often the
+    # owner, so don't tell them they are "another tailnet user" -- say how to
+    # come in so that Tailscale can say who they are.
+    if login:
+        headline = "Not your serverjack."
+        tagline = ("This serverjack belongs to another tailnet user. "
+                   f"You are signed in as {esc(login)}.")
+        tail = "Your own account on this machine can run its own serverjack on its own HTTPS port."
+    else:
+        headline = "No Tailscale identity reached this serverjack."
+        tagline = ("It only answers to the tailnet logins its owner allowed, and it can only tell "
+                   "who you are when you open it through its <code>tailscale serve</code> address "
+                   "(https://&lt;machine&gt;.&lt;tailnet&gt;.ts.net/), not 127.0.0.1, an SSH "
+                   "tunnel or another proxy.")
+        tail = ("A proxy that authenticates users itself has to be listed in "
+                "<code>SERVERJACK_TRUST_IDENTITY_UIDS</code> before its header is believed.")
     return DENY_PAGE.format(title=esc(TITLE), css=CSS, glyph=I_LOGO, title_small=title_small(),
-                            you=esc(login or "nobody"))
+                            headline=headline, tagline=tagline, foot_tail=tail)
 
 
 # --- PWA bits: manifest + icons (so "Add to Home Screen" on iOS / "Install"

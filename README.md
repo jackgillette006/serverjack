@@ -510,7 +510,10 @@ Set `SERVERJACK_ALLOW=alice@github` (comma-separated for more) and every
 request — the terminal included, because serverjack serves that too — must
 carry a matching `Tailscale-User-Login` header or it gets a 403 page. The page
 deliberately does *not* name the allowed logins; it says only that this
-serverjack belongs to someone else and who you are signed in as. Leave `ALLOW`
+serverjack belongs to someone else and who you are signed in as -- or, when no
+identity reached it at all (`127.0.0.1`, an SSH port-forward, a proxy that
+isn't trusted for identity), that it has to be opened through its
+`tailscale serve` address. Leave `ALLOW`
 unset and there is no identity check: the tailnet is the trust boundary.
 
 **That header is only believed from a peer that could have authenticated it.**
