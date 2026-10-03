@@ -24,9 +24,10 @@ Safari). What is proven here:
   terminal / a pick put it away, x is reachable, the current tab is in view,
   the window is named after the session it shows, and Open on it focuses it
   without a reload;
-- a popped-out session is never attached a second time from this browser
-  (Back after Pop out, its tab in another tab's strip), and a blocked pop-up
-  says so and opens an ordinary tab;
+- a popped-out session is not attached a second time from this browser by
+  Back after Pop out or its tab in another tab's strip (a note says where it
+  is, and goes once the tab is switched there after all), and a blocked
+  pop-up says so and opens an ordinary tab;
 - a touchscreen laptop (touch events, mouse pointer) keeps the desktop UI,
   and a finger swipe on its terminal still scrolls tmux's history; an iPad
   that reports a fine pointer (a trackpad attached) stays a tablet;
@@ -756,10 +757,15 @@ try:
                wait_for(lambda: other.evaluate(ARG) == P, 5) and wait_for(lambda: clients(P) == 2, 8),
                f"clients={clients(P)}")
             other.close()
+            page.click(f"#tabs .tab[data-name='{P}']")
+            ok("(picked again while it is still popped out: the note again)",
+               wait_for(lambda: note_says(page, P), 2) and page.evaluate(ARG) == Q)
             w.close()
             time.sleep(0.8)
             page.click(f"#tabs .tab[data-name='{P}']")
             ok("with the pop-out closed, its tab switches as usual", wait_for(lambda: page.evaluate(ARG) == P, 5))
+            ok("...and the note saying it is in a pop-out is gone", not page.locator("#note").is_visible(),
+               page.locator("#note").inner_text())
             ok("no page errors", not errs, errs)
             b.close()
 
