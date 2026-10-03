@@ -494,10 +494,88 @@ with sync_playwright() as p:
     pages_before = len(lctx.pages)
     lp.click(f'.sess[data-session="{victim}"] a.open')
     lp.wait_for_timeout(500)
-    ok("Open on a session that has ended says so instead of opening it",
+    said = lp.evaluate("""() => { const n = document.querySelector('.sess.sessmsg');
+        if (!n) return null; const r = n.getBoundingClientRect();
+        return {t: n.textContent, on: r.top >= 0 && r.bottom <= innerHeight}; }""")
+    ok("Open on a session that has ended says so, in the row's place, instead of opening it",
        len(lctx.pages) == pages_before and not present(victim)
-       and victim in (lp.locator("#sessnote").inner_text() if lp.locator("#sessnote").count() else ""),
-       f"pages {pages_before}->{len(lctx.pages)}")
+       and bool(said) and victim in said["t"] and said["on"],
+       f"pages {pages_before}->{len(lctx.pages)} {said}")
+    # A Rename in place swaps in a row no poll has seen yet -- here with a
+    # poll already on its way, its answer held 2.5 s, so it describes the
+    # list from before the rename. The row stays, and its Open opens it at
+    # once. It used to read as ended until the next poll (up to 15 s), and
+    # that stale answer dropped the row.
+    ren = make(f"pwlay-ren-{TAG}")
+    renamed = f"pwlay-renamed-{TAG}"
+    MADE.append(renamed)
+    lp.wait_for_timeout(1100)
+    poke()
+    wait_for(lambda: present(ren), 6)
+    lp.evaluate("""() => { const f = window.fetch;
+        window.fetch = function (u) { const r = f.apply(this, arguments);
+          return window.__hold && String(u).indexOf('/api/sessions') >= 0
+            ? r.then(x => new Promise(ok => setTimeout(() => ok(x), 2500))) : r; }; }""")
+    lp.evaluate("window.__hold = 1")
+    lp.wait_for_timeout(1100)
+    poke()                                           # the poll that is held
+    lp.wait_for_timeout(200)
+    lp.evaluate("window.__hold = 0")
+    sel = f'.sess[data-session="{ren}"]'
+    lp.click(f"{sel} details.menu > summary")
+    lp.click(f"{sel} details.ren > summary")
+    lp.fill(f"{sel} details.ren input[name=new]", renamed)
+    lp.click(f'{sel} form[action="/rename"] button[type=submit]')
+    lp.wait_for_selector(f'.sess[data-session="{renamed}"]', timeout=5000)
+    lp.wait_for_timeout(3000)                        # the held answer has landed
+    ok("a row renamed in place survives a poll answer from before the rename", present(renamed))
+    popped, why = None, ""
+    try:
+        # A pop-up can take a while to appear with the whole suite running.
+        with lctx.expect_page(timeout=20000) as pi:
+            lp.click(f'.sess[data-session="{renamed}"] a.open')
+        popped = pi.value
+        popped.wait_for_url(lambda u: f"/s/{renamed}" in u, timeout=20000)
+    except Exception as e:                           # noqa: BLE001 -- reported below
+        why = str(e).splitlines()[0][:100]
+    sn = lp.locator("#sessnote").inner_text() if lp.locator("#sessnote").count() else ""
+    ok("...and its Open opens it, not 'has ended'",
+       popped is not None and f"/s/{renamed}" in popped.url and renamed not in sn,
+       f"{popped.url if popped else why} note {sn!r} list at {lp.url}")
+    if popped:
+        popped.close()
+    # The agent cards and the machine line are not frozen at load (F24): a
+    # closed card that went stale (made stale by hand here) is redrawn from a
+    # fresh render when the page comes back, and an open one is left alone.
+    lp.goto(f"{BASE}/")
+    cards = lp.eval_on_selector_all("details.tool[id]", "els => els.map(e => e.id)")
+    lp.evaluate("""ids => { document.querySelector('.sysline').textContent = 'STALE';
+        document.querySelector('#' + ids[0] + ' > summary').insertAdjacentText('beforeend', ' STALE');
+        if (ids[1]) { const o = document.getElementById(ids[1]); o.open = true;
+          o.querySelector('summary').insertAdjacentText('beforeend', ' KEEP'); } }""", cards)
+    lp.wait_for_timeout(10500)                      # back after a while, not every focus
+    lp.evaluate("window.dispatchEvent(new Event('focus'))")
+    freshened = wait_for(lambda: lp.evaluate(
+        """id => document.querySelector('.sysline').textContent !== 'STALE'
+          && !document.querySelector('#' + id + ' > summary').textContent.includes('STALE')""", cards[0]), 5)
+    ok("coming back to the list redraws a closed agent card and the machine line", freshened,
+       lp.evaluate("document.querySelector('.sysline').textContent"))
+    if len(cards) > 1:
+        ok("...and leaves an open one as it is",
+           "KEEP" in lp.inner_text(f"#{cards[1]} > summary"))
+    # A row that is new at the top of the list goes under the one-shot note
+    # the page put under the heading, not between the two.
+    lp.goto(f"{BASE}/?done=ended&n=pwlay-ghost-{TAG}")
+    lp.wait_for_timeout(1500)
+    top = make(f"0pwlay-top-{TAG}")                  # tmux lists sessions by name
+    lp.wait_for_timeout(1100)
+    poke()
+    wait_for(lambda: present(top), 6)
+    order = lp.evaluate("""() => { const h = document.getElementById('sessions'), out = [];
+        for (let e = h.nextElementSibling; e && e.tagName !== 'H2'; e = e.nextElementSibling)
+          out.push(e.id === 'note' ? 'NOTE' : (e.dataset.session || e.id || e.className));
+        return out.slice(0, 2); }""")
+    ok("a new first row goes under the one-shot note, not above it", order == ["NOTE", top], str(order))
     # serverjack unreachable: say so (after two misses), and clear it after
     lp.route("**/api/sessions", lambda route: route.abort())
     for _ in range(2):
@@ -533,6 +611,47 @@ with sync_playwright() as p:
        and tmux("display", "-p", "-t", f"={att}:", "#{session_attached}").stdout.strip() in ("", "0"),
        tmux("display", "-p", "-t", f"={att}:", "#{session_attached}").stdout.strip())
     lctx.close()
+
+    # ---------------------------- the desktop hub after Open (F24) --
+    # Open pops the session out and leaves focus on that Open link in the
+    # list tab, for as long as the tab lives. Focus alone must not freeze the
+    # list: only an open menu or a half-typed rename may hold rows still.
+    print("chromium desktop, the list after Open:")
+    hctx = b.new_context(viewport={"width": 1280, "height": 800})
+    hp = hctx.new_page()
+    hp.on("pageerror", lambda e: print("   [pageerror]", e))
+    hubgone = make(f"pwlay-hubgone-{TAG}")
+    kept = make(f"pwlay-hubkept-{TAG}")
+    hp.goto(f"{BASE}/")
+    hp.wait_for_timeout(2500)
+
+    def hpoke():
+        hp.wait_for_timeout(1100)                    # past the 1s focus/visibility throttle
+        hp.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+
+    def listed(n):
+        return hp.evaluate(f"[...document.querySelectorAll('.sess[data-session]')].some(r => r.dataset.session === {n!r})")
+    with hctx.expect_page() as popped:
+        hp.click(f'.sess[data-session="{first}"] a.open')
+    pop = popped.value
+    pop.wait_for_load_state()
+    on_open = hp.evaluate("!!(document.activeElement && document.activeElement.matches('a.open'))")
+    tmux("kill-session", "-t", f"={hubgone}")
+    hubnew = make(f"pwlay-hubnew-{TAG}")
+    hp.bring_to_front()
+    hpoke()
+    ok("after Open pops a session out (focus stays on its Open link), an ended session still drops off",
+       on_open and wait_for(lambda: not listed(hubgone), 6), f"focus on Open: {on_open}")
+    ok("...and one started elsewhere still appears", wait_for(lambda: listed(hubnew), 6))
+    # keyboard focus inside a row that then goes away lands on the heading
+    hp.focus(f'.sess[data-session="{kept}"] a.open')
+    tmux("kill-session", "-t", f"={kept}")
+    hpoke()
+    ok("a row that ends with focus in it hands focus to the Sessions heading, not <body>",
+       wait_for(lambda: not listed(kept), 6) and hp.evaluate("document.activeElement.id") == "sessions",
+       hp.evaluate("document.activeElement.tagName + '#' + document.activeElement.id"))
+    pop.close()
+    hctx.close()
 
     # ------------------------------------ leaving a session (F14) --
     print("chromium desktop, leaving a session:")
@@ -652,6 +771,40 @@ with sync_playwright() as p:
                err["top"] >= -0.5 and first >= -0.5 and err["bottom"] <= pg.evaluate("innerHeight") + 0.5,
                str([l1, l2, l3, fresh, ren, err, first]))
     c.close()
+
+    # ---- rows coming and going above the Start card while typing in it --
+    # WebKit has no scroll anchoring here: each row added above moved the
+    # field being typed in 65px down the screen, each one removed moved it
+    # back up. The page now holds it still itself, in every engine.
+    for eng, mk in (("WebKit", lambda: phone(p, wk, 390, 664)),
+                    ("Chromium", lambda: b.new_context(viewport={"width": 1280, "height": 720}))):
+        c = mk()
+        pg = c.new_page()
+        pg.goto(f"{BASE}/")
+        pg.wait_for_timeout(1500)                    # the first poll has run
+        pg.evaluate("document.getElementById('cmd').scrollIntoView({block: 'center'})")
+        pg.focus("#cmd")
+        pg.keyboard.type("echo typing")
+        Y = "document.getElementById('cmd').getBoundingClientRect().top"
+        y0 = pg.evaluate(Y)
+        jumper = make(f"0pwlay-jump-{eng}-{TAG}")   # tmux lists by name: the first row
+        pg.wait_for_timeout(1100)
+        pg.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+        there = f"!!document.querySelector('.sess[data-session=\"{jumper}\"]')"
+        added = wait_for(lambda: pg.evaluate(there), 6)
+        pg.wait_for_timeout(300)
+        y1 = pg.evaluate(Y)
+        tmux("kill-session", "-t", f"={jumper}")
+        pg.wait_for_timeout(1100)
+        pg.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+        removed = wait_for(lambda: not pg.evaluate(there), 6)
+        pg.wait_for_timeout(300)
+        y2 = pg.evaluate(Y)
+        ok(f"{eng}: a row added above the Start card doesn't move the field being typed in",
+           added and abs(y1 - y0) <= 2, str([y0, y1]))
+        ok("...nor one taken away",
+           removed and abs(y2 - y1) <= 2 and pg.input_value("#cmd") == "echo typing", str([y0, y1, y2]))
+        c.close()
 
     wk.close()
     b.close()
