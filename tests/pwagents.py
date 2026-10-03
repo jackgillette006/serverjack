@@ -297,8 +297,11 @@ try:
            and prow.locator('button:text-is("Start")').count() == 1)
         ok("the per-directory Start row has no box of its own (it could only ever show ~)",
            page.locator('#tool-srv .orow:has(.odir) input.autostart').count() == 0)
+        # click(), not uncheck()/check(): the box submits its form on change,
+        # and uncheck() then waits for the box on the old page to read
+        # unticked -- a race with the navigation, lost now and then.
         with page.expect_navigation():
-            prow.locator("input.autostart").uncheck()
+            prow.locator("input.autostart").click()
         ok("unticking it forgets the entry",
            not any("synth-ios" in (e.get("dir") or "") for e in autostart_entries(CFG)),
            autostart_entries(CFG))
@@ -317,7 +320,7 @@ try:
                and grow.locator('button:text-is("Start")').count() == 0,
                page.locator("#tool-srv .opts").inner_text())
             with page.expect_navigation():
-                grow.locator("input.autostart").uncheck()
+                grow.locator("input.autostart").click()
             ok("...unticking it forgets the entry",
                not any(e.get("dir") == gone for e in autostart_entries(CFG)), autostart_entries(CFG))
             ok("...and does not re-create the directory", not os.path.exists(gone))
@@ -325,7 +328,7 @@ try:
         card(page, "solo")
         page.fill("#dp-solo", "~/projects/web-app")
         with page.expect_navigation():
-            page.locator("#tool-solo input.autostart").check()
+            page.locator("#tool-solo input.autostart").click()
         ents = [e for e in autostart_entries(CFG) if e["tool"] == "solo"]
         ok("ticking the single server's box saves the picked directory",
            len(ents) == 1 and ents[0]["dir"].endswith("/projects/web-app"), ents)
@@ -335,7 +338,7 @@ try:
            and "Starts at boot in ~/projects/web-app" in page.locator("#tool-solo .opts").inner_text(),
            page.locator("#tool-solo .opts").inner_text())
         with page.expect_navigation():
-            page.locator("#tool-solo input.autostart").uncheck()
+            page.locator("#tool-solo input.autostart").click()
         ok("...and unticking removes it",
            not [e for e in autostart_entries(CFG) if e["tool"] == "solo"], autostart_entries(CFG))
 
