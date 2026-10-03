@@ -218,7 +218,6 @@ and this project uses [Semantic Versioning](https://semver.org/).
 - Renaming onto a taken name said "Open it instead.", which was written for
   starting a session; a rename now says "Another session is already called
   “main”. Pick a different name."
-
 - **Dark scrollbars and checkboxes.** The page never said it was dark-only, so
   Chrome, Edge and Firefox drew light-grey scrollbars (on the page, the folder
   suggestions and a long command box) and white unchecked checkboxes next to
@@ -279,8 +278,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
   so the tap looked like it did nothing; an open menu's ⋯ now looks pressed.
 - **"Copy SSH command" tapped twice no longer sticks on "Copied".**
 - **Ctrl/Cmd/Shift-click on Open** gets the browser's own new tab or window
-  on the normal session page, instead of our pop-up (or, on "Open here",
-  instead of navigating the list away).
+  on the normal session page, instead of our pop-up (or, on a touch-screen
+  computer, instead of taking the list tab to the session).
 - **The session list keeps itself current.** It was a snapshot from page
   load: on a desktop, where the list tab stays open while sessions pop out,
   and in the home-screen app, which resumes without reloading, sessions
