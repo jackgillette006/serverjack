@@ -270,7 +270,8 @@ def desktop_layout(p):
         # fields and the button under it are where they look.
         page.goto(f"{BASE}/")
         page.click("#dir")
-        wait_rows(page, "#startform", "n >= 4")
+        page.locator("#dir").fill(f"{ROOT_SHOW}/")          # 16 rows: the list at its full height
+        wait_rows(page, "#startform", "n >= 14")
         pos = page.evaluate("getComputedStyle(document.querySelector('#startform .dirlist')).position")
         name_hit, start_hit = hit_ok(page, "#name"), hit_ok(page, 'form[action="/start"] button[type=submit]')
         ok("on a desktop the open list covers neither Name nor Start",
