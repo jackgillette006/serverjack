@@ -5042,7 +5042,7 @@ APP_JS = r"""
     // Engaging with the terminal (a tap or click in it, its window taking
     // focus) is what lets this screen take the session's size back.
     d.addEventListener('pointerdown', engage, true);
-    try { d.defaultView.addEventListener('focus', engage); } catch (_) {}
+    try { d.defaultView.addEventListener('focus', engage); watchCtrl(d, d.defaultView); } catch (_) {}
   }
   // Feed text to the terminal exactly as a paste (xterm applies bracketed
   // paste when the app asked for it, so multi-line text is safe).
@@ -5600,27 +5600,42 @@ APP_JS = r"""
     vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); fit();
   }
 
-  // ---- leaving the page. On Windows and Linux, Ctrl+W (delete-word in bash
-  // and in the agents) closes the browser tab or the pop-out and never
-  // reaches the terminal; so do Ctrl+Shift+W, Ctrl+T, Ctrl+N and Ctrl+Tab.
-  // So the page asks first. Not when serverjack itself is taking you away
-  // (x, the logo, Pop out, a session that ended): those mark the exit
-  // first. Switching sessions only reloads the frame, which doesn't ask.
-  // (ttyd's own prompt stays off: it lives in the frame, so it fired on
-  // every session switch.) iOS shows no such prompt; nothing changes there.
-  var leavingPage = false, leaveT = null;
-  function goingAway() {
-    leavingPage = true; clearTimeout(leaveT);
-    leaveT = setTimeout(function () { leavingPage = false; }, 2000);   // the exit didn't happen after all
+  // ---- leaving the page. On Windows and Linux the browser keeps Ctrl+W
+  // (delete the previous word in bash and the agents), Ctrl+Shift+W, Ctrl+T,
+  // Ctrl+N and Ctrl+Tab for itself: they never reach the terminal, and the
+  // first two close the tab or the pop-out. So a close made while Ctrl is
+  // held down asks first. The page does see that Ctrl press (the browser
+  // takes only the chord's last key), which is how it tells this apart from
+  // everything that should just go: closing with the mouse, F5, and every
+  // navigation serverjack makes itself (x, the logo, Pop out, a session that
+  // ended, a pop-out opened again from the list). Switching sessions only
+  // reloads the frame, which never asks. (ttyd's own prompt stays off: it
+  // lives in the frame, so it fired on every session switch.) iOS shows no
+  // such prompt; nothing changes there.
+  var ctrlHeld = false;
+  function trackCtrl(e) {
+    if (!e.isTrusted) return;               // the soft keys' Ctrl is not a key held down
+    ctrlHeld = e.type === 'keyup' ? e.ctrlKey && e.key !== 'Control' : !!e.ctrlKey || e.key === 'Control';
   }
+  function watchCtrl(d, w) {
+    ['keydown', 'keyup', 'pointerdown'].forEach(function (t) { d.addEventListener(t, trackCtrl, true); });
+    w.addEventListener('blur', function () { ctrlHeld = false; });
+  }
+  watchCtrl(document, window);              // and the terminal's document: hook()
+  // serverjack's own ways out set this first, whatever Ctrl is doing: Ctrl+D
+  // ends a shell or an agent with Ctrl often still down when the page leaves
+  // for the list ~150 ms later (and a held Ctrl can repeat its keydown).
+  var ownExit = false;
+  function exiting() { ownExit = true; }
+  addEventListener('pageshow', function (e) { if (e.persisted) ownExit = false; });
   window.addEventListener('beforeunload', function (e) {
-    if (leavingPage) return;
+    if (ownExit || !ctrlHeld) return;
     e.preventDefault(); e.returnValue = '';
+    // Ctrl is let go while the prompt is up, and that release goes to the
+    // prompt, not the page: once "Stay" is chosen, don't count Ctrl as still
+    // held (the next Ctrl press arms this again)
+    setTimeout(function () { ctrlHeld = false; }, 0);
   });
-  document.addEventListener('click', function (e) {
-    if (e.target && e.target.closest && e.target.closest('#close, #popout, #bar a[href]')) goingAway();
-  }, true);
-
 
   // ---- session tabs
   function pageUrl(name) { return '/s/' + encodeURIComponent(name) + (POP ? '?popout=1' : ''); }
@@ -5952,6 +5967,7 @@ APP_JS = r"""
     // cancel the first navigation
     if (gone) return;
     gone = true;
+    exiting();
     var to = '/?ended=' + encodeURIComponent(name);
     if (POP) { window.close(); setTimeout(function () { location.replace(to); }, 150); return; }
     location.replace(to);
@@ -6172,6 +6188,7 @@ APP_JS = r"""
   // back to the list -- replacing this entry, so Back from the list doesn't
   // re-open the terminal just left.
   document.getElementById('close').onclick = function () {
+    exiting();
     if (POP) { window.close(); setTimeout(function () { location.replace('/'); }, 150); return; }
     powerOff(function () { location.replace('/'); });
   };
@@ -6194,7 +6211,7 @@ APP_JS = r"""
     // "popup" asks for a window without tabs/address bar (popWin). This tab
     // then goes back to the list so it isn't attached too -- replacing its own
     // history entry, or Back would attach it again.
-    if (popWin(cur)) location.replace('/');
+    if (popWin(cur)) { exiting(); location.replace('/'); }
     else note('The browser blocked the pop-out window. Allow pop-ups for this site to use it.');
   };
   if (touch) body.classList.add('touch');

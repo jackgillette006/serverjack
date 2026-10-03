@@ -442,10 +442,12 @@ Ctrl+C always interrupts.
 **Keys the browser keeps.** On Windows and Linux, a browser tab or pop-out
 window never passes Ctrl+W, Ctrl+Shift+W, Ctrl+T, Ctrl+N, Ctrl+Tab or
 Ctrl+PgUp/PgDn to the page. Ctrl+W (delete the previous word in bash and
-readline) would close the terminal, so the page asks before the tab or window
-is closed or reloaded. serverjack's own ✕, logo and pop-out button, and switching
-session tabs, don't ask. The session keeps running either way. In bash,
-Alt+Backspace also deletes the previous word.
+readline) would close the terminal, so the page asks before a close made
+while Ctrl is held down, which is what Ctrl+W and Ctrl+Shift+W are. Closing
+the tab with the mouse, serverjack's own ✕, logo and pop-out buttons, leaving
+for the list when the session ends (Ctrl+D with Ctrl still down included),
+and switching session tabs don't ask. The session keeps running either way. In
+bash, Alt+Backspace also deletes the previous word.
 
 **Mac and iPad keyboards.** Option types characters (Option+B is `∫`), not
 readline's word moves; Option+← / Option+→ and Option+Backspace move and

@@ -470,7 +470,6 @@ and this project uses [Semantic Versioning](https://semver.org/).
   indicator the keyboard is covering: about two terminal rows back while you
   type. (Checked in emulation with the insets simulated; still to be
   confirmed on a real iPhone.)
-
 - Swiping the key row to reach the keys past its edge sent the key under
   your finger -- ^C (interrupting whatever ran), Esc (interrupting an agent),
   an arrow, or a silently armed Ctrl. Keys now fire on a tap released in
@@ -544,9 +543,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
 - Firefox: the key row's Paste pasted nothing (an empty paste reached the
   program). It now pastes, bracketed when the program asked for it.
 - Ctrl+W (delete a word in bash) closed the terminal tab or pop-out at once,
-  because the browser keeps that key. The page now asks before it is closed
-  or reloaded; serverjack's own ✕, logo and pop-out button, and switching
-  session tabs, still leave without asking.
+  because the browser keeps that key. The page now asks before a close made
+  with Ctrl held (Ctrl+W, Ctrl+Shift+W). Closing it with the mouse,
+  serverjack's own ✕, logo and pop-out button, a session that ends (Ctrl+D
+  with Ctrl still down included), switching session tabs, and opening an
+  already open pop-out again from the list still go without asking.
 - With a session open on a phone and a desktop, the screen you weren't
   using shrank the other to a small box (or showed it cropped) after every
   keyboard pop, rotation, key-row toggle or reconnect, and the only way back

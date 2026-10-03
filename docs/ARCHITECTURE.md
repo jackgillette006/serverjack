@@ -424,7 +424,7 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   selection dropped by a scroll, trimmed copies, Ctrl+Shift+C, the Paste
   key's bracketed paste in all three engines, Esc and PgUp/PgDn while
   scrolled back (key row, keyboard, Ctrl+[, vi mode-keys), and the leave
-  prompt. And two
+  prompt (Ctrl held only; a re-opened pop-out doesn't ask). And two
   screens on one session (Chromium desktop plus WebKit iPhone): the other
   device's scroll left before the desktop's typing, the screens cue and
   landing count, and the engaged screen taking the size back without a

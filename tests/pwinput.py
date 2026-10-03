@@ -16,7 +16,8 @@ reaches the program;
 wheel travel per row; tmux mouse mode toggled under an open page; the
 selection dropped by a scroll, copies without tmux's padding, Ctrl+C after a
 copy, Ctrl+Shift+C; the Paste key's bracketed paste (Firefox included); the
-leave prompt; and which screen gets the session's size.
+leave prompt (only for a close made with Ctrl held, i.e. Ctrl+W); and which
+screen gets the session's size.
 
 Engines: Chromium desktop (mouse and keyboard), Chromium Pixel 7 (real touch
 gestures through CDP: swipes and holds, which Playwright's WebKit cannot
@@ -692,6 +693,25 @@ try:
                logged(SC) == "^[[200~echo L1^Mecho L2^[[201~", repr(logged(SC)))
             page.click("#keysbtn"); time.sleep(0.2)
 
+            # A pop-out opened again from the list while it is open (and typed
+            # in) is brought forward as it is -- not reloaded -- and nothing asks.
+            land = ctx.new_page(); land.goto(f"{BASE}/")
+            with land.expect_popup() as pi:
+                land.click(f"a.open[data-name={SC}]")
+            pop = pi.value
+            pop.frame_locator("#frame").locator(".xterm-helper-textarea").wait_for(state="attached", timeout=15000)
+            time.sleep(1.2)
+            pop.frame_locator("#frame").locator(".xterm-helper-textarea").type("x"); time.sleep(0.2)
+            pop_asked = []
+            pop.on("dialog", lambda d: (pop_asked.append(d.type), d.dismiss()))
+            pop.evaluate("window.__was = 1")
+            land.bring_to_front(); land.click(f"a.open[data-name={SC}]")
+            time.sleep(1.5)
+            kept = pop.evaluate("window.__was === 1")
+            ok("a pop-out opened again from the list is focused, not reloaded, and doesn't ask",
+               kept and pop_asked == [], (kept, pop_asked))
+            pop.close(); land.close()
+
             # Leaving: Ctrl+W (a close the page can't see) asks first; serverjack's own exits don't.
             open_term(page, SC, keys=False)
             page.keyboard.type("x"); time.sleep(0.2)
@@ -706,12 +726,80 @@ try:
             page.click("#close"); page.wait_for_url(f"{BASE}/", timeout=5000)
             ok("switching sessions, the logo and x leave without asking", asked == [], asked)
             guard[0] = False
+            # Closing it with Ctrl up (the tab's x, the mouse) just closes.
+            plain = ctx.new_page(); plain.on("dialog", on_dialog)
+            open_term(plain, SC, keys=False)
+            plain.keyboard.type("x"); time.sleep(0.2)
+            guard[0] = True
+            plain.close(run_before_unload=True); page.wait_for_timeout(1000)
+            ok("closing the tab with Ctrl up (the mouse) doesn't ask", asked == [] and plain.is_closed(), asked)
+            guard[0] = False
             open_term(page, SC, keys=False)
             page.keyboard.type("x"); time.sleep(0.2)
             guard[0] = True
             keeper = ctx.new_page()
+            # Ctrl+W itself never reaches a page, but the Ctrl press does: a
+            # close while Ctrl is held is what Ctrl+W looks like from here.
+            page.keyboard.down("Control")
             page.close(run_before_unload=True); keeper.wait_for_timeout(1000)
-            ok("closing the tab (what Ctrl+W does) asks first", asked == ["beforeunload"] and not page.is_closed(), asked)
+            ok("closing the tab with Ctrl held (what Ctrl+W does) asks first",
+               asked == ["beforeunload"] and not page.is_closed(), asked)
+            page.keyboard.up("Control"); time.sleep(0.2)
+            page.close(run_before_unload=True); keeper.wait_for_timeout(1000)
+            ok("...and after staying, with Ctrl let go, it closes without asking again",
+               asked == ["beforeunload"] and page.is_closed(), (asked, page.is_closed()))
+            # A session ended with Ctrl+D: Ctrl is often still down when the
+            # page leaves for the list ~150 ms later. That is serverjack's own
+            # way out, not a close: no prompt, in a tab or a pop-out.
+            asked.clear()
+            ender = f"pwctrld-{bt[:2]}"
+            mk(ender)
+            page = ctx.new_page(); page.on("dialog", on_dialog)
+            open_term(page, ender, keys=False)
+            box = page.locator("#frame").bounding_box()
+            page.mouse.click(box["x"] + 200, box["y"] + 200); time.sleep(0.3)
+            page.keyboard.type("echo ready-$((6*7))"); page.keyboard.press("Enter")
+            wait_for(lambda: "ready-42" in pane(ender))     # the shell has the keyboard
+            guard[0] = True
+            page.keyboard.down("Control"); page.keyboard.press("d")
+            time.sleep(0.3)
+            page.keyboard.up("Control")
+            ended = wait_for(lambda: tmux("has-session", "-t", f"={ender}").returncode != 0, 5)
+            # page.url only changes as Playwright handles the navigation event,
+            # which a bare sleep never lets it do: wait in Playwright's own time.
+
+            def off_terminal():
+                try:
+                    page.wait_for_timeout(50)
+                except Exception:
+                    pass
+                return "/s/" not in page.url
+            left = wait_for(off_terminal, 10)
+            guard[0] = False
+            ok("Ctrl+D held a moment ends the session and goes to the list without asking",
+               asked == [] and ended and left, (asked, ended, page.url))
+            mk(ender)
+            land = ctx.new_page(); land.goto(f"{BASE}/")
+            with land.expect_popup() as pi:
+                land.click(f"a.open[data-name={ender}]")
+            pop = pi.value
+            pop.frame_locator("#frame").locator(".xterm-helper-textarea").wait_for(state="attached", timeout=15000)
+            time.sleep(1.2)
+            pop_asked = []
+            pop.on("dialog", lambda d: (pop_asked.append(d.type), d.dismiss()))
+            box = pop.locator("#frame").bounding_box()
+            pop.mouse.click(box["x"] + 200, box["y"] + 200); time.sleep(0.3)
+            pop.keyboard.type("echo ready-$((6*7))"); pop.keyboard.press("Enter")
+            wait_for(lambda: "ready-42" in pane(ender))
+            pop.keyboard.down("Control"); pop.keyboard.press("d")
+            time.sleep(0.3)
+            try:
+                pop.keyboard.up("Control")
+            except Exception:                     # the pop-out closed first: that's the point
+                pass
+            closed = wait_for(lambda: land.wait_for_timeout(50) or pop.is_closed(), 10)
+            ok("...and a pop-out ended that way just closes", closed and pop_asked == [], (closed, pop_asked))
+            land.close()
             b.close()
 
         # Clipboard detail where the clipboard can be read (Chromium).
@@ -886,7 +974,7 @@ try:
            scrolled[0] == "1" and mode()[0] == "0" and logged(SC).endswith("100"), (scrolled, mode(), logged(SC)[-40:]))
         b.close()
 finally:
-    for n in (S, S2, GONE, SC):
+    for n in (S, S2, GONE, SC, "pwctrld-ch", "pwctrld-fi", "pwctrld-we"):
         tmux("kill-session", "-t", f"={n}")
 
 if fails:
