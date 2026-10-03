@@ -509,6 +509,59 @@ and this project uses [Semantic Versioning](https://semver.org/).
   stuck for good. The hint is now a small note above the row ("Long-press
   the terminal to paste" on a phone, Ctrl+V / Cmd+V on a desktop), and
   button labels always come back.
+- **Typing after scrolling back ran the wrong command.** A swipe or a wheel
+  puts the pane into tmux copy mode, where most keys are copy mode's: the
+  start of a line was eaten, the first Space or `q` left copy mode, and the
+  rest ran on its own (`echo hello world` ran `world`). Words from a phone's
+  predictions or dictation, and pastes, vanished outright. Because copy mode
+  belongs to the pane, a scroll on the phone did the same to the next thing
+  typed on the desktop. Now whatever you type, paste or tap on the key row
+  while scrolled back, on any screen, leaves the copy mode serverjack
+  entered and then arrives exactly as typed. Esc only leaves the scrollback,
+  and copy mode you enter yourself (prefix `[`) is left alone.
+- Ctrl+wheel, and a trackpad pinch, over the terminal typed Up/Down arrows
+  into the session (one notch could bring back a command from shell
+  history, ready to run on the next Enter) and the page never zoomed. It now
+  zooms and sends nothing.
+- With tmux `mouse on` switched off while the page was open, the wheel and
+  phone swipes typed arrow keys instead of scrolling until the page was
+  reloaded. The page now follows the session's current mouse setting.
+- Swipes and wheels scrolled about a sixth less than the finger moved (the
+  row height was assumed, not measured). One row of travel is now one line.
+- After Ctrl+C copied a selection, the highlight stayed and every further
+  Ctrl+C copied again, so you couldn't interrupt the program until you
+  clicked in the terminal. The copy now drops the selection, as Windows
+  Terminal does, and the next Ctrl+C interrupts.
+- Ctrl+Shift+C (the Windows Terminal and Linux terminal copy) did nothing in
+  the terminal except open the browser's element inspector. It now copies
+  the selection, and never opens the developer tools.
+- Scrolling with a selection left the highlight in place over different
+  text, so Ctrl+C copied the wrong lines; and lines copied while scrolled
+  back carried up to a screen's width of trailing spaces. A scroll now drops
+  the selection, and copies lose the trailing padding.
+- Firefox: the key row's Paste pasted nothing (an empty paste reached the
+  program). It now pastes, bracketed when the program asked for it.
+- Ctrl+W (delete a word in bash) closed the terminal tab or pop-out at once,
+  because the browser keeps that key. The page now asks before it is closed
+  or reloaded; serverjack's own ✕, logo and pop-out button, and switching
+  session tabs, still leave without asking.
+- With a session open on a phone and a desktop, the screen you weren't
+  using shrank the other to a small box (or showed it cropped) after every
+  keyboard pop, rotation, key-row toggle or reconnect, and the only way back
+  was to type something into the session. The screen you use now takes the
+  size back when you click or tap in its terminal or return to the page,
+  without sending a key.
+
+### Added
+
+- A quiet screens count in the terminal bar while a session is open on more
+  than one screen; tap it to fit the session to the screen you're on. The
+  landing page's row says "attached on 2 screens" instead of just
+  "attached", and `/api/sessions` carries a `clients` count.
+- README: what the browser keeps for itself (Ctrl+W, Ctrl+T, Ctrl+N,
+  Ctrl+Tab), selecting text in a `mouse on` session (Shift-drag; Option-drag
+  on a Mac with `-t macOptionClickForcesSelection=true`), and Option as Meta
+  on Mac and iPad keyboards (`TTYD_EXTRA_ARGS='-t macOptionIsMeta=true'`).
 
 ### Changed
 

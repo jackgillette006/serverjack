@@ -401,6 +401,65 @@ keys past it fades out.
   *Copy all* for everything, line breaks included. Esc or ✕ closes it;
   while it is open nothing you type reaches the terminal.
 
+### Scrolling, copying and keys
+
+**Scrolling.** A finger swipe or a mouse wheel over the terminal scrolls the
+tmux pane's history, one line per row of travel: the page asks serverjack,
+which puts the pane into copy mode and moves it, leaving copy mode again at
+the bottom. Nothing in your tmux config is touched, and a mouse drag still
+selects text (a selection is dropped when the pane scrolls, since the text
+moves under it). **Typing returns to the live prompt**, as in any terminal:
+whatever you type, paste or tap on the key row while scrolled back leaves
+copy mode first and then arrives exactly as typed. That holds on every
+screen with the session open, not just the one that scrolled. Esc only
+leaves the scrollback; it isn't sent on, so it can't interrupt an agent.
+Copy mode you enter yourself (prefix `[`) is left alone. Ctrl+wheel and a
+trackpad pinch zoom the page and never reach the session. Because tmux
+keeps the history, the terminal's own (xterm.js) scrollback is set to 0
+(unless you set one with `-t scrollback=` in `TTYD_EXTRA_ARGS`) and its
+scrollbar hidden: there is never anything for it to scroll, and the grid
+gets the full width of the window.
+
+If a session has `mouse on`, tmux gets the wheel directly instead; the page
+follows the session's current setting, even if it changes while the page is
+open. With `mouse on` a plain drag selects in tmux, into tmux's own buffer
+and not the system clipboard: hold Shift while dragging to get a selection
+the browser can copy. On a Mac that takes Option, and only with
+`-t macOptionClickForcesSelection=true` in `TTYD_EXTRA_ARGS`; otherwise use
+the Copy key.
+
+**Copy and paste** (Windows and Linux keyboards). Ctrl+C copies when text is
+selected and drops the selection, so the next Ctrl+C interrupts as usual;
+with nothing selected it is a plain Ctrl+C. Ctrl+Shift+C copies too (it
+never opens the browser's developer tools). Ctrl+V and Ctrl+Shift+V paste,
+bracketed when the program asked for it. Copied lines lose the trailing
+spaces tmux pads them with. On a Mac, Cmd+C and Cmd+V copy and paste, and
+Ctrl+C always interrupts.
+
+**Keys the browser keeps.** On Windows and Linux, a browser tab or pop-out
+window never passes Ctrl+W, Ctrl+Shift+W, Ctrl+T, Ctrl+N, Ctrl+Tab or
+Ctrl+PgUp/PgDn to the page. Ctrl+W (delete the previous word in bash and
+readline) would close the terminal, so the page asks before the tab or window
+is closed or reloaded. serverjack's own ✕, logo and pop-out button, and switching
+session tabs, don't ask. The session keeps running either way. In bash,
+Alt+Backspace also deletes the previous word.
+
+**Mac and iPad keyboards.** Option types characters (Option+B is `∫`), not
+readline's word moves; Option+← / Option+→ and Option+Backspace move and
+delete by word as they are. On a US layout you can make Option act as Meta
+(Option+B/F/D/.) with `TTYD_EXTRA_ARGS='-t macOptionIsMeta=true'` in
+`~/.config/serverjack/env`, then `systemctl --user restart serverjack-ttyd`.
+That costs the characters Option types, which on many non-US layouts are
+`# @ [ ] |`.
+
+**Two screens, one session.** tmux sizes a session's window to the screen
+that used it last, so a phone and a desktop on the same session take turns.
+The screen you're using takes the size back as soon as you click or tap in
+its terminal or come back to the page, without sending a key. While a
+session is open on more than one screen, the bar shows a small screens
+count; tap it to fit the session to this screen. The landing page's row
+says "attached on 2 screens".
+
 ## Agent servers
 
 Interactive agent sessions start from [Start a session](#start-a-session)
@@ -796,16 +855,6 @@ Flags (all optional):
 | `--title NAME` | page / tab / PWA name (default the hostname) |
 | `--allow LIST` | set `SERVERJACK_ALLOW` (comma-separated tailnet logins), written to the env file *before* anything is started or published — mainly for `serverjack-setup`, which resolves this from its own prompts |
 
-**Scrolling.** A finger swipe or a mouse wheel over the terminal scrolls the
-tmux pane's history: the page asks serverjack, which puts the pane into
-copy mode and moves it, leaving copy mode again at the bottom. Nothing in
-your tmux config is touched, and a mouse drag still selects text. If a
-session has `mouse on`, tmux gets the wheel directly instead. Because tmux
-keeps the history, the terminal's own (xterm.js) scrollback is set to 0
-(unless you set one with `-t scrollback=` in `TTYD_EXTRA_ARGS`) and its
-scrollbar hidden: there is never anything for it to scroll, and the grid
-gets the full width of the window.
-
 The value flags write into `~/.config/serverjack/env` — they set the
 initial value when the file is created, and rewrite just that line if you pass
 one later. Everything else in the file is left alone, so editing the file by
@@ -998,7 +1047,7 @@ Works, with four things to know first:
 | `SERVERJACK_DEFAULT_DIR` | unset (`HOME`) | fallback for the picker's empty-value default when `prefs.json` has no `default_dir` of its own (set from the Start card's "change" link) |
 | `SERVERJACK_TOOLS` | unset (all) | optional comma-separated tool ids: restricts and orders the agent choices, both the Start a session radios and the Agent servers rows, e.g. `claude,codex` |
 | `SERVERJACK_TERM` | `/term/` | URL path serverjack serves the terminal on (proxying it to ttyd's socket) |
-| `TTYD_EXTRA_ARGS` | unset | optional ttyd client options, shell-parsed as data with no expansion. Allowed flags: `-t`/`--client-option`, `-T`/`--terminal-type`, `-m`/`--max-clients`, and `-P`/`--ping-interval`. Listener, auth, command, base-path, origin and write-access flags are refused. A JSON value (e.g. `-t theme={"background":"#123456"}`) needs its inner `"` escaped as `\"` -- the shell-style parsing that keeps this safe also treats a bare `"..."` as quoting syntax and strips it, corrupting the JSON otherwise |
+| `TTYD_EXTRA_ARGS` | unset | optional ttyd client options, shell-parsed as data with no expansion (e.g. `-t macOptionIsMeta=true`, see [Mac and iPad keyboards](#scrolling-copying-and-keys)). Allowed flags: `-t`/`--client-option`, `-T`/`--terminal-type`, `-m`/`--max-clients`, and `-P`/`--ping-interval`. Listener, auth, command, base-path, origin and write-access flags are refused. A JSON value (e.g. `-t theme={"background":"#123456"}`) needs its inner `"` escaped as `\"` -- the shell-style parsing that keeps this safe also treats a bare `"..."` as quoting syntax and strips it, corrupting the JSON otherwise |
 | `SERVERJACK_TERM_THEME` | unset (on) | `off` (or `0`/`no`/`false`) skips the default terminal color theme (built from the app's own tokens and passed to ttyd as a `-t theme=...` server option), leaving ttyd's stock xterm.js look. A `-t theme=...` (or `--client-option[=]theme=...`) of your own in `TTYD_EXTRA_ARGS` is detected automatically and also skips it, so your theme is what applies -- no need to set this too |
 | `SERVERJACK_TMUX_STATUS` | `off` | sessions opened from the page get tmux's status line turned off (the bar shows tabs and window count instead); `on` leaves tmux alone |
 | `SERVERJACK_SSH` | `auto` | `user@host` for the SSH menu items (tailnet DNS name if Tailscale is up, else hostname); `off` hides them |
@@ -1208,11 +1257,17 @@ managed-install` runs just that.
 
 ## Known limitations
 
-- Linux WebKit browsers (Epiphany) still need Ctrl+Shift+C to copy.
-- While scrolled back, the pane is in tmux copy mode: keys go to copy mode
-  until you scroll to the bottom or press Esc/`q`. That's tmux.
-- tmux resizes a session to its most recent client, so a phone attaching
-  shrinks the desktop view until the desktop sends a key. That's tmux.
+- Copying with Ctrl+C or Ctrl+Shift+C is proven in Chromium and Firefox.
+  Linux WebKit browsers (Epiphany) are untested there (the test suite's
+  WebKit reports itself as a Mac); the Copy key works everywhere.
+- serverjack leaves the copy mode it entered before a page's next input. A
+  plain `tmux attach` client (ssh) on the same session still gets tmux's
+  own behaviour: while scrolled back, its keys go to copy mode until it
+  scrolls to the bottom or presses Esc/`q`.
+- tmux sizes a session's window to the screen used last. A page takes it
+  back when you use it (see [Scrolling, copying and keys](#scrolling-copying-and-keys)),
+  but a phone that rotates or reconnects in the background, or an ssh
+  client that types, still takes it until then.
 - Installer and units are Linux + systemd only.
 - On an iPhone the landing page's text follows Settings → Display & Brightness
   → Text Size (Larger Text); the terminal page's bar and keys don't, and the
