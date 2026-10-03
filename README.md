@@ -129,10 +129,11 @@ get:
   OpenCode, GitHub Copilot CLI, Gemini CLI) and a directory (defaults to
   `~`), and tap Start.
 - **Sessions.** Every tmux session (tmux is the tool that keeps a terminal
-  alive after you close the laptop) is a button on the page. Tap to attach. Any "type a path" field accepts a directory that doesn't exist
-  yet and creates it, so starting a shell or an agent in a new project is one
-  step. Open, rename, kill, pop out into its own window on a desktop, or hand
-  off to a real SSH client.
+  alive after you close the laptop) is a button on the page. Tap to attach. Starting
+  a session accepts a directory that doesn't exist yet and creates it as the
+  session starts, so a shell or an agent in a new project is one step. Open,
+  rename, kill, pop out into its own window on a desktop, or hand off to a real
+  SSH client.
 - **Agent servers.** A collapsed row per coding CLI that still needs
   something: install, log in, or start the background server the phone app
   connects to (Claude's remote-control server, Codex's daemon and pairing,
@@ -226,7 +227,9 @@ and directory instead (a shell in `~/projects/3d-lab` becomes `shell-3d-lab`,
 
 Tick "Save as a shortcut" (only offered with a Shell command) and it becomes
 a one-tap button in the Shortcuts list for next time. Shortcuts live in
-`~/.config/serverjack/shortcuts.json`.
+`~/.config/serverjack/shortcuts.json`. **Add a shortcut** (and the default
+directory) only take a folder that already exists — a typo there is an
+error, not a new empty folder.
 
 ### Update serverjack
 
@@ -356,7 +359,8 @@ daemon commands, and every session serverjack starts.
 Every server and daemon option row has a small **start at boot** checkbox. For
 a per-directory server (Claude's) that means the row of each server you have
 started, since the entry is for that directory; the Start row has none. Tick
-it and the thing is recorded in `~/.config/serverjack/autostart.json`:
+it and the thing is recorded in `~/.config/serverjack/autostart.json` (a
+server's directory has to exist already, as for a shortcut):
 
 ```json
 [

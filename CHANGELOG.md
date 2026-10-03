@@ -95,6 +95,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
   failed oddly: tmux reads a trailing `;` in any argument as the end of its
   own command. serverjack now escapes it.
 
+- Directory picker: a folder is created only when a session actually starts
+  in it. A Start refused for its name still left the new folder behind, and
+  saving a shortcut with a mistyped directory silently created it. Now a
+  refused start leaves the disk as it was, and Add a shortcut and "start at
+  boot" refuse a folder that doesn't exist ("Not a directory:
+  ~/projects/gmae") instead of inventing one. Errors name the path in its
+  `~` form, the way the picker shows it, and a directory with a NUL byte in
+  it is a clean error instead of a dropped connection.
+
 ## 1.5.0 - 2026-09-16
 
 - Directory picker: picking or Tab-completing a suggestion now keeps the
