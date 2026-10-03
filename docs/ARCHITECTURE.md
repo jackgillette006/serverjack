@@ -222,6 +222,16 @@ plain tmux back the moment the last page leaves. (A session-level
 `client-detached` hook can't do this: tmux 3.5a runs that hook with no
 session context, so a session's own hook never fires.)
 
+Sessions the page starts with a command (`create_session()`) are created
+detached, at tmux's default 80x24, a moment before the browser attaches.
+Their pane script therefore begins with `ATTACH_WAIT`: poll
+`#{session_attached}` ten times a second, for at most 5 s, then a 0.2 s
+settle for ttyd's first fit, and only then print `$ <cmd>` and run it.
+Printed at 80 columns and re-wrapped for a phone's ~47, that line used to
+push its own first row into history, above a `sudo` password prompt.
+`create_command_session()` (autostart, agent servers: nobody is about to
+attach) skips the wait. Both pass `COLORTERM=truecolor`.
+
 Server-side, every operation goes through the `tmux()` wrapper and a
 machine-parseable `-F` format: `sessions()`/`windows()` list state (with a
 `clients` count per session); `scroll_session()` drives tmux's copy mode
@@ -248,7 +258,9 @@ inner `bash -lc`, gives the command its own foreground process group, so tmux
 reports the command itself as the pane's command; `pane_exited()` reads a pane
 as "fell back to a bare shell" only when it names a shell AND the pane's own
 process holds the terminal, from `/proc/<pid>/stat`, which also covers servers
-started by older versions whose inner shell had no job control).
+started by older versions whose inner shell had no job control -- and not
+while that process is still serverjack's `-c` start script, e.g. waiting for
+its page (`ATTACH_WAIT`), from `/proc/<pid>/cmdline`).
 
 ## Agent registry
 

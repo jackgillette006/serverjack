@@ -569,12 +569,26 @@ and this project uses [Semantic Versioning](https://semver.org/).
   phone, every keyboard open and close, every rotation and every key-row
   toggle. It's off; `-t disableResizeOverlay=false` in `TTYD_EXTRA_ARGS`
   brings it back.
+- **Terminal: 24-bit colour.** tmux was never told the browser terminal
+  can show truecolor, so it rounded every 24-bit colour from nvim, bat,
+  delta or an agent CLI to the 256-colour palette: banded gradients, wrong
+  shades in syntax and diff themes. The browser now attaches as an RGB
+  client (tmux 3.2 or newer; an older tmux keeps 256 colours), for that
+  client only, and sessions started from the page get `COLORTERM=truecolor`
+  so programs that look for it use 24-bit colour.
 - **Android: terminal font.** ttyd's default font list ends in `Courier`,
   which Android maps to a thin serif typewriter face, so Chrome there drew
   the whole terminal in it. The list is now passed without it and Android
   falls through to its plain monospace. Every other platform keeps exactly
   the font it had. (Worked out from Android's font config; not yet seen on
   a real Android phone.)
+- **Phone: a started command's first line stayed in view.** A command from
+  the Start card (or a shortcut) printed its `$ <command>` line at tmux's
+  default 80 columns before the phone attached at ~47, and re-wrapping it
+  pushed its first row into history: a sudo prompt sat under "...ctl
+  restart nginx", with the `sudo` and the verb scrolled away. The command
+  now waits (at most 5 s) for the page to attach, then starts at the size
+  you see.
 - **SSH: the tmux status line comes back.** Opening a session in the page
   turned its status line off for good, so "Copy SSH command" later opened a
   tmux with no window list or session name. It is still off for every
