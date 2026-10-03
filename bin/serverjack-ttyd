@@ -174,10 +174,26 @@ else
   echo "serverjack-ttyd: --print-theme failed -- starting without a generated theme" >&2
 fi
 
-# theme_args before "${extra[@]}": ttyd keeps the *last* value it sees for a
-# repeated -t key (verified against the bundled build), so if a user's own
-# -t theme=... in TTYD_EXTRA_ARGS ever disagreed with --print-theme's own
-# detection of it, theirs -- appearing later -- is still what wins.
+# disableResizeOverlay: ttyd otherwise flashes a big grey "COLSxROWS" pill
+# over the middle of the terminal on every resize -- on a phone that is
+# every keyboard open and close, every rotation and every key-row toggle.
+# tmux follows the size on its own; nobody here needs the readout.
+#
+# fontFamily: ttyd's default is "Consolas,Liberation Mono,Menlo,Courier,
+# monospace". On Android none of the first three exist and the system font
+# config maps Courier to a thin serif typewriter face (Cutive Mono), so
+# Chrome there drew the whole terminal in it. This is the same list without
+# Courier: the same font as before on Windows (Consolas), macOS/iOS (Menlo)
+# and Linux (Liberation Mono), so the cell grid -- which mouse selection
+# depends on, see the fontSize note above -- doesn't move, and Android falls
+# through to its plain monospace.
+#
+# Every option here and in theme_args comes before "${extra[@]}": ttyd keeps
+# the *last* value it sees for a repeated -t key (verified against the
+# bundled build), so a user's own -t ... in TTYD_EXTRA_ARGS -- a different
+# font, the overlay back on, a theme of their own if --print-theme's
+# detection of it ever disagreed -- appears later and is what wins.
 exec ttyd -i "$sock" -W -a -O \
   -t "titleFixed=${SERVERJACK_TITLE:-serverjack}" -t disableLeaveAlert=true \
+  -t disableResizeOverlay=true -t "fontFamily=Consolas,Liberation Mono,Menlo,monospace" \
   "${theme_args[@]}" "${extra[@]}" "$here/tmux-attach.sh"
