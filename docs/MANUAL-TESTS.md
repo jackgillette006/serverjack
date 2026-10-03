@@ -80,7 +80,7 @@ Then test each of the three states. The easiest way to see all three is on a mac
 1. **Not installed**: a tool with no binary on the box shows an Install button and the exact install command as text. Tap Install: the command shown is the command that runs, it runs in a visible terminal, and when it finishes you are at a prompt. Reload the landing page: the row has moved on to the next state.
 2. **Installed, not logged in**: the row shows a Log in button, and "Open anyway" underneath it. Tap Log in: the login flow runs in the terminal and prints a URL or device code that is readable and tappable/selectable on the phone. Complete it, reload: the row is now Ready.
 3. **Ready**: the body is the directory picker, then one option row per way of starting the tool. Each option row has its label, a one-line note saying how it differs from the others, and its button(s) on the right (underneath, on a phone). Check the order: Open, then any extra actions, then the server, then the daemon, then a quiet "Log in / switch account". Pick a directory and tap the Open row's button: the tool starts in that directory.
-4. Every option that needs a directory (Open, an action marked `dir`, starting a server) uses the one picker at the top — change it and check the next thing you start lands in the new directory.
+4. Only a card with something that reads a directory (starting a server, an action marked `dir`) has a directory picker, labelled **Directory**, in the row whose button uses it. Codex (a daemon and Pair) has none. Type a directory in Claude's picker and press Enter (Go on the iPhone keyboard): the Remote Control server starts there — Enter never runs a different button on the card.
 5. If Node.js is not installed, the Gemini CLI row says so instead of offering an Install button that would fail.
 6. `SERVERJACK_TOOLS=claude,codex` in the env file (restart the units) shows only those two rows, in that order. Unset it again afterwards.
 7. `~/.config/serverjack/tools.json` containing `[{"id":"gemini","hidden":true}]` hides the Gemini row and leaves the others alone.
@@ -89,7 +89,7 @@ Then test each of the three states. The easiest way to see all three is on a mac
 
 ## Remote control (needs the tools installed and logged in)
 
-1. **Claude Code**: open the Claude Code row and tap Start on the "Remote Control server" option row. A tmux session named `claude-remote` opens and `claude remote-control` prints a **QR code** in the terminal. On a desktop the QR is scannable from the screen with the Claude app; on a phone check that it renders as a QR and not as broken block characters. Go back to the list: `claude-remote` is in the Sessions list, the Claude Code row's summary shows the server pill as "running", and its option row now offers Stop and Open.
+1. **Claude Code**: open the Claude Code row, pick a project directory in the "Start Remote Control server" row and tap Start. A tmux session named `claude-remote-<dir>` opens and `claude remote-control` prints a **QR code** in the terminal. On a desktop the QR is scannable from the screen with the Claude app; on a phone check that it renders as a QR and not as broken block characters. Go back to the list: the session is in the Sessions list with a SERVER tag, the Claude Code row's summary reads "Remote Control server: 1 running", and the card has a row for that directory offering Stop and Open. Tap Start again for the same directory: the page says it is already running, and the phone app stays connected (the server was not restarted).
 2. **Codex daemon**: on the Codex row, tap Start on the daemon option row. Reload the landing page: the summary pill shows the daemon as running, and `~/.codex/app-server-daemon/app-server.pid` exists with a live pid. Tap Stop, reload: it shows stopped and the pidfile is gone or stale. Start it again and tap "Pair with phone": `codex remote-control pair` runs in a terminal and prints pairing output; pair the ChatGPT app and open a session in a directory from the app.
 3. **OpenCode**: tap Start on its server option row. Session `opencode-serve` appears and `opencode serve` stays up; the OpenCode mobile app can reach it over the tailnet.
 4. **Copilot CLI**: the "Open with remote control" option row runs `copilot --remote` in a session; the plain Open row above it runs `copilot` without it. Claude Code has the same pair.
@@ -199,13 +199,18 @@ Marked **needs a reboot** — the point of this one is that it survives one.
 
 1. On an agent row, tick **start at boot** next to a server or daemon you can
    afford to have running (Claude Code's Remote Control server in a scratch
-   directory is a good one). `cat ~/.config/serverjack/autostart.json` shows an
-   entry with `tool`, `kind` and, for a server, the directory you had picked.
+   directory is a good one: start it there first, then tick the box on its
+   row). `cat ~/.config/serverjack/autostart.json` shows an entry with `tool`,
+   `kind` and, for a server, its directory.
 2. `systemctl --user restart serverjack`, wait ~20 seconds, then reload the
    page: the pill says running and the tmux session is there.
    `journalctl --user -u serverjack | grep autostart` explains what it did.
 3. Start it, then **Stop** it from the page. The entry is gone from
    `autostart.json` — a deliberate stop must not come back.
+   Tick it again, then kill the server's session from its ⋯ menu under
+   Sessions instead: the card keeps a row for that directory, "Starts at
+   boot; not running now", with the box ticked — unticking it there removes
+   the entry.
 4. Tick the box again, then reboot the machine. After it comes up (give it a
    minute; the unit waits for `network-online.target` and then 15 seconds more),
    the session is running without anyone opening the page. This is the whole

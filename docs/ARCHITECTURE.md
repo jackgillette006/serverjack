@@ -206,9 +206,12 @@ deltas don't each flip a page); `screen_text()` backs `/api/screen` and the
 phone "Copy" view; `create_session()`/`command_args()` pass the command in
 through an environment variable (`SERVERJACK_CMD`), never interpolated
 into a shell string, run in front of a login shell so `sudo` can prompt and
-the last output stays on screen (`set -m` gives it its own process group,
-which is what `session_idle()`'s "fell back to a bare shell" check keys
-on).
+the last output stays on screen (`set -m`, in both the outer wrapper and the
+inner `bash -lc`, gives the command its own foreground process group, so tmux
+reports the command itself as the pane's command; `pane_exited()` reads a pane
+as "fell back to a bare shell" only when it names a shell AND the pane's own
+process holds the terminal, from `/proc/<pid>/stat`, which also covers servers
+started by older versions whose inner shell had no job control).
 
 ## Agent registry
 
@@ -218,10 +221,25 @@ are `dict.update()`d field by field (`server`/`daemon` replace wholesale),
 unknown ids are appended, `"hidden": true` drops one. A malformed file is
 caught and surfaced as a page error string, never taking the page down.
 `SERVERJACK_TOOLS` further restricts and reorders the visible set.
-`tool_state()` (installed? logged in? server/daemon running?) is cached 60s
-per tool (`_STATE_CACHE`), cleared by any button that touches that tool;
-`tool_states()` fans a whole list out over a `ThreadPoolExecutor` so
-rendering costs about one login check, not one per tool. `_tool_path()`
+`tool_state()` answers installed? logged in? server/daemon running?
+Installed is a `shutil.which()` on every call. Logged in (the tool's
+`login_check`, 5 s timeout) is cached 60 s per tool (`_STATE_CACHE`) and
+served stale-while-revalidate: an expired answer is returned at once and one
+background thread per tool re-checks; only a tool never checked (or one whose
+cache a button just cleared with `clear_tool_cache()`) is checked inline. While
+a `login-<id>`/`install-<id>` session is still running its command the check
+runs fresh on every render and nothing is cached. `tool_states()` fans a whole
+list out over a `ThreadPoolExecutor` so rendering costs about one login check,
+not one per tool.
+
+Server instances are the sessions serverjack started for a tool's `server`:
+`start_server()` creates them with two tmux session options, `@sj_server`
+(tool id) and `@sj_dir` (percent-encoded directory), in the same tmux call;
+`server_instances()` reads them back via `server_panes()`. Options survive
+`rename-session`, so identity never depends on the name (`<session>-<dir>`,
+made unique with `auto_name()`). An unmarked session from an older version is
+adopted only if it has that version's name and its `SERVERJACK_CMD` is the
+server's exact command. Start, Stop and autostart all go through these. `_tool_path()`
 folds each tool's `paths` plus nvm's version directories into one extra
 `PATH` computed once at startup, since a systemd user unit's `PATH` never
 sourced the shell profile a CLI's installer relied on.
@@ -233,9 +251,9 @@ entries. `autostart_boot()` runs once in a daemon thread started just
 before `serve_forever()` (so the page comes up immediately), after
 sleeping `SERVERJACK_AUTOSTART_DELAY` seconds (default 15, since
 `network-online.target` firing isn't the same as DNS answering).
-`autostart_start_one()` is idempotent: a live daemon or a non-idle server
-session is left alone; an idle (exited-to-shell) session is killed and
-recreated. Stopping something from the page calls `drop_autostart()` so a
+`autostart_start_one()` is idempotent: a live daemon, or a running instance
+of the server in the entry's directory, is left alone; an exited
+(fell-back-to-a-shell) instance is killed and recreated (`start_server()`). Stopping something from the page calls `drop_autostart()` so a
 deliberate stop doesn't return on the next restart.
 
 ## Install channels
@@ -372,6 +390,12 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   session refocuses rather than duplicates.
 - `pwwin.py` — the window-count badge and picker, verified against
   `tmux display -p '#{window_index}'`.
+- `pwagents.py` — the agent cards, against serverjack instances it starts
+  itself with fake servers: Start/Stop/autostart find servers by their marks
+  (same-basename directories, renames, look-alike interactive sessions), the
+  directory picker and Enter, start-at-boot rows, fresh login state, the
+  collapsed row at phone widths, and the CRT power-off giving the page back
+  when the next one is slow.
 - `pwland.py` — the Start a session card really starts a shell or an agent
   session, a shortcut round-trips through `shortcuts.json`, and an
   agent-servers card's buttons hit the routes they claim, against two fake

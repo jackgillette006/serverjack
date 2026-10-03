@@ -7,6 +7,85 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- **Agent servers started from the page read "exited", and Start killed
+  them.** A Remote Control or OpenCode server started from its card (or by
+  start at boot) showed "exited" with no Stop, because since 1.5.0 the
+  command ran behind a `bash -lc` that tmux reported instead of the server.
+  Pressing Start again, a double tap, or any serverjack restart with "start
+  at boot" ticked then killed the live server and started a new one,
+  silently dropping the phone app's sessions. The pane now reports the
+  server itself, a running server reads running with Stop and Open, and a
+  second Start says "already running" and leaves it alone. Servers started
+  by 1.5.0 that are still up are recognised as running too. `/api/status`
+  counts them again.
+- **Servers are found by what they are, not by their name.** serverjack
+  marks the sessions it starts as servers (tmux session options) and finds
+  them by that. Two project directories with the same name
+  (`~/projects/3d-lab`, `~/projects/ai/3d-lab`) now get a server each
+  (`claude-remote-3d-lab-2`) instead of refusing or replacing the other
+  one; a renamed server is still on its card, and Start no longer starts a
+  second one beside it; and an interactive session that merely has a
+  server-like name (Claude in `~/projects/remote-tools` is
+  `claude-remote-tools`) is no longer listed as an exited server whose
+  Remove button would kill it. Server sessions carry a small **server** tag
+  in the Sessions list.
+- **The agent card is right as soon as a login or install finishes.** A
+  look at the list in the middle of a login (Back to finish OAuth in another
+  app, another tab, a dashboard polling `/api/status`) kept the card on
+  "not logged in" (or "Not installed") for up to a minute after it had
+  worked. Installed is now checked on every load, and the login check runs
+  fresh while a login or install session is still running.
+- **A slow or hung login check no longer holds up the page.** The landing
+  page, `/api/status` and `/api/tools` waited for every tool's login check
+  once a minute (up to 15 s each if a CLI hung). The last answer is now
+  shown at once and re-checked in the background, one check per tool at a
+  time, and a check gives up after 5 s.
+- **Leaving a page never leaves a black screen.** With the CRT effects on,
+  the power-off collapsed the page and held it invisible until the next
+  page arrived — on a slow network, or with serverjack down, a home-screen
+  app sat on a black screen with no sign of life. If the next page has not
+  arrived within a second, the old one comes back.
+- **"Start at boot" entries you ticked are visible and can be unticked.**
+  Ticking the box on a server's Start row saved an entry for the typed
+  directory, but the box could only ever show the home directory's, so it
+  came back unticked, nothing on the card mentioned it, and it could only be
+  removed by starting that server and stopping it. A saved directory with
+  nothing running now has a row of its own ("Starts at boot; not running
+  now") with the box ticked and a Start button; the per-directory Start row
+  no longer has a box (tick it on the server's own row); and a single
+  server's box shows its one entry and says which directory it starts in.
+- **The directory picker on an agent card is where it is used.** Every
+  ready card used to start with an unlabelled picker that most of its
+  buttons ignored (Codex has nothing that reads a directory), far above the
+  Start row it belonged to, and Enter in it ran the card's first button —
+  on Codex, "Pair with phone". The picker now appears, labelled
+  **Directory**, only in a row whose button uses it, and Enter in it can
+  only press that button.
+- **Collapsed agent rows stay short on a phone.** A per-directory server
+  showed one wordy pill per instance in the collapsed row, each wrapping to
+  several lines at phone width with its status dot squashed to a sliver, so
+  Claude's row could be 200+ px tall. It is now one pill per server with the
+  counts ("Remote Control server: 2 running · 1 exited", each directory in
+  its tooltip and in the open card), every pill stays on one line (its label
+  is what gets cut short), and dots keep their size.
+- Agent card copy: Remove on an exited server asked "Stop Remote Control
+  server?"; Stop and Remove now say what they do and name the directory
+  ("Remove the exited Remote Control server in “~/projects/web-app”?").
+  Codex's daemon note pointed to a pairing code "below" for a row that is
+  above it. Running an action names its session in lower case
+  (`pair-with-phone`, not `Pair-with-phone`, which sorted above every other
+  session).
+- A fresh install with no agent installed showed a lone "Shell" choice and
+  nothing about where agents come from. The Start card now says "No coding
+  agents installed yet" and links to Agent servers, whose hint now reads as
+  a sentence and starts with installing.
+- A command ending in `;` — the `\;` closing a pasted
+  `find . -exec rm {} \;` — or a directory or session name ending in one
+  failed oddly: tmux reads a trailing `;` in any argument as the end of its
+  own command. serverjack now escapes it.
+
 ## 1.5.0 - 2026-09-16
 
 - Directory picker: picking or Tab-completing a suggestion now keeps the
