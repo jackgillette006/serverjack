@@ -269,12 +269,23 @@ env "${common[@]}" XDG_RUNTIME_DIR="$RT_RS" SERVERJACK_PORT="$PORT_RS" \
     bash ./restartable.sh "$RS_CTL" "$RS_BASE" >shots/restartable.log 2>&1 & pids+=($!)
 tmux new-session -d -s pwtest -x 120 -y 30 -c "$TEST_HOME" "$session_shell"
 tmux new-session -d -s pwother -x 120 -y 30 -c "$TEST_HOME" "$session_shell"
-for _ in $(seq 1 30); do curl -sf -o /dev/null "$BASE/" && break; sleep 0.2; done
-curl -sf -o /dev/null "$BASE/" || { echo "landing not up (see shots/web.log)" >&2; exit 1; }
-curl -sf -o /dev/null "$BASE/term/" || { echo "terminal not reachable through serverjack (see shots/ttyd.log)" >&2; exit 1; }
-curl -sf -o /dev/null "$AUTH_BASE/healthz" || { echo "restricted instance not up (see shots/web-auth.log)" >&2; exit 1; }
-curl -sf -o /dev/null "$THEME_BASE/healthz" || { echo "custom-theme instance not up (see shots/web-theme.log)" >&2; exit 1; }
-for _ in $(seq 1 30); do [[ -f $RS_CTL/state ]] && break; sleep 0.2; done
+# Every instance gets the patience the landing page always had: ttyd creates
+# its socket a moment after serverjack answers, and on a loaded CI runner
+# that moment can be seconds. A single probe of /term/ right after the
+# landing page came up failed there now and then for no fault of the code.
+wait_up() {   # $1 URL, $2 what to say if it never answers (~20 s)
+  local _
+  for _ in $(seq 1 100); do curl -sf -o /dev/null "$1" && return 0; sleep 0.2; done
+  echo "$2" >&2
+  exit 1
+}
+wait_up "$BASE/" "landing not up (see shots/web.log)"
+wait_up "$BASE/term/" "terminal not reachable through serverjack (see shots/ttyd.log)"
+wait_up "$AUTH_BASE/healthz" "restricted instance not up (see shots/web-auth.log)"
+wait_up "$THEME_BASE/healthz" "custom-theme instance not up (see shots/web-theme.log)"
+# restartable.sh writes its state file once its own instance answers (it
+# waits up to 10 s for that itself), so give it longer than that.
+for _ in $(seq 1 150); do [[ -f $RS_CTL/state ]] && break; sleep 0.2; done
 [[ -f $RS_CTL/state ]] || { echo "restartable instance not up (see shots/restartable.log, shots/web-rs.log)" >&2; exit 1; }
 
 echo "== HTTP parser and identity security (host-side)"
