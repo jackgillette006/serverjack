@@ -3029,5 +3029,61 @@ class SessionCreateTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
 
+
+class ResponseEncodingTests(unittest.TestCase):
+    """Pages and scripts gzipped for a browser that takes it; /app.js kept
+    for good under its hash, fetched fresh under the bare name."""
+
+    def Sink(self, path="/", accept=None):
+        import io
+
+        class Sink(mod.Handler):
+            def __init__(self):
+                self.path = path
+                self.headers = FakeHeaders(**({"Accept-Encoding": accept} if accept else {}))
+                self.out, self.status, self.sent_headers = io.BytesIO(), None, {}
+                self.wfile = self.out
+
+            def send_response(self, code, message=None):
+                self.status = code
+
+            def send_header(self, k, v):
+                self.sent_headers[k] = v
+
+            def end_headers(self):
+                pass
+        return Sink()
+
+    def test_a_page_is_gzipped_only_for_a_client_that_takes_it(self):
+        import gzip
+        page = "<p>" + "x" * 5000 + "</p>"
+        h = self.Sink(accept="gzip, deflate, br")
+        h.send_html(page)
+        body = h.out.getvalue()
+        self.assertEqual(h.sent_headers.get("Content-Encoding"), "gzip")
+        self.assertEqual(int(h.sent_headers["Content-Length"]), len(body))
+        self.assertEqual(gzip.decompress(body).decode(), page)
+        for accept in (None, "identity", "gzip;q=0"):
+            h = self.Sink(accept=accept)
+            h.send_html(page)
+            self.assertNotIn("Content-Encoding", h.sent_headers)
+            self.assertEqual(h.out.getvalue().decode(), page)
+
+    def test_app_js_is_kept_for_good_only_under_its_hash(self):
+        import gzip
+        page = mod.render_term("main")
+        self.assertIn(f'src="/app.js?v={mod.APP_REV}"', page)
+        h = self.Sink(f"/app.js?v={mod.APP_REV}", accept="gzip")
+        h.gate = lambda: (True, "")
+        h.do_GET()
+        self.assertIn("immutable", h.sent_headers["Cache-Control"])
+        self.assertEqual(gzip.decompress(h.out.getvalue()), mod.APP_JS_BYTES)
+        h = self.Sink("/app.js")
+        h.gate = lambda: (True, "")
+        h.do_GET()
+        self.assertEqual(h.sent_headers["Cache-Control"], "no-store")
+        self.assertEqual(h.out.getvalue(), mod.APP_JS_BYTES)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
