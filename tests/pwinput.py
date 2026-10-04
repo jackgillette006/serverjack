@@ -652,6 +652,10 @@ try:
             tmux("send-keys", "-t", f"={SC}:", "-X", "cancel"); time.sleep(0.3)
             ok("mouse turned off while open: the wheel scrolls (no arrow keys typed)",
                scrolled[0] == "1" and pane(SC).rstrip().endswith("$"), (scrolled, pane(SC)[-60:]))
+            # The page drops its own scroll mark on its next state poll (every
+            # 2 s). Start the mouse-on round once that has happened, rather than
+            # hoping the poll lands inside the window below on a slow runner.
+            wait_for(lambda: mode()[2] == "", 6)
             tmux("set-option", "-t", f"={SC}:", "mouse", "on"); time.sleep(1.0)
             page.mouse.wheel(0, -(cell_h(page) * 4 + 2)); time.sleep(0.7)
             ok("mouse turned on while open: tmux scrolls it itself (no serverjack mark)",
