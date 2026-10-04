@@ -7,678 +7,327 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
-### Changed
+## 1.6.0-rc.1 - 2026-10-04
 
-- **Running sessions come first on the landing page.** With any sessions
-  running, the page now reads Sessions, Start a session, Shortcuts, Agent
-  servers. Before, the Start card and every shortcut sat above them, so no
-  session row was on the first screen of any phone or laptop and reopening
-  or killing one -- the everyday thing -- always meant a long scroll. With
-  none running, Start a session still leads, and so it does when the page
-  comes back with an error from the Start card, the default directory or Add
-  a shortcut, so the field to fix stays right under the error.
+This release is a full review of the UI on phones and desktops, from the
+landing page through the terminal page to what tmux and ttyd are handed.
+About 127 glitches and usability problems were found, confirmed and fixed,
+most of them with a browser test that drives the real thing. The installer
+and the update path are unchanged.
 
-### Fixed
+**Upgrading from 1.5.0.** What behaves differently on purpose:
 
-- **Agent servers started from the page read "exited", and Start killed
-  them.** A Remote Control or OpenCode server started from its card (or by
-  start at boot) showed "exited" with no Stop, because since 1.5.0 the
-  command ran behind a `bash -lc` that tmux reported instead of the server.
-  Pressing Start again, a double tap, or any serverjack restart with "start
-  at boot" ticked then killed the live server and started a new one,
-  silently dropping the phone app's sessions. The pane now reports the
-  server itself, a running server reads running with Stop and Open, and a
-  second Start says "already running" and leaves it alone. Servers started
-  by 1.5.0 that are still up are recognised as running too. `/api/status`
-  counts them again. A server is judged by its own pane, so opening a
-  second window in its session (prefix+c, the window tabs) or splitting it
-  no longer makes it read "exited" either.
-- **Servers are found by what they are, not by their name.** serverjack
-  marks the sessions it starts as servers (tmux session options) and finds
-  them by that. Two project directories with the same name
-  (`~/projects/3d-lab`, `~/projects/ai/3d-lab`) now get a server each
-  (`claude-remote-3d-lab-2`) instead of refusing or replacing the other
-  one; a renamed server is still on its card, and Start no longer starts a
-  second one beside it; and an interactive session that merely has a
-  server-like name (Claude in `~/projects/remote-tools` is
-  `claude-remote-tools`) is no longer listed as an exited server whose
-  Remove button would kill it. Server sessions carry a small **server** tag
-  in the Sessions list. A session serverjack did not start is no longer
-  taken for a server even when its name matches: a `tmux new -s
-  opencode-serve` you made by hand is not on the card, and Start makes
-  `opencode-serve-2` beside it. Only servers started by serverjack 1.5.0
-  (same name and same command) are still adopted.
-- **The agent card is right as soon as a login or install finishes.** A
-  look at the list in the middle of a login (Back to finish OAuth in another
-  app, another tab, a dashboard polling `/api/status`) kept the card on
-  "not logged in" (or "Not installed") for up to a minute after it had
-  worked. Installed is now checked on every load, and the login check runs
-  fresh while a login or install session is still running.
-- **A slow or hung login check no longer holds up the page.** The landing
-  page, `/api/status` and `/api/tools` waited for every tool's login check
-  once a minute (up to 15 s each if a CLI hung). The last answer is now
-  shown at once and re-checked in the background, one check per tool at a
-  time, and a check gives up after 5 s.
-- **Leaving a page never leaves a black screen.** With the CRT effects on,
-  the power-off collapsed the page and held it invisible until the next
-  page arrived — on a slow network, or with serverjack down, a home-screen
-  app sat on a black screen with no sign of life. If the next page has not
-  arrived within a second, the old one comes back.
-- **"Start at boot" entries you ticked are visible and can be unticked.**
-  Ticking the box on a server's Start row saved an entry for the typed
-  directory, but the box could only ever show the home directory's, so it
-  came back unticked, nothing on the card mentioned it, and it could only be
-  removed by starting that server and stopping it. A saved directory with
-  nothing running now has a row of its own ("Starts at boot; not running
-  now") with the box ticked and a Start button; the per-directory Start row
-  no longer has a box (tick it on the server's own row); and a single
-  server's box shows its one entry and says which directory it starts in,
-  running or not. A directory that has since gone (deleted, a drive not
-  mounted) gets a row saying so, and unticking it just forgets the entry: it
-  neither re-creates the directory nor fails because it can't.
-- **The directory picker on an agent card is where it is used.** Every
-  ready card used to start with an unlabelled picker that most of its
-  buttons ignored (Codex has nothing that reads a directory), far above the
-  Start row it belonged to, and Enter in it ran the card's first button —
-  on Codex, "Pair with phone". The picker now appears, labelled
-  **Directory**, only in a row whose button uses it, and Enter in it can
-  only press that button.
-- **Collapsed agent rows stay short on a phone.** A per-directory server
-  showed one wordy pill per instance in the collapsed row, each wrapping to
-  several lines at phone width with its status dot squashed to a sliver, so
-  Claude's row could be 200+ px tall. It is now one pill per server with the
-  counts ("Remote Control server: 2 running · 1 exited", each directory in
-  its tooltip and in the open card), every pill stays on one line (its label
-  is what gets cut short), and dots keep their size.
-- Agent card copy: Remove on an exited server asked "Stop Remote Control
-  server?"; Stop and Remove now say what they do and name the directory
-  ("Remove the exited Remote Control server in “~/projects/web-app”?").
-  Codex's daemon note pointed to a pairing code "below" for a row that is
-  above it. Running an action names its session in lower case
-  (`pair-with-phone`, not `Pair-with-phone`, which sorted above every other
-  session).
-- A fresh install with no agent installed showed a lone "Shell" choice and
-  nothing about where agents come from. The Start card now says "No coding
-  agents installed yet" and links to Agent servers, whose hint now reads as
-  a sentence and starts with installing.
-- A command ending in `;` — the `\;` closing a pasted
-  `find . -exec rm {} \;` — or a directory or session name ending in one
-  failed oddly: tmux reads a trailing `;` in any argument as the end of its
-  own command. serverjack now escapes it.
-- **Directory picker: a typed folder name no longer creates a new, empty
-  folder.** Typing part of a name (`game`, `3d`) and pressing Enter, Go on a
-  phone, or tapping Start sent the text itself, so the session started in a
-  brand-new empty `~/game` instead of the `~/projects/game` the list was
-  suggesting -- and that stray folder then outranked the real one in later
-  searches. Now the folder with exactly that name (or else the top match) is
-  highlighted as you type, and Enter, Go and Start take the highlighted row
-  (Enter pressed straight after typing waits for the list to catch up), so
-  `lab` finds `~/projects/ai/lab` even when `~/projects/3d-lab` ranks above
-  it. A new folder is something you can see: if nothing matches, the list's
-  only row is **+ New folder `~/name`**, and that is what Start creates; a
-  typed path (with a `/` or a leading `~`, or `.` for the default directory)
-  is still used exactly as typed. With the list dismissed, Start uses a name
-  only when exactly one folder has it, and otherwise shows the list again
-  rather than guess. A name the page fills in itself is looked up before it
-  is sent, and an agent card's "start at boot" box uses the same folder its
-  Start would (it used to make `~/game` too).
-- Directory picker: a folder is created only when a session actually starts
-  in it. A Start refused for its name still left the new folder behind, and
-  saving a shortcut with a mistyped directory silently created it. Now a
-  refused start leaves the disk as it was, and Add a shortcut and "start at
-  boot" refuse a folder that doesn't exist ("Not a directory:
-  ~/projects/gmae") instead of inventing one. Errors name the path in its
-  `~` form, the way the picker shows it, and a directory with a NUL byte in
-  it is a clean error instead of a dropped connection.
-- Directory picker on touch screens: swiping the suggestion list scrolls it.
-  It used to pick whichever folder your finger first landed on, so only the
-  rows visible without scrolling could ever be chosen.
-- Directory picker: the suggestion list no longer covers what's below it.
-  It sits in the page under the field and pushes the rest down (about five
-  rows tall at most), on a phone and a desktop, in the Start card, the agent
-  cards, Add a shortcut, the default-directory form and the terminal's +
-  panel. Tapping or clicking Name, Save, Start or Start & open used to pick
-  a folder instead. A slow click is fine too: the list waits for the button
-  to come back up before it closes, so Start doesn't move out from under it.
-- Terminal + panel on phones: the directory list hung off the bottom of the
-  sheet (two rows visible) over Start & open, and with the keyboard up the
-  top of the sheet went off-screen. The sheet now stops below the tab bar,
-  so + still closes it, and scrolls inside when it's taller than the screen.
-- Directory picker: Tab and Shift+Tab out of an untouched field just move
-  on. Each press used to fill in a folder (`~/`, then `~/bin/`, ...) and the
-  session started there; Shift+Tab drilled down too. Tab still completes and
-  drills into a match once you've typed or arrowed to one.
-- Directory picker: closing the list (a pick, Escape, or leaving the field)
-  cancels a lookup still on its way, so a slow answer -- likely over
-  Tailscale on a phone -- no longer reopens the list after a pick, or over
-  the next field after you've moved on.
-- Directory picker: a long parent path no longer hides the folder name. The
-  parent is shortened from its left end and the folder name always shows,
-  so rows under the same long parent can be told apart; hovering a row shows
-  its full path.
-- Directory picker with a mouse: rows highlight on hover (and Enter takes the
-  hovered row), a right-click no longer picks a row, and a click on the
-  list's padding no longer closes it and drops focus.
-- Accessibility: the directory field points at a labelled suggestion list
-  (`aria-controls`), the Start card's fields have names a screen reader can
-  announce (Directory, Session name, Command, Shortcut name), and the
-  terminal + panel's Name and Directory labels belong to their fields, so
-  clicking a label focuses it and voice control can find them.
-- **Start a session: an error no longer wipes the directory.** Any refusal
-  (a taken name, a bad name, a folder that isn't one) came back with every
-  field refilled except the directory box, so the corrected retry quietly
-  started in `~` -- a pasted `./deploy.sh` ran in the wrong place. The
-  directory now comes back too, and so does the *Keep this command in
-  Shortcuts* tick (it used to come back unticked, so the retry didn't save
-  the shortcut either). Same for Add a shortcut, a failing agent card and
-  the terminal page's `/new`.
-- **Multi-line commands run line by line.** Browsers send every newline in a
-  text box as CR+LF, and each line but the last ran with a stray carriage
-  return glued to its last word (`cd: $'projects\r': No such file or
-  directory`). Fixed for the Start card, Add a shortcut and `/run`; shortcuts
-  already saved that way are repaired when they're read.
-- **One tap is one submit.** On a slow link a second tap on Start (or Run,
-  Save, an agent button) sent the form again: the command ran twice, a saved
-  shortcut appeared twice, or you landed on "already exists" for the session
-  you had just made. A form now ignores further submits until the page
-  changes; Start reads *Starting…* meanwhile, and Back gives you a usable form.
-- **Back and reload never re-run a form.** An error page stayed at its POST
-  address (`/start`, `/tools`, `/rename`, ...): Back to it showed Chrome's
-  "Confirm Form Resubmission" or Firefox's "Document Expired", and WebKit
-  silently sent the form again. The address bar now reads `/` with the form
-  still filled in.
-- **Kill, Rename, shortcuts, start at boot and the Codex daemon land where
-  you were.** Each used to reload the page at the top with every card
-  closed and no word about what happened; on a phone the result was one to
-  two screens down. The page now comes back at that section or agent card,
-  open, with one line saying what happened ("Killed “main”.", "Saved
-  shortcut “Deploy”.", "Codex: Remote control daemon stopped."), and
-  anything half-typed in the Start card is kept. The note shows once: a
-  reload or Back doesn't bring it back (the old "Default directory: ..." note
-  did, on every reload).
-- **Kill and Rename happen in place.** No reload: the row goes away or shows
-  its new name, and an agent card whose server it was is redrawn to match.
-  Rename opens focused with the old name selected, refuses `:` and `.`
-  before sending, and shows a refusal right under the field with the menu
-  still open and your text kept.
-- Changing the default directory ("Starts in ~ · change") no longer empties a
-  half-filled Start card, and a folder it refuses is reported inside that
-  form instead of at the top of the page, off-screen on a phone.
-- Back after starting an agent left Chrome showing two chips lit, the command
-  box up and the previous command ready to run again. The Start card now
-  comes back clean and consistent.
-- Renaming a session to a name starting with `-` failed with tmux's raw
-  "unknown flag" error, although creating one worked.
-- A session name starting with `$` was accepted, and the session then
-  couldn't be opened, killed or renamed (tmux reads `$x` as a session id, and
-  `$3` would have hit someone else's session). It's refused up front now.
-- Unnamed sessions are named after the command that actually runs, past a
-  wrapper's options: `sudo -u nobody true` is `true` (was `u`), `env FOO=1
-  printenv` is `printenv` (was `foo-1`).
-- Renaming onto a taken name said "Open it instead.", which was written for
-  starting a session; a rename now says "Another session is already called
-  “main”. Pick a different name."
-- **Dark scrollbars and checkboxes.** The page never said it was dark-only, so
-  Chrome, Edge and Firefox drew light-grey scrollbars (on the page, the folder
-  suggestions and a long command box) and white unchecked checkboxes next to
-  the dark UI. The landing page (and the refused and session-ended pages)
-  now declares `color-scheme: dark`. The terminal page deliberately does not:
-  ttyd's page inside it declares none, and a dark page around it would make
-  the browser paint the terminal white while it loads.
-- **Home-screen app: nothing scrolls under the status bar any more.** The
-  iPhone app draws under a transparent status bar, and once the list was
-  scrolled, cards and the bright Start button passed right under the clock.
-  A solid strip the height of the status bar now stays behind it (it is zero
-  tall on desktop, Android and in landscape).
-- **"serverjack serverjack" in the header.** The title next to the wordmark
-  defaults to the hostname; when that is also "serverjack" it is now left out.
-- **The 403 page no longer calls you "another tailnet user … signed in as
-  nobody"** when no Tailscale identity reached serverjack at all (opening it
-  on `127.0.0.1`, over an SSH port-forward, or through a proxy that isn't
-  trusted for identity) -- usually the owner. It now says no identity
-  arrived and points at the `tailscale serve` address; a real wrong login
-  still gets the old wording, and the allowed logins are still never named.
-- **Session rows on a phone show what matters.** The meta line was one
-  ellipsised line in the order command · path · windows · age · attached, so
-  on a phone the path ate the space and the window count, age and
-  "attached" were cut off (leaving only the dot's colour). It now leads with
-  the short facts -- **attached** in words, the window count when there is
-  more than one, the age -- and the command and path take what is left.
-  Shortcut rows lead with their directory, so two shortcuts that differ
-  only in where they run can be told apart.
-- **The age says what it measures.** "6m ago" was the session's creation time
-  but read as last activity; it now reads `up 6m` (`up 3h`, `up 2d`), the
-  same word the machine line above uses.
-- **Long names end in "…"** instead of being cut mid-letter, the full name is
-  a hover title on desktop, and the "built-in" pill on the Update row is no
-  longer sliced on a 320px screen. The shortcut name fields now stop at the
-  60 characters the server keeps, instead of silently cutting the rest.
-- **The ⋯ menu fits on narrow phones.** On a 375px or smaller screen the menu
-  (and more so with Rename unfolded) ran off the left edge, cutting "Open
-  here" to "here" and hiding the start of the rename box. Below 480px it now
-  drops in under the row at the row's width. The rename box is 16px, so iOS
-  no longer zooms the page when you tap it.
-- **Screen readers and Voice Control can tell rows apart.** Every row's ⋯,
-  Open, Remove and Run used to have the same name ("More", "Open", …); they
-  are now "More actions for main", "Open main", "Remove shortcut Logs",
-  "Run Logs", and the status dot is announced as "attached"/"not attached".
-- **"Open in SSH app" is now "SSH app (login only)".** It sat in each
-  session's menu but opened the same bare `ssh://user@host` for all of them;
-  an `ssh://` link cannot carry `tmux attach`, so the label now says what it
-  does (Copy SSH command is the one that attaches).
-- **One ⋯ menu at a time, and Escape closes it.** Opening a second row's menu
-  left the first one open underneath (so the "Kill session" you saw could
-  belong to a different row), Escape did nothing, tabbing out left the menu
-  covering the next rows, and a half-typed rename was still there next time.
-  Now opening one closes the others, Escape closes Rename and then the menu
-  and puts focus back on its ⋯, focus or a press outside closes it, and a
-  closed menu always reopens with Rename folded and the real name in it.
-- **A menu near the bottom of the screen opens upward** (or scrolls itself
-  into view when there is no room either way) instead of opening off-screen
-  so the tap looked like it did nothing; an open menu's ⋯ now looks pressed.
-- **"Copy SSH command" tapped twice no longer sticks on "Copied".**
-- **Ctrl/Cmd/Shift-click on Open** gets the browser's own new tab or window
-  on the normal session page, instead of our pop-up (or, on a touch-screen
-  computer, instead of taking the list tab to the session).
-- **The session list keeps itself current.** It was a snapshot from page
-  load: on a desktop, where the list tab stays open while sessions pop out,
-  and in the home-screen app, which resumes without reloading, sessions
-  killed or started elsewhere, attached dots and ages all went stale, and
-  Open on a session that had ended loaded a full copy of the landing page
-  with an error at `/s/<name>` (in a 1000x650 pop-up on desktop). The list
-  now re-reads the sessions every 15 seconds while visible and whenever the
-  page comes back, patching rows in place (never under an open menu or a
-  half-typed rename), says so when serverjack can't be reached, and Open on
-  a session it knows has ended shows a note instead. `/s/<name>` for a gone
-  session redirects to the list with a one-line note, or in a pop-out shows
-  a small "session ended" page with a Close button.
-- **The session you just left no longer shows as "attached".** The list was
-  rendered while the old page's terminal connection was still closing, so
-  every round trip marked that session attached; a second look a second
-  after load corrects it.
-- **Bigger touch targets.** On touch screens the disclosures ("Save as a
-  shortcut", "Starts in … · change", "Add a shortcut"), the Shell/agent
-  chips, the save checkbox's label, Docs, the CRT toggle, the rename box and
-  its Save, and the agent cards' small buttons are now at least 44px tall
-  (some were 18-24px). "Start at boot" -- which acts the moment it is
-  ticked -- gets a 44px label and is kept clear of the Stop/Start button
-  next to it. "Starts in … · change" is the small muted footnote it was
-  always meant to be (its style lost to a more specific rule), and the CRT
-  toggle meets text contrast.
-- **Windows Contrast themes** no longer hide which Start choice is selected
-  or erase the status dots (both were drawn only with colours and
-  backgrounds that a contrast theme replaces).
-- The command box's example fits its two rows on 320-360px phones
-  ("Optional command, e.g. sudo apt install ffmpeg"), and install commands in
-  an agent card's notes wrap at spaces instead of mid-word
-  (`curl -fsSL http` / `s://...`).
-- **The footer stops pointing at a back button.** It said "Use the browser's
-  back button to return here", which the home-screen app doesn't have and a
-  desktop pop-out has nothing to go back to. It now names the control that
-  exists (the logo at the top left of a session's bar) and says leaving
-  never stops a session -- killing it does. The bar's × is announced as
-  "Back to sessions", and both it and the logo replace the terminal in the
-  history, so Back from the list no longer re-opens the session you just
-  left. The docs now use "kill" for ending a session and "leave" for coming
-  back to the list.
-- **iPhone Larger Text.** Every landing-page size was fixed px, which iOS
-  never scales, and the home-screen app has no aA menu, so the Text Size
-  setting did nothing. On iOS the landing page's text now follows it (at the
-  default setting nothing changes; inputs never drop under 16px, so focusing
-  one doesn't zoom). Desktop and Android are untouched; the terminal page
-  stays as it is.
-- `/favicon.ico` answers with the app icon instead of a 404 on every desktop
-  visit, and a client that hangs up mid-response (a phone locking, a tab
-  closing) no longer leaves a `BrokenPipeError` traceback in the journal.
-- **The terminal reconnects by itself** after serverjack or ttyd restarts,
-  including the built-in *Update serverjack*. Before, ttyd's single
-  immediate retry landed inside the restart and failed, and the terminal sat
-  on "Press ⏎ to Reconnect" until you pressed Enter -- which a phone's key
-  row doesn't have. Now the page notices, waits for serverjack and ttyd to
-  answer (retrying after 0, 1, 2, 4, 8, then every 10 seconds, and at once
-  when the page comes back to the foreground or the network returns) and
-  reloads the terminal, typically within a few seconds. The same covers a
-  phone that wakes before its Wi-Fi or Tailscale is back.
-- **"The terminal isn't answering" page recovers on its own.** A frame that
-  loaded while ttyd was down used to stay on that page until you switched
-  tabs, and told a home-screen app with no reload button to "reload this
-  page". It now goes back to the terminal as soon as ttyd answers, has a
-  Retry button, and inside the terminal page drops its second header and
-  tucks the systemctl hints behind a fold.
-- **A session that ends no longer drops you into another one.** When the
-  open session exited or was killed elsewhere, the page sat on a dead
-  terminal for up to 15 seconds and then quietly attached the alphabetically
-  first session -- with the keyboard in it, so the next line you typed ran
-  there. Now the end is noticed at once: a tab goes to the session list,
-  which says “… has ended”, and a pop-out window closes.
-- **A rename made elsewhere is followed.** The tab, the address bar and the
-  title switch to the new name and the terminal stays attached, instead of
-  the page treating the renamed session as gone. (`/api/sessions` now
-  includes tmux's `id` for each session.)
-- **Back after switching tabs** moved only the terminal frame to the
-  previous session while the bar, the URL, Copy and the window list stayed
-  on the new one -- so keystrokes went to a session the bar didn't show.
-  Switching tabs no longer adds history entries, so Back leaves the
-  terminal page.
-- **The + panel can be dismissed properly.** It has a Cancel button, closes
-  when you click or tap in the terminal, and + shows when it is open.
-  Escape, Cancel and + put the keyboard back in the terminal; before,
-  Escape left focus nowhere (typing was lost), and closing with + on
-  Windows/Linux left focus on the + button, where the next Space reopened
-  the panel and Enter started a stray session.
-- **The + panel no longer insists on a name for agents**, and no longer
-  stays stuck requiring one after you started an agent and came back for a
-  shell: like the Start card, the name is optional for every type. Its
-  placeholder and button now match the Start card ("Start").
-- A **double tap on Start** in the + panel started two sessions on a slow
-  link. The button now reads "Starting…" and ignores taps until the first
-  request is answered.
-- The + panel's sheet on a phone is opaque, so the key row no longer shows
-  through it, and the CRT fx toggle is gone from it (a display setting
-  doesn't belong in the new-session form; it stays in the landing page's
-  footer).
-- **Tab strip.** Tabs past either edge are now signalled by a fade on that
-  edge instead of hard-cut slivers that read like other session names; a
-  plain mouse wheel scrolls the strip sideways on a desktop; long session
-  names are cut with an ellipsis (full name in the tooltip) so one tab can't
-  fill a phone's strip; the active tab and its window badge are scrolled
-  fully into view once the badge appears; and the 15-second poll no longer
-  rebuilds an unchanged strip -- it used to snap a strip you were scrolling
-  back to the active tab and drop keyboard focus from a focused tab or
-  window-list row.
-- **Window badge and list.** The badge shows the window count and a caret
-  (`· 3 ▾`) instead of a 1-based position that disagreed with tmux's
-  0-based indexes in the list; the active tab says it opens a menu
-  (`aria-haspopup`/`aria-expanded`); and the list is fetched fresh when it
-  opens, so a window switched or created from another device or with a tmux
-  key is shown correctly at once instead of up to 15 seconds later.
-- **The terminal fills its frame from the start.** ttyd sized the grid
-  before switching to its WebGL renderer, so a desktop got a dead band down
-  the right (19 fewer columns at 1280px) and a phone 3-4 fewer columns until
-  something resized it, and the session reflowed the first time the phone
-  keyboard opened. The page now refits once the renderer is in, and turns
-  off xterm's own scrollback (tmux keeps the history), which stops it
-  reserving a 15px scrollbar strip.
-- On desktop browsers with classic scrollbars (Chrome and Edge on Windows),
-  a light, never-scrollable scrollbar no longer runs down the right edge of
-  the terminal.
-- Touch devices: no more `Cannot read properties of null (reading
-  'appendChild')` console error on many terminal loads.
-- Accessibility: the current session's tab is marked `aria-current`, the
-  terminal frame has a title naming the session, the window list is a menu
-  with arrow-key navigation, and the + panel's error is announced
-  (`role=alert`).
-- **Pop-out window: × closes it, and nothing covers the terminal.** With
-  the bar shown, the ⋯ handle sat on top of × -- a click there hid the bar
-  and left the window open. With the bar hidden, the handle floated over the
-  terminal's top-right corner, hiding the last few columns of the first two
-  rows (a right-aligned clock or status, vim's tab-close X) and taking the
-  clicks meant for them. The handle now has a band of its own across the
-  top of the window, sits beside × when the bar is shown, and says what it
-  does ("Show bar" / "Hide bar", with `aria-expanded`).
-- **Showing the pop-out's bar no longer eats what you type or resizes the
-  session.** The click left the keyboard on the handle, so the first word
-  you typed went nowhere and the next Space hid the bar again -- the rest of
-  the line then ran as a command (in Firefox nothing typed arrived at all
-  until you clicked the terminal). And every show or hide resized the
-  terminal by 44px, so tmux resized the window for every attached client
-  and agent TUIs redrew. Now the keyboard stays in the terminal, the bar
-  lies over the terminal's top rows while it is shown, and Escape, a click
-  in the terminal, or picking a tab or a window puts it away.
-- Revealing the pop-out's bar shows the **current tab and its window
-  badge**; with more tabs than fit, it used to open scrolled to the start.
-- **A popped-out session is not attached a second time by the same
-  browser.** Back in the tab you popped it out of, or picking its tab in
-  another tab's strip, attached it there as well, and the two windows fought
-  over its size (one boxed in dots, the other cropped). Pop out now leaves
-  no history entry to go Back to, and picking a popped-out session's tab
-  brings its window forward (from the tab that opened it) or says it is open
-  in a pop-out, with *Open here* to attach anyway. Loading the session's
-  `/s/` address afresh in a tab (a reload, a typed URL, or Back to an entry
-  from before the pop-out) still attaches it a second time.
-- **A pop-out window keeps the name of the session it shows.** After you
-  switched tabs inside it, Open on the new session opened a second window on
-  it, and Open on the session it started with silently took it back.
-- **Open on a session that is already popped out brings its window
-  forward without reloading it.** It used to reload it: the terminal
-  re-attached, the CRT power-on replayed and a shown bar or a half-filled +
-  panel was lost. The same goes for the terminal bar's pop-out button.
-- **Blocked pop-ups.** With pop-ups blocked for the site, the terminal's
-  pop-out button did nothing at all, and the landing menu's *Pop out* turned
-  the landing tab into a bar-less pop-out page. The button now says the
-  browser blocked the window, and the landing page opens the session in an
-  ordinary tab and says why.
-- **Touchscreen laptops get the desktop layout again.** Any browser
-  exposing touch events was treated as a phone: no Pop out anywhere, Open
-  replacing the landing tab, the soft-key row on by default and an invisible
-  text box over the terminal that hid the link cursor. Phone or desktop now
-  follows the device's main pointer; a finger swipe on the terminal still
-  scrolls its history, and an iPad stays a tablet even with a trackpad
-  attached (not tried on a real iPad).
-- **iPhone in landscape: nothing under the notch or the rounded corners.**
-  The terminal page drew edge to edge but only kept clear of the top and
-  bottom, so the logo, ×, Esc and Copy sat in the corners and the start of
-  every terminal line, the + sheet's labels and the Copy view's lines were
-  hidden behind the notch or Dynamic Island. The bar, terminal, key row,
-  sheet and Copy view now stay inside the side safe areas (their
-  backgrounds still run underneath), at the cost of a few terminal columns
-  in landscape. Rotating also scrolls the current tab back into view.
-- **iPhone home indicator.** With the key row turned off, the terminal's
-  last row -- usually your prompt -- ran under the home indicator, where a
-  swipe goes to iOS; it now stops above it. With the keyboard open, the key
-  row no longer keeps an empty ~34px band above the keyboard for the home
-  indicator the keyboard is covering: about two terminal rows back while you
-  type. (Checked in emulation with the insets simulated; still to be
-  confirmed on a real iPhone.)
-- Swiping the key row to reach the keys past its edge sent the key under
-  your finger -- ^C (interrupting whatever ran), Esc (interrupting an agent),
-  an arrow, or a silently armed Ctrl. Keys now fire on a tap released in
-  place; a swipe only scrolls.
-- Paste and Copy did nothing when tapped in browsers that send no click
-  after a touch on them (Linux WebKit on touch, which is also what the test
-  suite drives as its iPhone). They now act on the tap itself; iOS Safari,
-  which did send the click, still pastes from it, and nothing fires twice.
-- Soft keys ignored keyboard Enter/Space and assistive-technology
-  activation (they only listened for a pointer press); they now respond to
-  both, and the Ctrl key reports whether it is armed to screen readers.
-- The soft Ctrl followed by punctuation or some digits (`\ [ ] _ ^ / ? @ -
-  2`) sent nothing and swallowed the character, so Ctrl+\, Ctrl+_ and
-  Ctrl+] were impossible from a phone. They now send the control byte; a
-  character with no Ctrl form is typed as is instead of disappearing.
-- Dictated, predicted or emoji text was silently dropped after any soft key
-  or a Ctrl-latched key, and an armed Ctrl survived switching to another
-  session (making its first letter a control character). Both fixed.
-- The Copy view left keyboard focus in the hidden terminal: Esc (meant to
-  close it) and anything typed went to the program underneath, interrupting
-  agents unseen. Opening it now moves focus into the view, which drops the
-  phone keyboard; Esc closes it.
-- Copy all copied the screen with every line run together, and tapping a
-  line stripped its indentation. Both now copy the text exactly as shown.
-- The Copy view showed an empty page when the session had ended and stale
-  text when serverjack couldn't be reached (which Copy all would then copy);
-  it now says which, and stays with the session the page is on.
-- Firefox: after clicking the keys toggle, a soft key, the Copy view's
-  Close or the active tab, typing went nowhere until you clicked into the
+- The landing page leads with **Sessions** whenever anything is running;
+  Start a session comes first only when nothing is, or when the page comes
+  back with an error to fix in one of its forms.
+- In a directory picker a typed folder *name* is a search: Enter (Go) fills
+  in the highlighted folder, a second Enter starts. A new folder comes only
+  from the **+ New folder** row or a typed path.
+- The terminal page asks before a close made with Ctrl held (the browser's
+  own Ctrl+W, which bash uses to delete a word); no other way out asks.
+- While a page has a session open, tmux's status line is off and a smaller
+  window is padded with blanks; both go back to what they were when the last
+  page leaves. A session 1.5.0 opened keeps its `status off` (it can't be
+  told from one you set): `tmux set-option -u -t <name> status` clears it.
+- Agent servers are found by serverjack's marks, not by name. Servers 1.5.0
+  started are still recognised; a hand-made look-alike
+  (`tmux new -s opencode-serve`) is not.
+- 24-bit colour needs tmux 3.2 and the blank padding 3.3; an older tmux keeps
+  the old behaviour. ttyd's new options apply once `serverjack-ttyd`
+  restarts, which `install.sh`, `serverjack-ctl update` and the Update
+  shortcut all do.
+- **Reload pages left open from 1.5.0.** Only a 1.6 page reconnects by
+  itself: once the update has restarted serverjack, a 1.5.0 terminal page
+  shows "Press ⏎ to Reconnect" and keeps running 1.5.0's script until it is
+  reloaded. Reload open tabs and pop-outs, and close and reopen the
+  home-screen app (until then, tap the terminal and press return to
+  reconnect; anything typed before that return is lost).
+
+### Agent servers
+
+#### Changed
+
+- **Servers are found by what they are, not their name** (tmux session
+  options set when serverjack starts one). Two project directories with the
+  same name get a server each (`claude-remote-3d-lab-2`), a renamed server
+  stays on its card, and an interactive session with a server-like name
+  (`claude-remote-tools`) is no longer listed as an exited server whose
+  Remove would kill it. Server sessions carry a **server** tag in the list.
+- **The directory picker is in the row that uses it**, labelled
+  **Directory**, and Enter in it can only press that row's button. Every
+  ready card used to open with an unlabelled picker, and Enter ran the
+  card's first button (on Codex, "Pair with phone").
+- **"Start at boot" entries are visible**: a ticked directory with nothing
+  running has its own row ("Starts at boot; not running now") to untick or
+  Start, and one whose directory is gone says so and is simply forgotten
+  when unticked. Before, the box came back unticked with no trace of the
+  entry.
+- Collapsed rows stay one line on a phone: one pill per server with counts
+  ("Remote Control server: 2 running · 1 exited").
+
+#### Fixed
+
+- **Servers started from the page read "exited", and Start killed them.**
+  Since 1.5.0 a Remote Control or OpenCode server showed "exited" with no
+  Stop, and a second Start, a double tap or a restart with "start at boot"
+  ticked replaced the live server, dropping the phone app's sessions. A
+  running server now reads running, a second Start says "already running",
+  and a second window in its session no longer makes it read "exited".
+- The card is right as soon as a login or install finishes, and a slow or
+  hung login check no longer holds up the page (the last answer shows, the
+  check runs in the background and gives up after 5 s). serverjack starts
+  the checks as it comes up, pages loaded together share one check, and
+  `/api/status` (answered without an identity) runs none.
+- Clearer copy: Stop and Remove name the directory; with no agent installed
+  the Start card says so and links to Agent servers; action sessions are
+  lower case (`pair-with-phone`). A trailing `;`, as in a pasted
+  `find . -exec rm {} \;`, no longer confuses tmux. A NUL byte in a link or
+  form field is refused instead of dropping the connection.
+
+### Starting sessions and the directory picker
+
+#### Changed
+
+- **A typed folder name picks a folder; it never makes one.** `game` + Enter
+  used to start in a new, empty `~/game` instead of the suggested
+  `~/projects/game`. The folder with exactly that name (or else the top
+  match) is highlighted as you type and is what Enter, Go and Start take; if
+  nothing matches, the only row is **+ New folder `~/name`**. A typed path
+  (a `/`, a leading `~`, or `.`) is used as typed.
+- **A folder is created only when a session starts in it.** A refused Start
+  leaves nothing behind, and Add a shortcut, the default directory and
+  "start at boot" refuse a missing folder instead of creating it.
+- **Save as a shortcut: naming it is enough** — a name ticks *Keep this
+  command in Shortcuts*, and the box decides. No command is refused instead
+  of silently starting a shell.
+- Shortcut runs are named after the shortcut (`disk-usage`); shortcut rows
+  show their directory first and wrap a long command between words, never
+  after a hyphen (`ls -` / `la`).
+- **Update serverjack asks before it runs** and shows its whole command; one
+  stray tap used to restart every open terminal.
+- A taken name gets an **Open** button for that session; the Start card's
+  hint says why `sudo` prompts work.
+
+#### Added
+
+- **Edit a shortcut**: a pencil on each saved shortcut; *Save changes*
+  replaces it in place and *Cancel* leaves the editor.
+- A **›** on each folder suggestion shows its subfolders (Tab, for touch).
+
+#### Fixed
+
+- **The suggestion list no longer covers what is below it**: it sits under
+  the field and pushes the rest down, everywhere a picker appears. Tapping
+  Start or Save used to pick a folder instead; an agent card's buttons no
+  longer move while it is open; a slow click still lands. The + sheet's
+  list no longer hangs off a phone's screen.
+- A swipe scrolls the list instead of picking; Tab out of an untouched field
+  just moves on; a late lookup no longer reopens the list; long parent paths
+  keep the folder name visible; hover and right-click behave; the fields
+  have names a screen reader announces.
+- **A refused Start keeps everything you typed**, directory and *Keep* tick
+  included (the retry used to start in `~`); so do Add a shortcut, the agent
+  cards and the + panel.
+- **One tap is one submit**: Start reads *Starting…*, and a second tap on a
+  slow link no longer runs the command twice. Back and reload never re-run a
+  form, and Back after starting an agent shows a clean card.
+- Multi-line commands run line by line (each line used to end in a stray
+  carriage return). Changing the default directory keeps a half-filled
+  Start card.
+- Session names: a leading `$` is refused, renaming to `-x` works, and an
+  unnamed session is named after the real command past `sudo -u nobody`.
+
+### Landing page and sessions list
+
+#### Changed
+
+- **Running sessions come first** (see above): no session row used to be on
+  the first screen of any phone or laptop.
+- **Session rows lead with the short facts** (**attached** in words, the
+  window count, the age), then the command and path, which are what a narrow
+  row cuts. The age reads `up 6m`, not "6m ago", which read as activity.
+- "Open in SSH app" is **SSH app (login only)**: an `ssh://` link can't
+  attach a session; *Copy SSH command* does.
+- The footer names the way back (the logo in a session's bar), not a back
+  button; × is "Back to sessions"; neither leaves the session in the
+  history.
+
+#### Fixed
+
+- **Kill, Rename, shortcuts, start at boot, the default directory and the
+  Codex daemon land where you were**, with one line saying what happened,
+  instead of reloading at the top with every card closed. **Kill and Rename
+  happen in place**: a killed row leaves a line in its place for a few
+  seconds (the list stays one card, and keyboard focus moves to the next
+  row); Rename opens focused and shows a refusal under the field.
+- **The session list keeps itself current** (every 15 s while visible, and
+  when the page comes back), so a desktop list tab or a resumed home-screen
+  app no longer goes stale; so do the agent cards and the load/memory line
+  (at most once a minute). Rows that come and go no longer move the Start
+  card you are typing in (Safari let it jump a row's height). Open on a session
+  that has ended says so in its row's place, `/s/<name>` for a gone session
+  goes back to the list with a note, and the session you just left no
+  longer reads attached.
+- **⋯ menus**: one at a time; Escape or a press outside closes them; they
+  open upward near the bottom and fit a 320px phone; Rename no longer zooms
+  iOS, and neither Rename nor a refused name flips the menu, blinks it or
+  pushes it off the top of the page.
+- Long names end in `…`; each row's buttons have their own accessible names
+  ("Open main"); "Copy SSH command" no longer sticks; Ctrl/Cmd/Shift-click
+  on Open gets the browser's own new tab.
+- Dark scrollbars and checkboxes (`color-scheme: dark`); nothing scrolls
+  under the iPhone status bar; no more "serverjack serverjack" header.
+- 44px touch targets; the selected Start choice and the status dots survive
+  Windows Contrast themes (and, like the phone ⋯ menu, iOS before 15.4 and
+  Firefox before 121); the placeholder fits small phones; and the landing
+  page follows iOS Larger Text.
+- The 403 page says no Tailscale identity arrived (`127.0.0.1`, an SSH
+  port-forward) instead of "another tailnet user … signed in as nobody".
+- With CRT effects on, a slow next page no longer leaves a black screen.
+  `/favicon.ico` answers; a client hanging up no longer logs a traceback.
+
+### Terminal page (tabs, + panel, pop-out, reconnect)
+
+#### Changed
+
+- Phones and tablets have no × in the bar (it did what the logo does and
+  read like "kill"); the logo plays the CRT power-off.
+- Phone or desktop follows the main pointer: a touchscreen laptop keeps the
+  desktop layout, a finger swipe still scrolls, and an iPad stays a tablet.
+- The pop-out's ⋯ pill is a slim strip across the top, and the bar it shows
+  lies over the terminal instead of resizing it; the Escape that puts it
+  away goes no further (the next one reaches the program). Short landscape
+  windows get a denser bar and key row.
+
+#### Fixed
+
+- **The terminal reconnects by itself** after serverjack or ttyd restarts
+  (the Update shortcut included), a phone wakes before its network, or a tab
+  is tapped while serverjack is unreachable — no more "Press ⏎ to
+  Reconnect" with no Enter key; it says *reconnecting…* meanwhile. The
+  "terminal isn't answering" page recovers on its own and has a Retry
+  button.
+- **A session that ends no longer drops you into another one**: a tab goes
+  to the list ("… has ended"), a pop-out closes. A tab for a session that
+  ended since the strip was read keeps you where you were, and so does a
+  late answer from before a switch. A rename made elsewhere is followed by
+  the tab, URL, title and the terminal itself, so a later reconnect finds
+  it. Back after switching tabs leaves the page instead of moving only the
   terminal.
-- On a phone, the keys toggle, the Copy view's Close and a tap on the
-  current tab of a one-window session no longer pop the keyboard up; they
-  leave it as it was.
-- With no clipboard access, Paste flashed "hold to paste" inside the key,
-  widening it and pushing Copy off-screen; a second press left that label
-  stuck for good. The hint is now a small note above the row ("Long-press
-  the terminal to paste" on a phone, Ctrl+V / Cmd+V on a desktop), and
-  button labels always come back.
-- **Typing after scrolling back ran the wrong command.** A swipe or a wheel
-  puts the pane into tmux copy mode, where most keys are copy mode's: the
-  start of a line was eaten, the first Space or `q` left copy mode, and the
-  rest ran on its own (`echo hello world` ran `world`). Words from a phone's
-  predictions or dictation, and pastes, vanished outright. Because copy mode
-  belongs to the pane, a scroll on the phone did the same to the next thing
-  typed on the desktop. Now whatever you type, paste or tap on the key row
-  while scrolled back, on any screen, leaves the copy mode serverjack
-  entered and then arrives exactly as typed. Esc, the key row's included,
-  only leaves the scrollback (also under tmux's vi keys, where copy mode's
-  own Esc didn't), PgUp and PgDn page through it, and copy mode you enter
-  yourself (prefix `[`) is left alone.
-- Ctrl+wheel, and a trackpad pinch, over the terminal typed Up/Down arrows
-  into the session (one notch could bring back a command from shell
-  history, ready to run on the next Enter) and the page never zoomed. It now
-  zooms and sends nothing.
-- With tmux `mouse on` switched off while the page was open, the wheel and
-  phone swipes typed arrow keys instead of scrolling until the page was
-  reloaded. The page now follows the session's current mouse setting.
-- Swipes and wheels scrolled about a sixth less than the finger moved (the
-  row height was assumed, not measured). One row of travel is now one line.
-- After Ctrl+C copied a selection, the highlight stayed and every further
-  Ctrl+C copied again, so you couldn't interrupt the program until you
-  clicked in the terminal. The copy now drops the selection, as Windows
-  Terminal does, and the next Ctrl+C interrupts.
-- Ctrl+Shift+C (the Windows Terminal and Linux terminal copy) did nothing in
-  the terminal except open the browser's element inspector. It now copies
-  the selection, and never opens the developer tools.
-- Scrolling with a selection left the highlight in place over different
-  text, so Ctrl+C copied the wrong lines; and lines copied while scrolled
-  back carried up to a screen's width of trailing spaces. A scroll now drops
-  the selection, and copies lose the trailing padding.
-- Firefox: the key row's Paste pasted nothing (an empty paste reached the
-  program). It now pastes, bracketed when the program asked for it.
-- Ctrl+W (delete a word in bash) closed the terminal tab or pop-out at once,
-  because the browser keeps that key. The page now asks before a close made
-  with Ctrl held (Ctrl+W, Ctrl+Shift+W). Closing it with the mouse,
-  serverjack's own ✕, logo and pop-out button, a session that ends (Ctrl+D
-  with Ctrl still down included), switching session tabs, and opening an
-  already open pop-out again from the list still go without asking.
-- With a session open on a phone and a desktop, the screen you weren't
-  using shrank the other to a small box (or showed it cropped) after every
-  keyboard pop, rotation, key-row toggle or reconnect, and the only way back
-  was to type something into the session. The screen you use now takes the
-  size back when you click or tap in its terminal or return to the page,
-  without sending a key.
-- **Terminal colours.** Grey hint text (SGR 90: shell autosuggestions, CLI
-  hint lines, htop's quieter columns) was 2.29:1 on the dark background,
-  darker than stock ttyd, and `ls -l` drew setuid files (`sudo`, `passwd`)
-  and sticky directories as light grey on an equally light red or blue,
-  1.35:1 and 1.14:1 -- next to unreadable. The grey is now 4.56:1, and ttyd
-  is told to keep every character at 4.5:1 or better against its own cell
-  (`minimumContrastRatio=4.5`, sent only with the default theme), which also
-  fixes text on white backgrounds and grey text under the selection in
-  Chrome and Edge. Dim (SGR 2) text is still dim, by design.
-- **Terminal: no more `COLSxROWS` pill.** ttyd flashed a big grey box with
-  the terminal's size over the middle of the screen on every resize -- on a
-  phone, every keyboard open and close, every rotation and every key-row
-  toggle. It's off; `-t disableResizeOverlay=false` in `TTYD_EXTRA_ARGS`
-  brings it back.
-- **Terminal: 24-bit colour.** tmux was never told the browser terminal
-  can show truecolor, so it rounded every 24-bit colour from nvim, bat,
-  delta or an agent CLI to the 256-colour palette: banded gradients, wrong
-  shades in syntax and diff themes. The browser now attaches as an RGB
-  client (tmux 3.2 or newer; an older tmux keeps 256 colours), for that
-  client only, and sessions started from the page get `COLORTERM=truecolor`
-  so programs that look for it use 24-bit colour.
-- **Android: terminal font.** ttyd's default font list ends in `Courier`,
-  which Android maps to a thin serif typewriter face, so Chrome there drew
-  the whole terminal in it. The list is now passed without it and Android
-  falls through to its plain monospace. Every other platform keeps exactly
-  the font it had. (Worked out from Android's font config; not yet seen on
-  a real Android phone.)
-- **Phone: a started command's first line stayed in view.** A command from
-  the Start card (or a shortcut) printed its `$ <command>` line at tmux's
-  default 80 columns before the phone attached at ~47, and re-wrapping it
-  pushed its first row into history: a sudo prompt sat under "...ctl
-  restart nginx", with the `sudo` and the verb scrolled away. The command
-  now waits (at most 5 s) for the page to attach, then starts at the size
-  you see.
-- **SSH: the tmux status line comes back.** Opening a session in the page
-  turned its status line off for good, so "Copy SSH command" later opened a
-  tmux with no window list or session name. It is still off for every
-  client while a page has the session open (tmux can't hide it for one
-  client only), but goes back to what it was the moment the last page
-  leaves -- also for an SSH client that stayed attached, and also when it
-  was a `status` you had set on that session yourself, which is kept as
-  it was. A session an older version opened still has that version's
-  `status off` and can't be told apart from one you set; `tmux set-option
-  -u -t <name> status` clears it.
-- **Phone and desktop on one session:** when the phone takes the window,
-  the desktop shows it in its corner with blank space around it instead of
-  a screen full of tmux's `·` dots (tmux 3.3 or newer; put back when the
-  last page leaves).
+- **+ panel**: Cancel, Escape, + and a tap in the terminal close it with the
+  keyboard back in the terminal; the name is optional for every type; a
+  double tap starts one session; the phone sheet is opaque, and the CRT
+  toggle has left it for the landing page's footer.
+- **Tab strip**: edge fades, wheel scrolling, ellipsised names, the active
+  tab kept in view, no snapping back on a poll. The window badge shows the
+  count (`· 3 ▾`) and the list is fresh when opened.
+- The terminal fills its frame from the start (19 columns were missing at
+  1280px), with no light scrollbar on Windows, nor in the + panel's folder
+  list and the Copy view.
+- **Pop-out windows**: × is reachable and nothing covers the terminal's top
+  right; showing the bar no longer eats typing or resizes the session; Open
+  brings an open pop-out forward without reloading it; picking its tab
+  elsewhere doesn't attach it twice; blocked pop-ups say so.
+- iPhone: nothing under the notch in landscape, the prompt above the home
+  indicator, the key row flush on the keyboard (checked in emulation only).
+  The tabs, frame, window list and + errors are labelled for screen readers.
 
-### Docs
+### Terminal input (soft keys, clipboard, scrolling, keyboard)
 
-- Known limitations: emoji with a VS16 selector (❤️ ⚠️ ✔️), skin tones or
-  ZWJ joins are two cells to tmux and one (or one per part) to ttyd's
-  xterm.js, so after a redraw the next character can overlap them. Neither
-  has a setting for it yet.
+#### Changed
 
-### Added
+- **The phone key row puts the important keys on screen**: Esc through Copy
+  fit from 320px, then the arrows and PgUp/PgDn, which repeat while held.
+- **Ctrl+W asks before closing the page** (see above).
 
-- A quiet screens count in the terminal bar while a session is open on more
-  than one screen; tap it to fit the session to the screen you're on. The
-  landing page's row says "attached on 2 screens" instead of just
-  "attached", and `/api/sessions` carries a `clients` count.
-- README: what the browser keeps for itself (Ctrl+W, Ctrl+T, Ctrl+N,
-  Ctrl+Tab), selecting text in a `mouse on` session (Shift-drag; Option-drag
-  on a Mac with `-t macOptionClickForcesSelection=true`), and Option as Meta
-  on Mac and iPad keyboards (`TTYD_EXTRA_ARGS='-t macOptionIsMeta=true'`).
+#### Added
 
-### Changed
+- A screens count in the bar while a session is open on more than one
+  screen (tap it to fit the session here); the landing row says "attached on
+  2 screens", and `/api/sessions` carries `clients` and tmux's `id`.
 
-- **"Save as a shortcut": naming it is enough.** A name typed into the panel
-  was thrown away unless the separate box was ticked too; now typing a name
-  ticks the box, and the box decides: untick it again and nothing is kept.
-  Saving with no command is refused instead of silently starting a plain
-  shell.
-- **Shortcut runs are named after the shortcut** ("Disk usage" runs as
-  `disk-usage`, then `disk-usage-2`), not the command's first word -- two
-  shortcuts that both start with `cd` used to share one name family.
-- **Update serverjack asks before it runs** ("Update serverjack and restart
-  it?"): one stray tap used to pull new code and restart every open
-  terminal. The row shows its whole command (wrapped, home as `~`) and says
-  what it does for this install.
-- The duplicate-name error on the Start card now has an **Open** button for
-  the session that has the name; its text no longer says "Open it instead."
-- Start card copy: the hint says why `sudo` prompts work (a real terminal)
-  and hides when an agent is picked; the shortcut-name box says it names the
-  shortcut. The empty Shortcuts hint says "No saved shortcuts yet" (the
-  built-in Update row is right above it) and is a line, not a second card.
-- Shortcut rows wrap a long command instead of cutting it off.
+#### Fixed
 
-- Phones and tablets no longer show × in the terminal's bar: it did exactly
-  what the logo does (back to the list; the session keeps running), read
-  like "kill", and took a quarter of the tab strip on a small phone. It
-  stays on desktops and in pop-outs. The logo now plays the same CRT
-  power-off as × did.
-- In a short landscape window (a phone on its side) the bar and the key row
-  are denser (36px and 32px tall instead of 44px and 40px), giving the
-  terminal its rows back; targets keep their 44px width.
-- `docs/MANUAL-TESTS.md`: the steps for ×, the pop-out logo, rename,
-  reconnect and the window badge match the UI again.
-- The pop-out window's ⋯ pill in the top-right corner is now a slim strip
-  across the top with a chevron (click anywhere on it), and the bar it shows
-  lies over the terminal's first rows instead of pushing the terminal down.
-  The terminal in a pop-out is 14px shorter to make room for the strip.
+- **Typing after scrolling back ran the wrong command** (`echo hello world`
+  ran `world`). Whatever you type, paste or tap now leaves serverjack's copy
+  mode first, on any screen: with another screen on the session, a page
+  looks at the pane again before the first key after a pause. Esc only leaves the scrollback, so it can't
+  interrupt an agent; PgUp/PgDn page through it; your own copy mode is left
+  alone.
+- Soft keys fire on a tap, never on a swipe across the row (which sent ^C or
+  Esc); Paste and Copy work where a touch brings no click; Ctrl then
+  punctuation sends `Ctrl+\`, `Ctrl+_` and `Ctrl+]`, and Ctrl then Return,
+  Backspace or an arrow from the keyboard takes Ctrl too (it stayed armed
+  for the next letter); dictated text after a soft key arrives; an armed
+  Ctrl doesn't survive a session switch.
+- The Copy view takes focus (Esc closes it instead of reaching the program),
+  copies exactly what is shown, and says when the session ended; on a phone
+  its × no longer goes on to the keys button under it (hiding the key row
+  and raising the keyboard).
+- Firefox types again after a click on the bar; toggles no longer pop the
+  phone keyboard; the paste hint no longer widens the Paste key.
+- Ctrl+wheel zooms instead of typing arrows; the wheel follows a `mouse on`
+  change; finger travel matches the lines scrolled.
+- Ctrl+C drops the selection it copied, so the next one interrupts;
+  Ctrl+Shift+C copies instead of opening the developer tools; a scroll drops
+  the selection; copies lose tmux's padding; Firefox's Paste key works.
+- With a session on a phone and a desktop, the screen you use takes the size
+  back when you click or tap in it, without sending a key (and without
+  flashing ttyd's size pill on a phone that has just opened it).
 
-- **The phone key row puts the important keys on screen.** It needed 656px,
-  so on every phone in portrait ^C, Paste and Copy sat past the right edge
-  with nothing to say they existed. Keys are narrower and reordered (Esc,
-  Tab, Shift-Tab, Ctrl, ^C, Paste, Copy, then the arrows and PgUp/PgDn), so
-  Esc through Copy fit from 320px up; the edge with more keys past it fades
-  out; keys are 44px tall on touch screens. The arrows and PgUp/PgDn now
-  repeat while held, instead of one tap per character.
+### Terminal and tmux
 
-### Added
+#### Changed
 
-- Directory picker: a **›** at the end of each suggestion shows that
-  folder's subfolders -- the touch equivalent of Tab, and clickable with a
-  mouse too -- while tapping or clicking the row itself still picks it.
-  Tapping the field again after a pick brings the list back.
+- **The tmux status line comes back** for SSH: it is off only while a page
+  has the session open, and the last page to leave puts back what was there,
+  your own `status` included.
+- The desktop shows a phone-sized window with blank space around it, not a
+  screen of `·` dots. ttyd's `COLSxROWS` pill no longer flashes on every
+  resize (`-t disableResizeOverlay=false` brings it back).
 
-- **Edit a shortcut.** A pencil on each saved shortcut opens it in the
-  shortcut form; *Save changes* replaces it in place, same position in the
-  list, and *Cancel* puts the form back to Add a shortcut. A reload keeps
-  the editor open; if the shortcut was removed meanwhile (another tab), what
-  you typed comes back as a new shortcut to save. The built-in Update row
-  has none.
+#### Fixed
+
+- **Readable colours**: grey hint text is 4.56:1 (was 2.29:1), and ttyd
+  holds text at 4.5:1 against its cell (`minimumContrastRatio`, default
+  theme only), so `ls -l`'s setuid and sticky entries are legible.
+- **24-bit colour**: the browser attaches as an RGB client and sessions get
+  `COLORTERM=truecolor`; tmux used to round nvim, bat and agent CLI colours
+  to 256.
+- Android no longer draws the terminal in a serif typewriter face (ttyd's
+  `Courier`, dropped from the font list; not yet seen on a real phone).
+- A started command waits (at most 5 s) for the page, so on a phone its
+  `$ <command>` line stays in view above a `sudo` prompt.
+- A session whose name ends in `;` attaches (tmux read the `;` as a command
+  separator: no such session, or another one called `semi` for `semi;`).
+- Your global `after-new-window` hooks keep firing in a session a page has
+  opened; the page used to leave an empty hook list on the session that hid
+  them for good.
+- Pages and scripts are gzipped for browsers that take it (the list page
+  about 30 KB instead of 120), and the terminal page's script is cached
+  under its hash instead of fetched on every open.
+
+#### Hardening
+
+- The terminal behind `/term/` now sends the same framing policy as
+  serverjack's own pages (`X-Frame-Options: SAMEORIGIN` and
+  `Content-Security-Policy: frame-ancestors 'self'`). The terminal page
+  frames it from the same origin, so nothing visible changes.
+
+### Docs and tests
+
+- The README, ARCHITECTURE, DESIGN and MANUAL-TESTS describe this UI. The
+  README gains the session bar, scrolling, copy and paste, selecting text
+  with `mouse on`, the keys the browser keeps and Mac keyboards; Known
+  limitations gain emoji widths and tmux's window sizing; and its second
+  "Updating and rolling back" is now "Updating a git checkout". New
+  screenshots and demo GIF.
+- MANUAL-TESTS adds what emulation can't settle: iPhone landscape and
+  Larger Text, two screens, an iPad, Windows classic scrollbars.
+- New browser suites `pwagents`, `pwdirpick`, `pwflows`, `pwlayout`,
+  `pwchrome`, `pwinput` and `pwtmux`, a host-side `tests/attach_restore.py`,
+  and 256 unit tests (from 111). `tests/run.sh` starts a fourth instance
+  (`tests/restartable.sh`) and still needs only docker and the host's tmux.
 
 ## 1.5.0 - 2026-09-16
 
