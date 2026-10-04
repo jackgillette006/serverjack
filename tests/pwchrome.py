@@ -6,6 +6,11 @@ Safari). What is proven here:
 - the terminal reconnects BY ITSELF after serverjack, ttyd or both restart
   (run.sh's fourth instance, driven through tests/restartable.sh), and after
   the frame loaded our own 502 page while ttyd was down;
+- a terminal whose WebSocket is slow to open (held back in ttyd's page) is
+  not offered before it is open -- no keyboard in it, 'reconnecting' kept
+  over it after a restart -- and a line typed the moment it looks ready
+  reaches tmux (it used to be focused, and typed into, while the keys still
+  went nowhere);
 - a session renamed elsewhere is followed (tab, URL, title, and the frame
   re-pointed at the new name), one that ended sends the tab to the list and
   closes a pop-out -- never quietly attaching some other session; a tab for
@@ -48,6 +53,7 @@ Sessions it makes are all called pwc-*, and are killed at the end.
 import os
 import subprocess
 import time
+from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
 
@@ -283,13 +289,120 @@ def error_page_round(page, label, target):
     ok("...and not once it is back", not page.evaluate(RETRY)["retry"], page.evaluate(RETRY))
 
 
+def term_live(page):
+    """A terminal the page offers for typing: no ttyd overlay, the keyboard in
+    it, and no 'connecting' or 'reconnecting' over it."""
+    return (page.evaluate(OVERLAY) == "" and page.evaluate(FOCUSED)
+            and not page.evaluate("['conn', 'retry'].some(c => document.body.classList.contains(c))"))
+
+
+# ttyd's page with its WebSocket slow to open: the 'open' event and every
+# message reach ttyd SLOW_MS late, in order (a phone on a slow network, a
+# loaded box). ttyd builds the terminal, textarea and all, before the socket
+# is open and listens for keys only once it is, so anything typed into it
+# before then is dropped. Only in a frame, only while the page above has
+# __sjSlowOn set. __sjSlow marks such a document, __sjOpened is set once
+# ttyd has had its 'open'.
+SLOW_MS = 3000
+SLOW_JS = """(() => {
+  if (window.top === window || location.pathname !== '/term/' || window.__sjSlow ||
+      !window.top.__sjSlowOn) return;
+  const W = window.WebSocket, D = %d;
+  window.__sjSlow = 1;
+  window.WebSocket = function (u, p) {
+    const s = new W(u, p), at = Date.now() + D, q = [], add = s.addEventListener.bind(s);
+    let t = null;
+    const run = () => { t = null; while (q.length) { const [f, e] = q.shift(); f(e); } };
+    s.addEventListener = (k, f, o) => add(k, k !== 'open' && k !== 'message' ? f : e => {
+      if (k === 'open') q.push([() => { window.__sjOpened = 1; }, e]);
+      if (!q.length && Date.now() >= at) return f(e);
+      q.push([f, e]);
+      if (!t) t = setTimeout(run, Math.max(0, at - Date.now()));
+    }, o);
+    return s;
+  };
+  window.WebSocket.prototype = W.prototype;
+  Object.assign(window.WebSocket, {CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3});
+})()""" % SLOW_MS
+# One snapshot (a single evaluate, so nothing happens in between): is the
+# frame such a document, has ttyd had its 'open', and what the page shows.
+SLOW_STATE = ("(() => { let w = null; try { w = document.getElementById('frame').contentWindow; void w.document; }"
+              " catch (e) { return null; } const c = document.body.classList, focused = " + FOCUSED + ";"
+              " return {fresh: !!w.__sjSlow && !w.__sjOld, opened: !!w.__sjOpened, retry: c.contains('retry'),"
+              " focused: focused, live: focused && " + OVERLAY + " === '' && !c.contains('conn') && !c.contains('retry')}; })()")
+
+
+def is_term_page(url):
+    return urlparse(url).path == "/term/"
+
+
+def slow_ttyd(route):
+    r = route.fetch()
+    h = {k: v for k, v in r.headers.items() if k.lower() not in ("content-encoding", "content-length")}
+    route.fulfill(status=r.status, headers=h,
+                  body=r.text().replace("<head>", "<head><script>" + SLOW_JS + "</script>", 1))
+
+
+def slow_round(page, sess, label, restart=True):
+    """The frame reloads (the page's own reconnect after a restart of both,
+    or a tab switch) into a ttyd page whose WebSocket takes SLOW_MS to open.
+    Until it is open the page must not offer the terminal: it used to focus it
+    (and drop 'reconnecting') as soon as the textarea was there, and the
+    first thing typed was lost -- a CI runner hit this on its own."""
+    # Into ttyd's page through a route; Chromium refuses a WebSocket to
+    # 127.0.0.1 from a document a route made up (Local Network Access), so
+    # there it is an init script. Firefox doesn't run init scripts in every
+    # frame it loads.
+    by_route = page.context.browser.browser_type.name != "chromium"
+    if by_route:
+        page.route(is_term_page, slow_ttyd)
+    else:
+        page.add_init_script(SLOW_JS)
+    page.evaluate("window.__sjSlowOn = 1")
+    try:
+        page.evaluate("document.getElementById('frame').contentWindow.__sjOld = 1")
+        if restart:
+            n = rs_restart("both", 0.3)
+        else:
+            page.click(f"#tabs .tab[data-name='{sess}']")
+        fresh = wait_for(lambda: (page.evaluate(SLOW_STATE) or {}).get("fresh"), 30, 0.02)
+        opening, typed, marker = [], False, f"SL{TAG}{label}{int(restart)}"
+        while fresh:
+            st = page.evaluate(SLOW_STATE)
+            if not st or st["opened"]:
+                break
+            opening.append((st["focused"], st["retry"]))
+            if st["live"]:                          # looks ready, its socket still not open: type now
+                type_line(page, "echo " + marker)
+                typed = True
+                break
+            time.sleep(0.05)
+        up = rs_up(n) if restart else True
+        what = "after a restart" if restart else "at a tab switch"
+        ok(f"{label}: ttyd's socket slow to open {what}: no keyboard in the terminal until it is",
+           up and fresh and len(opening) > 5 and not any(f for f, _ in opening),
+           f"up={up} fresh={fresh} samples={len(opening)} focused={sum(f for f, _ in opening)}")
+        if restart:
+            ok("...and 'reconnecting' over it all along", opening and all(r for _, r in opening),
+               f"{sum(r for _, r in opening)}/{len(opening)}")
+        live = typed or wait_for(lambda: term_live(page), 15, 0.02)
+        if live and not typed:
+            type_line(page, "echo " + marker)       # at once, the moment it looks ready
+        ok("...and typing the moment it looks ready reaches tmux", live and wait_for(lambda: ran(sess, marker), 5),
+           f"live={live} typed while opening={typed} overlay={page.evaluate(OVERLAY)!r}")
+    finally:
+        page.evaluate("window.__sjSlowOn = 0")
+        if by_route:
+            page.unroute(is_term_page, slow_ttyd)
+
+
 def reconnect_rounds(page, sess, label, rounds):
     for i, (what, secs) in enumerate(rounds):
         n = rs_restart(what, secs)
         up = rs_up(n)
         t0 = time.time()
         # No user action at all until the frame is a live terminal again.
-        live = wait_for(lambda: page.evaluate(OVERLAY) == "" and page.evaluate(FOCUSED), 15, 0.2)
+        live = wait_for(lambda: term_live(page), 15, 0.2)
         marker = f"RS{TAG}{label}{i}"
         if live:
             type_line(page, "echo " + marker)
@@ -322,6 +435,7 @@ try:
             errs = errors_of(page)
             open_term(page, RS_BASE, RS)
             reconnect_rounds(page, RS, "chromium", [("both", 0.3), ("web", 0), ("ttyd", 0)])
+            slow_round(page, RS, "chromium")
 
             # ---- the 502 page in the frame comes back on its own (F51)
             n = rs_restart("ttyd", 4)
@@ -365,11 +479,14 @@ try:
             page = b.new_context(**phone(p)).new_page()
             open_term(page, RS_BASE, RS)
             reconnect_rounds(page, RS, "webkit", [("both", 0.3), ("ttyd", 0)])
+            slow_round(page, RS, "webkit")
             b.close()
             b = p.firefox.launch()
             page = b.new_context(viewport={"width": 1280, "height": 800}).new_page()
             open_term(page, RS_BASE, RS)
             reconnect_rounds(page, RS, "firefox", [("both", 0.3)])
+            slow_round(page, RS, "firefox")
+            slow_round(page, C, "firefox", restart=False)
             error_page_round(page, "firefox", A)
             b.close()
         else:
@@ -459,7 +576,11 @@ try:
         made = wait_for(lambda: sessions() - before, 8)
         MADE.extend(made)
         ok("...a blank-named Shell starts too", len(made) == 1, made)
-        ok("the button says Start", page.locator("#pop .btn[type=submit]").inner_text().strip() == "Start")
+        # tmux has the session a moment before the page has the answer, and
+        # the button says Starting… until then
+        ok("the button says Start",
+           wait_for(lambda: page.locator("#pop .btn[type=submit]").inner_text().strip() == "Start", 5),
+           page.locator("#pop .btn[type=submit]").inner_text())
 
         # ---- F86: a double submit starts one session
         open_term(page, BASE, A)
