@@ -232,6 +232,11 @@ the session and `@serverjack_fill` on each window, `u` for nothing set or
 `HUP` trap keeps the script alive past the tmux client, and `restore()`
 puts the saved values back (a value the user changed while the page was
 open is left as it is) — unless another page still has the session.
+tmux runs in the background and is waited for, so that trap fires the
+moment the hangup comes and the script hangs tmux up itself until it goes:
+ttyd hangs up once, and one that landed just as tmux started (past the
+script's last check, before tmux could act on it) used to leave the client
+attached for good.
 
 Pages are counted, not guessed: `@serverjack_pages` lists the pid of each
 copy of `tmux-attach.sh` with the session open, added before its attach and
@@ -550,6 +555,7 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   the bar lies over the terminal so `#{window_width}x#{window_height}`
   never changes, focus stays in the terminal, Escape and a click put it
   away, × is reachable, window naming and re-opening without a reload), a
+  browser closed just after a tab switch leaving no client behind, a
   popped-out session never attached twice (Back, another tab's strip),
   blocked pop-ups, a
   touchscreen laptop (Chromium `--touch-events=enabled`) keeping the
@@ -596,7 +602,8 @@ visit, a change made while the page is open is kept, the first of two
 pages leaving changes nothing, a page opening while another closes keeps
 its settings (eighteen handovers at 0-50 ms offsets), a page killed
 outright doesn't block the next restore, a page hung up during its setup is
-never attached (it used to leave an unseen client attached for good), and
+never attached (it used to leave an unseen client attached for good) and
+nor is one hung up just as tmux starts, and
 `SERVERJACK_TMUX_STATUS=on` leaves the status line alone. No UTF-8 locale,
 on purpose.
 

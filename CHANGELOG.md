@@ -303,6 +303,9 @@ and the update path are unchanged.
   `$ <command>` line stays in view above a `sudo` prompt.
 - A session whose name ends in `;` attaches (tmux read the `;` as a command
   separator: no such session, or another one called `semi` for `semi;`).
+- A page closed or switched away just as its terminal was starting no
+  longer leaves an unseen tmux client attached to the session for good (it
+  counted as another screen).
 - Your global `after-new-window` hooks keep firing in a session a page has
   opened; the page used to leave an empty hook list on the session that hid
   them for good.

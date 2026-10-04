@@ -35,6 +35,8 @@ Safari). What is proven here:
   reachable, the current tab is in view
   on every reveal (the first one included), the window is named after the
   session it shows, and Open on it focuses it without a reload;
+- a browser closed just after a tab switch leaves no client of the session
+  behind (checked at the start of the next browser's turn);
 - a popped-out session is not attached a second time from this browser by
   Back after Pop out or its tab in another tab's strip (a note says where it
   is, and goes once the tab is switched there after all), and a blocked
@@ -976,6 +978,11 @@ try:
             ctx = b.new_context(viewport={"width": 1280, "height": 800})
             page = ctx.new_page()
             errs = errors_of(page)
+            # The last browser was closed just after a tab switch to P: a page
+            # gone while its terminal was still starting left a tmux client
+            # attached for good, and every count below was one too many.
+            ok("(no client of it left behind by an earlier browser)", wait_for(lambda: clients(P) == 0, 5),
+               f"clients={clients(P)}")
             page.goto(f"{BASE}/")
             open_term(page, BASE, P)
             with page.expect_popup() as pi:
