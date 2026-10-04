@@ -127,18 +127,17 @@ get:
   Shell and you land in that terminal watching it run.
 - **Start a session.** Pick Shell or an installed agent (Claude Code, Codex,
   OpenCode, GitHub Copilot CLI, Gemini CLI) and a directory (defaults to
-  `~`), and tap Start.
+  `~`), and tap Start. A directory that doesn't exist yet is created as the
+  session starts, so a shell or an agent in a new project is one step.
 - **Sessions.** Every tmux session (tmux is the tool that keeps a terminal
-  alive after you close the laptop) is a button on the page. Tap to attach. Starting
-  a session accepts a directory that doesn't exist yet and creates it as the
-  session starts, so a shell or an agent in a new project is one step. Open,
-  rename, kill, pop out into its own window on a desktop, or hand off to a real
-  SSH client.
+  alive after you close the laptop) is a row at the top of the page. Open
+  it, rename it, kill it, pop it out into its own window on a desktop, or
+  hand it off to a real SSH client.
 - **Agent servers.** A collapsed row per coding CLI that still needs
   something: install, log in, or start the background server the phone app
   connects to (Claude's remote-control server, Codex's daemon and pairing,
   OpenCode's server). A tool that's ready with nothing else to configure has
-  no row here — it only ever needed the picker above.
+  no row here — it starts from Start a session.
 - A CRT toggle skins the whole UI (off under `prefers-reduced-motion`); the
   full effect budget is documented in
   [docs/design/DESIGN.md](docs/design/DESIGN.md#crt-effects).
@@ -154,6 +153,8 @@ remote control, why Tailscale and not a password, and whether it phones home.
   - [Update serverjack](#update-serverjack)
 - [Sessions](#sessions)
   - [tmux windows](#tmux-windows)
+  - [The key row](#the-key-row)
+  - [Scrolling, copying and keys](#scrolling-copying-and-keys)
 - [Agent servers](#agent-servers)
   - [Start at boot](#start-at-boot)
 - [Why this and not X](#why-this-and-not-x)
@@ -165,6 +166,7 @@ remote control, why Tailscale and not a password, and whether it phones home.
   - [Development install (git checkout)](#development-install-git-checkout)
   - [Two accounts on one machine](#two-accounts-on-one-machine)
   - [Updating and rolling back](#updating-and-rolling-back)
+  - [Updating a git checkout](#updating-a-git-checkout)
   - [WSL](#wsl)
 - [Configure](#configure)
   - [Tools](#tools)
@@ -183,7 +185,10 @@ machine. When one stops and says "run this yourself", you are usually away
 from the server with a phone in your hand.
 
 Pick **Shell** or an installed agent, a directory (defaults to your chosen
-default directory, `~` until you set one), and tap **Start**:
+default directory, `~` until you set one), and tap **Start**. With no
+sessions running this card leads the landing page; once something is
+running, the [Sessions](#sessions) list comes first and this card follows
+it.
 
 The directory field is a combobox, not a dropdown: start typing part of a
 folder's name (anywhere it's nested, not just top-level) and a matching list
@@ -195,37 +200,38 @@ direct name match, however shallow those children are, so drilling into a
 folder never buries a real match under its own contents.
 
 A typed name is a search. As you type, the folder with exactly that name is
-highlighted (the shallowest, if there are several), or else the top match,
-and Enter (Go on a phone) takes the highlighted row, as does tapping
-**Start** while the list shows it. Arrow keys (or the mouse) move the
-highlight. If nothing matches, the list's only row is **+ New folder
-`~/name`**, and that is what Start creates. With the list dismissed
-(Escape), Start uses a name only when exactly one folder has that name;
-anything less certain (a partial name, several folders of that name, or only
-a new one) shows the list again instead, so a folder you haven't seen is
-never used. To make a new folder, pick that row or type a path (anything
-with a `/` or a leading `~`, DIR_ROOTS or not, and `.`), which is used exactly
-as typed. The folder is created when the session actually starts, never
-before: a start refused for its name leaves nothing behind. **Tab** fills
-the highlighted (or first) match with a trailing `/` and shows *its*
-children, so you can drill down the way shell completion works, but only
-once you've typed or arrowed; Tab and Shift+Tab out of an untouched field
-just move on. The **›** at the end of a row does the same drill-down with a
-tap or click (on a touch screen it's a full-height target), clicking or
-tapping the row picks it, and the list scrolls with a swipe. The list sits
-in the page under the field, on a phone and a desktop alike, pushing what's
-below it down rather than covering it, so the next field or button is always
-where you aim.
+highlighted (the shallowest, if there are several), or else the top match.
+Enter (Go on a phone) fills the field with the highlighted folder and closes
+the list, and a second Enter starts the session; tapping **Start** while the
+list shows a highlight starts in that folder straight away. Arrow keys (or
+the mouse) move the highlight. If nothing matches, the list's only row is **+
+New folder `~/name`**, and that is what Start creates. With the list
+dismissed (Escape), Start uses a name only when exactly one folder has that
+name; anything less certain (a partial name, several folders of that name, or
+only a new one) shows the list again instead, so a folder you haven't seen is
+never used. To make a new folder, pick that row or type a path (anything with
+a `/` or a leading `~`, DIR_ROOTS or not, and `.`), which is used exactly as
+typed. The folder is created when the session actually starts, never before:
+a start refused for its name leaves nothing behind. **Tab** fills the
+highlighted (or first) match with a trailing `/` and shows *its* children, so
+you can drill down the way shell completion works, but only once you've typed
+or arrowed; Tab and Shift+Tab out of an untouched field just move on. The
+**›** at the end of a row does the same drill-down with a tap or click (on a
+touch screen it's a full-height target), clicking or tapping the row picks
+it, and the list scrolls with a swipe. The list sits in the page under the
+field, on a phone and a desktop alike, pushing what's below it down rather
+than covering it, so the next field or button is always where you aim.
 
-Leave the field empty and a session starts in your **default directory**
-(shown right in the placeholder, e.g. "`~/projects` — type a folder name or
-path"). It starts out as `~`, but the muted line under the field — "Starts
-in `~` · change" — expands an inline picker of its own to set a different
-one; save it there and every picker on the page (every tool card, Add a
-shortcut, the terminal's own new-session panel) picks it up immediately, a
-relative path you type resolves against it instead of `~`, and the
-empty-query suggestion list leads with it and its own children before
-falling into `~` and the rest. It's stored in `prefs.json`, and `SERVERJACK_DEFAULT_DIR` — see
+Leave the field empty and a session starts in your **default directory**,
+shown at the start of the placeholder: "`~ · folder name or path`", or
+"`~/projects · folder name or path`" once you have set one. It starts out as
+`~`, but the muted line at the bottom of the card, under Start — "Starts in
+`~` · change" — expands an inline picker of its own to set a different one;
+save it there and every picker on the page (every tool card, Add a shortcut,
+the terminal's own new-session panel) picks it up immediately, a relative
+path you type resolves against it instead of `~`, and the empty-query
+suggestion list leads with it and its own children before falling into `~`
+and the rest. It's stored in `prefs.json`, and `SERVERJACK_DEFAULT_DIR` — see
 [Configure](#configure) below — sets a fallback for when nobody's chosen one
 yet.
 
@@ -252,12 +258,12 @@ rules; Escape, Cancel, **+** again or a tap in the terminal closes it.
 
 A multi-line command runs line by line, as it would in a terminal. If
 something is refused — a name already taken, a folder that isn't one — the
-card comes back with everything you typed still in it, the directory
-included; a taken name also gets an **Open** button for the session that has
-it. One tap is one submit: while the page waits, Start reads *Starting…* and a
-second tap does nothing.
+card comes back first on the page, right under the error, with everything you
+typed still in it, the directory included; a taken name also gets an **Open**
+button for the session that has it. One tap is one submit: while the page
+waits, Start reads *Starting…* and a second tap does nothing.
 
-Open "Save as a shortcut" (only offered with a Shell command) and give the
+Open "Save as a shortcut" (Shell only, and it needs a command) and give the
 shortcut a name — that ticks *Keep this command in Shortcuts* for you; the
 tick is what counts, so untick it to not keep it — and the command becomes a
 one-tap button in the Shortcuts list for next time. Running it opens
@@ -295,34 +301,55 @@ The unit restart either path ends in is fine from inside the browser: the
 unit is `KillMode=process`, so the tmux server and this session outlive the
 restart, and the page reconnects to the same session on its own a few
 seconds after the new process is listening — no tap, no Enter. (The same
-happens for any restart of serverjack or ttyd, and for a phone that wakes
-before its network is back: the page retries with a short backoff until
-serverjack and ttyd both answer, then reloads the terminal.)
+happens for any restart of serverjack or ttyd, for a phone that wakes
+before its network is back, and for a tab tapped while serverjack is
+unreachable: the page retries with a short backoff until serverjack and
+ttyd both answer, then reloads the terminal, and says *reconnecting…* over
+it meanwhile instead of ttyd's "Press ⏎ to Reconnect".) A page left open
+from 1.5.0 doesn't do this: once an update has restarted serverjack it
+waits on "Press ⏎ to Reconnect" and keeps its 1.5.0 script until it is
+reloaded — see the [changelog](CHANGELOG.md).
 
 ## Sessions
 
+Whenever anything is running, this list is the first thing on the landing
+page, above Start a session, Shortcuts and Agent servers; with nothing
+running (or when the page comes back with an error to fix in one of its
+forms), Start a session leads instead.
+
 Every tmux session on the box is a row: a status dot and its name, then the
 short facts first -- **attached** (in words, when any terminal is on it), the
-window count when there is more than one, and how long it has been up
-(`up 5m`, `up 3h`, `up 2d`: its age, not its last activity) -- and after them
-the command and directory, which are what a narrow phone row cuts short. A
-long name ends in `…`; hover it on a desktop for the whole thing. **Open**
+window count when there is more than one, and how long it has been up (`up
+5m`, `up 3h`, `up 2d`: its age, not its last activity) -- and after them the
+command and directory, which are what a narrow phone row cuts short. A long
+name ends in `…`; hover it on a desktop for the whole thing. **Open**
 attaches (a pop-out window on a desktop, the same tab on a phone). The ⋯ menu
-has *Open here*, *Pop out*, the two SSH hand-offs (*Copy SSH command*, which
-attaches this session, and *SSH app (login only)*, an `ssh://` link that can
-only log in to the server -- the scheme has no way to carry a command),
-**Rename**, and *Kill session*. Whether **Open** pops out or stays in the tab
-follows the device's main pointer, so a laptop with a touchscreen is still a
-desktop (a finger swipe on its terminal still scrolls the history), while an
-iPad stays a tablet even with a trackpad attached. An SSH client gets plain
-tmux, status line included, except while a page has the same session open: the
-page hides the status line, and tmux can only do that for every client of the
-session at once (`SERVERJACK_TMUX_STATUS=on` keeps it; see
-[Configure](#configure)).
+has *Open here*, *Pop out* (desktop only), the two SSH hand-offs (*Copy SSH
+command*, which attaches this session, and *SSH app (login only)*, an
+`ssh://` link that can only log in to the server -- the scheme has no way to
+carry a command), **Rename**, and *Kill session*. Whether **Open** pops out
+or stays in the tab follows the device's main pointer, so a laptop with a
+touchscreen is still a desktop (a finger swipe on its terminal still scrolls
+the history), while an iPad stays a tablet even with a trackpad attached. An
+SSH client gets plain tmux, status line included, except while a page has the
+same session open: the page hides the status line, and tmux can only do that
+for every client of the session at once (`SERVERJACK_TMUX_STATUS=on` keeps
+it; see [Configure](#configure)).
+
+In a session, the bar across the top holds the logo, which takes you back to
+this list (leaving never stops a session; it keeps running until you kill
+it from its ⋯ menu), a tab per session, **+** to start another one (the
+Start card's choices as a small panel, a bottom sheet on a phone), the
+keyboard button for the [key row](#the-key-row), and on a desktop ↗ to pop
+the session out and × to go back to the list. Phones and tablets have
+neither: the logo is the way back. Switching tabs adds no history entries,
+so the browser's Back leaves the terminal page instead of stepping through
+them.
 
 A pop-out window is just the terminal under a slim strip: click the strip to
 show the bar, which opens over the terminal's top rows (so the session is
-never resized by it) and goes away again with Escape, a click in the
+never resized by it) and goes away again with Escape (that Escape only
+puts the bar away; the next one goes to the program), a click in the
 terminal, or picking a tab or window. The window is named after the session
 it shows, so **Open** on that session — or the terminal bar's pop-out button —
 brings the window forward without reloading it. Picking a popped-out
@@ -343,8 +370,11 @@ every 15 seconds while the page is on screen and again whenever you come back
 to it (switching tabs, reopening the home-screen app), so the attached dots,
 the ages, and sessions started or ended somewhere else stay right -- which
 matters most on a desktop, where the list tab stays open while sessions pop
-out. Opening a session that has ended in the meantime says so instead of
-loading an error page; `/s/<name>` for a name that is gone sends you back to
+out. The agent servers' cards and the load/memory line under the title are
+read again too, at most once a minute and whenever you come back to the
+page. Rows that come or go never move what you are looking at, such as the
+Start card you are typing in. Opening a session that has ended in the
+meantime says so in its row's place instead of loading an error page; `/s/<name>` for a name that is gone sends you back to
 the list with a one-line note (or, in a pop-out window, shows a small
 "session ended" page with a Close button).
 
@@ -358,8 +388,11 @@ agent card of a server whose session it was is redrawn to match, and
 nothing else on the page (a half-typed Start card, the scroll position)
 moves. A browser that has the session open
 somewhere else follows the rename: within 15 seconds (at once when you switch
-back to it) its tab, URL and title show the new name, and the terminal stays
-attached.
+back to it) its tab, URL and title show the new name, and its terminal
+reconnects under that name, so a dropped connection later still finds it. A
+tab picked for a session that has ended since the strip was last read (it
+can be 15 seconds old) leaves you on the session you were on, with a note
+that it ended.
 
 When the session you are looking at ends — you typed `exit`, or it was
 killed elsewhere — the page notices straight away and takes you to the
@@ -952,17 +985,10 @@ concurrent runs do not share sessions or listeners.
 
 ### Updating and rolling back
 
-**Git checkout:** re-running `install.sh` after a pull is always safe, and
-from this version on it also **removes the old `/term` `tailscale serve`
-mount** if your machine still has one: the terminal now goes through
-serverjack, so a mount pointing straight at ttyd's port would be a way around
-every check. The installer says so when it takes one down. `uninstall.sh`
-turns off the `/` mount (and that old `/term` one, for installs that predate
-the change).
-
 **Managed install:** use `serverjack-ctl` instead of re-running the bootstrap
 (the bootstrap refuses to touch an existing install on purpose — see
-[Install (no sudo)](#install-no-sudo)):
+[Install (no sudo)](#install-no-sudo)). A git checkout updates with `git`
+instead: see [Updating a git checkout](#updating-a-git-checkout).
 
 ```
 serverjack-ctl status              # channel, current/previous version, health
@@ -990,13 +1016,20 @@ subcommand that changes anything asks for confirmation on `/dev/tty` unless
 you pass `--yes`, and they serialize against each other with a lock file, so
 a concurrent run waits rather than races.
 
-### Updating and rolling back
+### Updating a git checkout
 
 `main` is the release channel: every merge is CI-tested, and tags mark
 versions with a matching [CHANGELOG.md](CHANGELOG.md) entry.
 `git pull --ff-only && bash install.sh` — what the built-in **Update
 serverjack** shortcut runs — updates in place: it preserves
 `~/.config/serverjack/env`, and tmux sessions survive the restart.
+
+Re-running `install.sh` after a pull is always safe, and it also **removes
+the old `/term` `tailscale serve` mount** if your machine still has one from
+before 1.0: the terminal goes through serverjack, so a mount pointing
+straight at ttyd's port would be a way around every check. The installer
+says so when it takes one down. `uninstall.sh` turns off the `/` mount (and
+that old `/term` one, for installs that predate the change).
 
 To roll back, check out a tag and reinstall:
 
@@ -1139,7 +1172,7 @@ The same numbers, plus what the agents are doing, come out of `GET
               "servers_running": 1, "daemon_running": false}],
   "agents_summary": "1 server · 1 daemon",
   "load": [0.42, 0.5, 0.6], "mem_used_pct": 61,
-  "disk_free_gb": 1204.3, "uptime_s": 1051200, "version": "1.3.0",
+  "disk_free_gb": 1204.3, "uptime_s": 1051200, "version": "1.6.0",
   "channel": "release"
 }
 ```
@@ -1237,26 +1270,38 @@ and a default restart would take every session down with it.
 
 `tests/run.sh` runs real browsers (Chromium, Firefox, WebKit with iPhone
 emulation) in a Playwright container straight against serverjack — no proxy in
-the middle any more, since serverjack serves the terminal itself — and reads the
-tmux pane from the host to prove keystrokes arrived. It starts two instances on
-scratch ports, each with its own scratch runtime dir (and so its own
-`ttyd.sock`), so docker is the only thing that has to be installed and a real
-install is never touched. One of the suites (`pwauth`) drives the instance with
-`SERVERJACK_ALLOW` set, plays the part of `tailscale serve` by sending the
-identity header, and proves the terminal is behind that check — both a page
+the middle, since serverjack serves the terminal itself — and reads the tmux
+pane from the host to prove keystrokes arrived. Before any browser starts it
+runs the unit tests (`python3 tests/test_unit.py`, the pure functions) and
+`tests/attach_restore.py` (what `tmux-attach.sh` changes on a session and
+puts back). It then starts four instances on scratch ports — an ordinary
+one, one with `SERVERJACK_ALLOW` set, one with an `autostart.json`, and one
+`tests/restartable.sh` can restart on request — each with its own scratch
+runtime dir (and so its own `ttyd.sock`) and a private tmux server, so
+docker is the only thing that has to be installed and a real install is
+never touched.
+
+The suites, one file each: `pwtest` (typing and the tab bar), `pwclip` (copy
+and paste), `pwmobile` and `pwinput` (the key row, scrolling, the clipboard
+keys, the leave prompt, two screens on one session), `pwpop` and `pwchrome`
+(pop-out windows, reconnecting after a restart, the tab strip, the **+**
+panel, safe areas, touchscreen laptops), `pwwin` (tmux windows), `pwland`,
+`pwflows` and `pwlayout` (the landing page: starting, shortcuts, errors that
+keep what you typed, Kill and Rename in place, the live session list, the
+layout from 320px up), `pwdirpick` (the directory picker), `pwagents` (agent
+cards, against instances of its own with fake servers), `pwtmux` (colours,
+truecolor, the status line and fill handed back, a started command's first
+line) and `pwauth`, which plays the part of `tailscale serve` by sending the
+identity header and proves the terminal is behind that check — both a page
 fetch and a raw WebSocket handshake to `/term/ws` are refused without it.
-Host-side checks prove the peer-uid rule by curling from containers running as
-uid 65534, 0 and 101 (including `/term/`), that an unknown `Host:` gets 421, and
-that the terminal's WebSocket accepts a same-origin and refuses a foreign
-origin through the proxy; another starts a throwaway instance with an
-`autostart.json` pointing at a fake server to prove it comes up on its own.
-`pwagents` starts instances of its own with fake agent servers (`sleep`) and
-drives the agent cards: a server started from its card reads running and a
-second Start leaves it alone, two same-named directories get a server each, a
-renamed server is still found, start-at-boot entries are visible and
-untickable, and a login that finishes shows up at once.
-`docs/MANUAL-TESTS.md` is a checklist for real devices; iOS Safari's
-soft-keyboard behavior is only verifiable there.
+`bash tests/run.sh pwdirpick` runs one suite. Host-side checks prove the
+peer-uid rule by curling from containers running as uid 65534, 0 and 101
+(including `/term/`), that an unknown `Host:` gets 421, that the terminal's
+WebSocket accepts a same-origin and refuses a foreign origin through the
+proxy, and that the autostart instance brings its fake server up on its own.
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#test-strategy) has the full list
+of what each suite checks. `docs/MANUAL-TESTS.md` is a checklist for real
+devices; iOS Safari's soft-keyboard behavior is only verifiable there.
 
 `tests/managed-install.sh` covers the release/bootstrap/`serverjack-ctl` path
 separately: a privileged, throwaway Debian 13 systemd container with **no
@@ -1269,10 +1314,13 @@ and auto-rolled-back, that a no-`--yes` update with no controlling terminal
 refuses cleanly instead of hanging, that `rollback` works, that a truncated
 download and a corrupted archive are both refused with nothing staged, that
 `uninstall --yes` keeps config and tmux, and that running as root is refused.
-Optional and host-side — needs docker able to run `--privileged` containers
-with real systemd, and skips itself with a message otherwise. `bash
-tests/run.sh` runs it as part of the full suite; `bash tests/run.sh
-managed-install` runs just that.
+`tests/guided-install.sh` does the same for the guided setup
+(`bin/serverjack-setup`), answering its questions through a real pty against
+a fake `tailscale`. Both are optional and host-side — they need docker able
+to run `--privileged` containers with real systemd, and skip themselves with
+a message otherwise. `bash tests/run.sh` runs them as part of the full suite
+(a CI run skips them unless `SERVERJACK_TEST_MANAGED=1`); `bash tests/run.sh
+managed-install` or `bash tests/run.sh guided-install` runs just one.
 
 ## Known limitations
 
@@ -1280,9 +1328,12 @@ managed-install` runs just that.
   Linux WebKit browsers (Epiphany) are untested there (the test suite's
   WebKit reports itself as a Mac); the Copy key works everywhere.
 - serverjack leaves the copy mode it entered before a page's next input,
-  with three gaps. Another screen learns of a scroll at its next check
-  (every 2 seconds while it has focus, every 10 while it is only visible),
-  so a key typed there sooner can still land in copy mode. A session with
+  with three gaps. A page shares its session's copy mode with every other
+  screen on it, and only learns of their scrolls by looking: while another
+  screen has the session open, it looks again before the first key after a
+  pause in typing (a round trip on that key), so only keys in a run that
+  was already going when the other screen scrolled can land in copy mode.
+  A session with
   `mouse on` scrolls in tmux's own copy mode, which keeps tmux's behaviour.
   And a plain `tmux attach` client (ssh) on the same session gets tmux's
   own behaviour: while scrolled back, its keys go to copy mode until it
@@ -1308,6 +1359,11 @@ managed-install` runs just that.
 - On an iPhone the landing page's text follows Settings → Display & Brightness
   → Text Size (Larger Text); the terminal page's bar and keys don't, and the
   terminal itself is ttyd's fixed 13px. Pinch to zoom there.
+- Text fields and the Shell/agent choices are outlined in the `--border`
+  token (#2f3f36), about 1.6:1 against their card: under the 3:1 that WCAG
+  asks of a control's outline. A lighter token for fields is a design
+  decision still to be made (#5e7166 would give 3.1:1 or better on every
+  surface they sit on).
 
 ## Changelog
 

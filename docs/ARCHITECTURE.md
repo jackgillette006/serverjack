@@ -184,22 +184,31 @@ request shapes:
    (`up.settimeout(None)`) — a terminal is meant to sit idle for hours.
    A dropped connection (this process or ttyd restarting, a phone's network
    going away) is the page's job: ttyd's client retries exactly once and
-   then waits for an Enter, so `app.js` watches the frame for that state, or
-   for the 502 page, and reloads the frame once `/api/sessions` and
-   `/term/token` both answer, backing off 0, 1, 2, 4, 8, then every 10 s.
+   then waits for an Enter, so `app.js` watches the frame for that state, for
+   the 502 page, or for a document it cannot read at all (the browser's own
+   error page, when serverjack didn't answer as the frame loaded), and
+   reloads the frame once `/api/sessions` and `/term/token` both answer,
+   backing off 0, 1, 2, 4, 8, then every 10 s, with "reconnecting…" over
+   the terminal meanwhile. Every non-upgrade response proxied here carries
+   `X-Frame-Options: SAMEORIGIN` and `frame-ancestors 'self'`, the same
+   framing policy as serverjack's own pages (ttyd sends none of its own).
 
 ## tmux integration
 
 `bin/tmux-attach.sh` is ttyd's command (`-a` turns `?arg=` into `$1`). It
 re-checks the runtime directory with its own `check_dir()`, then
-`tmux has-session -t "=$name"` and, on success, `tmux attach-session
--t "=$name"` — no `-d`, so opening from a phone never detaches another
-client. A missing session prints a message and sleeps 20 seconds. The page
-itself never reloads the frame for a session `/api/sessions` doesn't list:
-it matches sessions by tmux's `#{session_id}`, so it follows a rename
-without touching the frame, and when the session has really ended it sends
-a tab to the list (`/?ended=<name>`, which says so) and closes a pop-out —
-never attaching some other session on the user's behalf. `bin/tmux-picker.sh` (an fzf menu over the same
+`tmux has-session -t "=$name:"` and, on success, `tmux attach-session` on
+that session's id — no `-d`, so opening from a phone never detaches another
+client. (The trailing `:` matters: tmux reads an argument ending in `;` as a
+command separator, so a session called `x;` was looked up as `x`.) A missing
+session prints a message and sleeps 20 seconds. The page itself never
+reloads the frame for a session `/api/sessions` doesn't list: it matches
+sessions by tmux's `#{session_id}`, so it follows a rename (re-pointing the
+frame at the new name, because ttyd's own reconnect asks for the name it
+was loaded with), and when the session has really ended it sends a tab to
+the list (`/?ended=<name>`, which says so) and closes a pop-out — never
+attaching some other session on the user's behalf. A tab picked for a
+session that ended since the strip was read leaves the page where it was. `bin/tmux-picker.sh` (an fzf menu over the same
 tmux server) is no longer reachable through the web app at all — it's kept
 only for running by hand.
 
@@ -427,13 +436,14 @@ lockfile to drift, the entire request path is readable in one file with no
 import graph to chase, and there's no supply chain beyond CPython and the
 external `tmux`/`ttyd` binaries.
 
-The tradeoffs are as direct. At ~3,500 lines, HTTP handling, HTML
+The tradeoffs are as direct. At ~7,700 lines, HTTP handling, HTML
 generation, and process management share one namespace with no module
 boundary between them. Testing is necessarily black-box — a real process
 driven by real HTTP/WebSocket clients — because module-level side effects
 (`RUNTIME_DIR = runtime_dir()`, `TOOL_PATH = _tool_path()`, the tailnet DNS
 lookup) run on import, which is also why the test strategy below leans on
-Playwright and host-side socket checks rather than a unit-test pyramid.
+Playwright and host-side socket checks, with unit tests only for the pure
+functions.
 And `str.format()`-templated HTML built by string concatenation has no
 auto-escaping runtime behind it — every new field rendered into a page
 must be passed through `esc()` (`html.escape(..., quote=True)`) by the
@@ -550,6 +560,14 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   back when it leaves); and a command started from an emulated iPhone 14
   and SE printing its first line at the phone's width (`ATTACH_WAIT`), with
   nothing pushed into history.
+
+**`test_unit.py`** (host-side, run first) loads `bin/serverjack` as a
+module, with a scratch runtime and config directory so it never touches a
+real install, and tests the pure functions with plain `unittest`: form and
+`Content-Length` limits, host and allow-list matching, the tools.json merge,
+session naming, the directory search and its create offer, shortcut and
+autostart bookkeeping, server marks and `pane_exited()`, the landing page's
+section order, and the terminal theme's contrast.
 
 **`security_http.py`** (host-side) checks HTTP-parser behavior needing no
 browser: the two `OPEN_PATHS` (and `POST /`, which only redirects) still
