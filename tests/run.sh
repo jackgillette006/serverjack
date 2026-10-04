@@ -86,9 +86,19 @@ cleanup() {
   for p in "${pids[@]:-}"; do [[ -n $p ]] && kill "$p" 2>/dev/null || true; done
   for p in "${pids[@]:-}"; do [[ -n $p ]] && wait "$p" 2>/dev/null || true; done
   tmux -S "$TMUX_SOCK" kill-server 2>/dev/null || true
+  # The shells tmux just hung up on write ~/.bash_history into the test HOME
+  # on their way out, so one rm can race them ("Directory not empty"). Try a
+  # few times, and never let tidying up turn a passing run red.
   case $RUN_ROOT in
-    "$TEST_TMP_BASE"/serverjack-tests.*) rm -rf -- "$RUN_ROOT" ;;
+    "$TEST_TMP_BASE"/serverjack-tests.*)
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        rm -rf -- "$RUN_ROOT" 2>/dev/null && break
+        sleep 0.3
+      done
+      [[ -e $RUN_ROOT ]] && echo "note: could not fully remove $RUN_ROOT" >&2
+      ;;
   esac
+  return 0
 }
 trap cleanup EXIT
 
