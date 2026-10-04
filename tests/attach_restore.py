@@ -17,7 +17,9 @@ as a group when the page goes), against a private tmux server. Checked:
   fill still comes and goes;
 - a plain `tmux attach` (an ssh client) is not taken for a page;
 - a page hung up while it is still setting up is not attached at all (it
-  used to attach anyway, a client nobody saw that stayed for good);
+  used to attach anyway, a client nobody saw that stayed for good), and
+  nor is one hung up just as tmux starts, too late for the script's check
+  and too early for tmux (the same client, by a narrower gap);
 - your global after-new-window hooks keep firing in a session while a page
   has it open and after it has gone (an empty session-level array used to
   be left behind, hiding them for good), and a session's own hooks stay;
@@ -30,6 +32,7 @@ and tmux then prints tabs and non-ASCII as '_' unless asked not to.
 import fcntl
 import os
 import pty
+import shlex
 import shutil
 import signal
 import subprocess
@@ -279,6 +282,33 @@ def main():
            (status("early"), marks("early")))
     else:
         print("  (skipped: no flock)")
+
+    print("a page that goes just as tmux starts")
+    # The hangup lands after the script's last look at it and before tmux can
+    # act on it: a child just forked still runs the shell's trap, so the one
+    # signal ttyd sends is swallowed there. The tmux here does exactly that
+    # (ignores the hangup it sends its own group, then attaches). ttyd keeps
+    # the terminal open until the script exits, so that client stayed
+    # attached for good, with no page showing it.
+    session("late")
+    wrap = os.path.join(ROOT, "wrap")
+    os.mkdir(wrap, 0o700)
+    with open(os.path.join(wrap, "tmux"), "w") as f:
+        f.write("#!/bin/bash\n"
+                "case \" $* \" in *' attach-session '*) trap '' HUP; kill -HUP 0; sleep 0.3; trap - HUP ;; esac\n"
+                f"exec {shlex.quote(shutil.which('tmux', path=ENV['PATH']))} \"$@\"\n")
+    os.chmod(os.path.join(wrap, "tmux"), 0o700)
+    e = page("late", {"PATH": wrap + os.pathsep + ENV["PATH"]})
+    gone = wait_for(lambda: os.waitpid(e, os.WNOHANG)[0] == e, 5)
+    drain()
+    ok("tmux is hung up as well, and the page exits", gone and attached("late") == 0,
+       f"exited={gone} attached={attached('late')}")
+    if not gone:
+        os.killpg(e, signal.SIGKILL)
+        os.waitpid(e, 0)
+    os.close(PAGES.pop(e))
+    ok("...and leaves nothing of serverjack's behind", status("late") == "" and not marks("late"),
+       (status("late"), marks("late")))
 
     if new_fill:
         print("hooks: yours keep firing")

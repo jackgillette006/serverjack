@@ -268,6 +268,15 @@ tmux -T RGB -V >/dev/null 2>&1 && features=(-T RGB)
 # ttyd keeps the terminal open until this script exits, so attaching after
 # the hangup would leave a client attached for good that no page shows (and
 # that takes the window's size).
+# tmux runs in the background and is waited for, so the trap runs the moment
+# a hangup comes (with tmux in the foreground it ran only once tmux had
+# ended), and from then on this shell hangs tmux up itself until it goes.
+# ttyd hangs up only once, and one that landed between the check below and
+# tmux starting reached neither: this shell was past the check, and tmux was
+# not there yet, or was a child just forked that still ran this shell's trap.
+# So tmux stayed attached, and this shell waited on it, for good. Its input
+# is the terminal, said explicitly: a background command's is /dev/null
+# otherwise.
 # No -d: never yank the session away from another client (tty1, ssh, phone).
 hup=
 trap 'hup=1' HUP
@@ -282,7 +291,19 @@ if [[ -n $sid ]]; then
 fi
 rc=1
 if [[ -z $hup ]]; then
-  tmux "${features[@]}" attach-session -t "${sid:-=$name:}"
+  exec {tty}<&0
+  tmux "${features[@]}" attach-session -t "${sid:-=$name:}" <&"$tty" {tty}<&- &
+  client=$!
+  exec {tty}<&-
+  while kill -0 "$client" 2>/dev/null; do
+    if [[ -n $hup ]]; then
+      kill -HUP "$client" 2>/dev/null
+      sleep 0.1
+    else
+      wait "$client"          # returns early when the trap fires
+    fi
+  done
+  wait "$client"
   rc=$?
 fi
 exec >/dev/null 2>&1          # the terminal is gone; nothing to write to
