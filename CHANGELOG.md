@@ -7,13 +7,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
-## 1.6.0-rc.2 - 2026-10-04
+## 1.6.0-rc.3 - 2026-10-04
 
-rc.2 replaces rc.1, which was built but never published. It adds three
-fixes found while verifying rc.1 on GitHub's runners and a real server: the
-terminal takes the keyboard only once its connection is open, it never
-changes width under a line being typed, and a page closed just as its
-terminal starts leaves no tmux client behind.
+rc.3 replaces rc.1 and rc.2, which were built but never published.
+rc.2 added three fixes found while verifying rc.1 on GitHub's runners and a
+real server: the terminal takes the keyboard only once its connection is
+open, it never changes width under a line being typed, and a page closed
+just as its terminal starts leaves no tmux client behind. rc.3 adds one
+found on a real iPhone: holding an arrow on the key row no longer closes
+the keyboard.
 
 This release is a full review of the UI on phones and desktops, from the
 landing page through the terminal page to what tmux and ttyd are handed.
@@ -260,6 +262,14 @@ and the update path are unchanged.
   2 screens", and `/api/sessions` carries `clients` and tmux's `id`.
 
 #### Fixed
+
+- **Holding a key on the iPhone's key row no longer closes the keyboard.**
+  A touch-and-hold started iOS's own long-press gesture, which ended the
+  terminal's editing session, so holding an arrow to repeat it dropped the
+  keyboard. The row now cancels the touch on its keys itself (a swipe that
+  starts on a key still scrolls the row), and gives the terminal its
+  keyboard back on release if a press took it anyway. Paste is unchanged:
+  iOS ties clipboard access to the browser's own tap.
 
 - **Typing after scrolling back ran the wrong command** (`echo hello world`
   ran `world`). Whatever you type, paste or tap now leaves serverjack's copy

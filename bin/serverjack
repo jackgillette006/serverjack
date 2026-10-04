@@ -276,7 +276,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 # Bump with every release; the git tag for that release must read "v" + this
 # (v1.0.0, v1.1.0, ...) -- install.sh --version and `--check`'s output both
 # come from here, and it's what /api/status reports for a dashboard tile.
-VERSION = "1.6.0-rc.2"
+VERSION = "1.6.0-rc.3"
 HOME = os.path.expanduser("~")
 # The checkout this file lives in: <repo>/bin/serverjack. Used for the built-in
 # "Update serverjack" shortcut, which only appears when <repo>/.git exists (a
@@ -5491,7 +5491,7 @@ APP_JS = r"""
       lastPtr = { b: b, t: Date.now() }; endPress();
       if (e.button > 0) return;                              // right/middle button
       var p = press = { b: b, id: e.pointerId, x: e.clientX, y: e.clientY, sl: keysRow.scrollLeft,
-                        how: e.pointerType || 'mouse', n: 0 };
+                        how: e.pointerType || 'mouse', n: 0, term: !!opt.keepTerm && termFocused() };
       try { b.setPointerCapture(e.pointerId); } catch (_) {}  // a wobble off a small key is still this key
       // Held: repeat after 400ms, every 60ms, at most 100 times (a lost pointerup can't run away)
       if (opt.repeat && opt.repeat()) p.hold = setTimeout(function () {
@@ -5512,8 +5512,13 @@ APP_JS = r"""
       lastPtr = { b: b, t: Date.now() };
       if (!p || p.b !== b || p.id !== e.pointerId) return;
       endPress();
-      if (p.n || travel(e, p) > 10 || (inRow && keysRow.scrollLeft !== p.sl)) return;   // repeated, or a swipe
-      if (!opt.click) { eatClick = Date.now(); return act(b, p.how); }
+      // The terminal had the keyboard when this press began and has lost it
+      // (iOS ends the editing session on a touch-and-hold, see the row's
+      // touchstart below): give it back now, inside the touch, the only time
+      // iOS lets a focus() raise its keyboard again.
+      var back = function () { if (p.term && !termFocused()) focusTerm(); };
+      if (p.n || travel(e, p) > 10 || (inRow && keysRow.scrollLeft !== p.sl)) return back();   // repeated, or a swipe
+      if (!opt.click) { eatClick = Date.now(); act(b, p.how); return back(); }
       // Paste wants the browser's own click: that is what gives it clipboard
       // access on iOS. An engine that sends no click after a cancelled
       // pointerdown (Linux WebKit on touch) still gets the paste from here.
@@ -5554,8 +5559,44 @@ APP_JS = r"""
   }
   Array.prototype.forEach.call(document.querySelectorAll('#keys .k[data-k], #ctrl'), function (b) {
     // arrows and PgUp/PgDn repeat while held; never with Ctrl armed (one Ctrl, one key)
-    tapButton(b, pressKey, { repeat: function () { return /^(Arrow|Page)/.test(b.dataset.k || '') && !ctrlArmed; } });
+    tapButton(b, pressKey, { keepTerm: true,
+                             repeat: function () { return /^(Arrow|Page)/.test(b.dataset.k || '') && !ctrlArmed; } });
   });
+  // iOS: touching and holding a button starts the system's own long-press
+  // gesture, and that ends the terminal's editing session -- holding an
+  // arrow to repeat it dropped the phone's keyboard. Cancelling pointerdown
+  // (above) doesn't stop it; cancelling the touchstart does. That also stops
+  // the row's own scrolling for the touch, so a swipe that starts on a key
+  // scrolls the row here instead (no momentum, but the row is short). Paste
+  // keeps its touchstart: its clipboard access on iOS comes from the
+  // browser's own click, which a cancelled touchstart never sends.
+  var rowTouch = null;
+  keysRow.addEventListener('touchstart', function (e) {
+    var k = e.target.closest && e.target.closest('.k');
+    rowTouch = null;
+    if (!k || k.id === 'paste') return;
+    e.preventDefault();                                  // with another finger down too
+    if (e.touches.length === 1) rowTouch = { x: e.touches[0].clientX, sl: keysRow.scrollLeft, moved: false };
+  }, { passive: false });
+  keysRow.addEventListener('touchmove', function (e) {
+    if (!rowTouch || e.touches.length !== 1) return;
+    var dx = e.touches[0].clientX - rowTouch.x;
+    if (!rowTouch.moved) {
+      if (Math.abs(dx) < 10) return;
+      rowTouch.moved = true; rowTouch.x += dx > 0 ? 10 : -10; dx += dx > 0 ? -10 : 10;   // no jump as it starts
+    }
+    e.preventDefault();
+    keysRow.scrollLeft = rowTouch.sl - dx;
+  }, { passive: false });
+  keysRow.addEventListener('touchend', function () { rowTouch = null; });
+  keysRow.addEventListener('touchcancel', function () { rowTouch = null; });
+  // ...and if iOS runs a hold as its own gesture anyway (a touch it was not
+  // given time to cancel, or one routed to the frame because a finger was
+  // down there first), it ends in a synthetic click whose mousedown the
+  // cancelled pointerdown does not cover, and a mousedown on a button takes
+  // focus from the terminal. Cancelling it keeps focus where it is; the
+  // click itself (Paste's too) still comes.
+  keysRow.addEventListener('mousedown', function (e) { e.preventDefault(); });
   function touchy(how) { return how === 'touch' || how === 'pen'; }
   tapButton(document.getElementById('keysbtn'), function (b, how) {
     setKeys(!body.classList.contains('keys'));

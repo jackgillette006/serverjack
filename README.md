@@ -430,7 +430,7 @@ keys past it fades out.
 
 - A key fires when you lift your finger, and only for a tap: a swipe across
   the row just scrolls it. The arrows and PgUp/PgDn repeat while held.
-  Tapping a key never opens or closes the phone's keyboard.
+  Tapping or holding a key never opens or closes the phone's keyboard.
 - **Ctrl** applies to the next key you type, then lets go: Ctrl then `c` is
   ^C, and punctuation works too (Ctrl then `\` is ^\, `[` is Esc, `_` is
   ^_). A character with no Ctrl form is typed as is.
