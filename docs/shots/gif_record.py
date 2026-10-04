@@ -3,11 +3,12 @@
 Records a video of the demo flow against the same isolated, neutral
 serverjack instance make.sh uses for the README screenshots (see
 make-gif.sh, which sets it up identically): land on the phone-emulated
-landing page, pick the "OpenCode" pill, type the ~/projects/3d-lab path
+landing page (the running sessions first), scroll down to the Start card,
+pick the "OpenCode" pill, type the ~/projects/3d-lab path
 into the directory combobox (character by character, so the live
 suggestion list dropping in is visible too), tap Start, sit on the live
-terminal while the real OpenCode TUI opens in that directory, tap back to
-the session list.
+terminal while the real OpenCode TUI opens in that directory, tap the logo
+back to the session list, where the new session is now listed.
 
 OpenCode in the scratch cfg is the genuine binary (see fixture.sh -- it's
 copied into the fake HOME, never a fake stand-in), so nothing needs typing
@@ -125,7 +126,9 @@ with sync_playwright() as p:
         pre_delay holds on the *stable, pre-navigation* page after the ring
         is drawn but before any mouse event at all, so there's no question
         the recorder gets frames of it before the click that tears the page
-        down even begins."""
+        down even begins. An element below the fold is scrolled into view
+        first, so the tap lands on it."""
+        locator.scroll_into_view_if_needed()
         box = locator.bounding_box()
         if not box:
             locator.click()
@@ -142,7 +145,15 @@ with sync_playwright() as p:
     # ------------------------------------------------------- landing page --
     page.goto(f"{BASE}/", wait_until="networkidle")
     page.wait_for_selector("h2:text-is('Sessions')")
-    page.wait_for_timeout(1500)   # brief hold on the landing page
+    page.wait_for_timeout(1200)   # brief hold on the landing page
+
+    # The running sessions lead the page, so the Start card sits under them:
+    # bring its heading to the top of the screen first. One plain jump, not
+    # a smooth scroll: every frame of a scroll repaints the whole screen,
+    # which costs the GIF more than its 4 MB budget can spare.
+    page.locator("h2:text-is('Start a session')").evaluate(
+        "e => e.scrollIntoView({block: 'start'})")
+    page.wait_for_timeout(600)
 
     # -------------------------------------------------- pick OpenCode, 3d-lab
     tap(page.locator('.seg label:has(input[name=what][value="opencode"])'))
@@ -181,18 +192,16 @@ with sync_playwright() as p:
     # ~4s after the textarea attached for the TUI to finish painting.
     page.frame_locator("#frame").locator(".xterm-accessibility-tree", has_text="Ask anything") \
         .wait_for(state="attached", timeout=30000)
-    page.wait_for_timeout(3000)   # hold on the rendered terminal
+    page.wait_for_timeout(2500)   # hold on the rendered terminal
 
     # ---------------------------------------------------------- back out --
     tap(page.locator('a.ib[title="All sessions"]'), pre_delay=250)
     sessions_h2 = page.locator("h2:text-is('Sessions')")
     sessions_h2.wait_for(state="visible")
-    # The Sessions list sits below the Start-a-session and Shortcuts cards,
-    # off the bottom of a phone viewport -- scroll it into view so the
-    # recording actually shows the new opencode-3d-lab session card, not
-    # just the top of the page again.
-    sessions_h2.scroll_into_view_if_needed()
-    page.wait_for_timeout(1500)   # hold on the list, showing opencode-3d-lab
+    # The Sessions list leads the landing page whenever anything is running,
+    # so the new opencode-3d-lab row is already on the first screen.
+    page.locator(".sess[data-session='opencode-3d-lab']").wait_for(state="visible")
+    page.wait_for_timeout(1300)   # hold on the list, showing opencode-3d-lab
 
     ctx.close()   # finalizes the .webm -- ends the recording right here
     b.close()
