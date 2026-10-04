@@ -4907,20 +4907,27 @@ APP_JS = r"""
   // ---- terminal helpers (same-origin frame, so we can reach into ttyd's page)
   function tdoc() { try { return frame.contentDocument; } catch (e) { return null; } }
   function textarea() { var d = tdoc(); return d && d.querySelector('.xterm-helper-textarea'); }
-  function focusTerm() {
-    var tries = 0;
-    (function f() {
-      var ta = textarea();
-      if (ta) {
-        // Firefox ignores focus() on an element inside the frame while this
-        // page holds focus (a clicked button) unless the frame's own window
-        // is focused first; typing then went nowhere. Kept synchronous: iOS
-        // only raises the keyboard for a focus() made inside the tap itself.
-        try { frame.contentWindow.focus(); } catch (e) {}
-        ta.focus(); body.classList.remove('conn');
-      }
-      else if (tries++ < 40) setTimeout(f, 100); else body.classList.remove('conn');
-    })();
+  // The keyboard goes into the terminal (and 'connecting' goes away) only
+  // once it is live (termLive()): ttyd's textarea is there before its
+  // WebSocket is open, and keys typed into it then were dropped without a
+  // trace. Asked for meanwhile, it happens as the terminal goes live
+  // (wentLive()).
+  var focusT = null, focusN = 0;
+  function focusTerm() { clearTimeout(focusT); focusN = 0; tryFocus(); }
+  function tryFocus() {
+    focusT = null;
+    var ta = textarea(), late = focusN >= 120;
+    if (ta && termLive()) {
+      // Firefox ignores focus() on an element inside the frame while this
+      // page holds focus (a clicked button) unless the frame's own window
+      // is focused first; typing then went nowhere. Kept synchronous: iOS
+      // only raises the keyboard for a focus() made inside the tap itself.
+      try { frame.contentWindow.focus(); } catch (e) {}
+      ta.focus(); body.classList.remove('conn');
+      if (focusN) checkConn();             // it was waited for: "reconnecting" goes too
+    }
+    else if (late) body.classList.remove('conn');
+    else { focusN++; focusT = setTimeout(tryFocus, 100); }
   }
   // ---- CRT effects. .fx arrives on <body> from the server so the power-on
   // plays before this script runs; localStorage overrides it. The toggle that
@@ -5319,21 +5326,44 @@ APP_JS = r"""
   // from the server: a nudge before that flashed the pill on a phone that
   // had just opened the session. So no nudge before the terminal has been
   // written to (or, with no way to tell, before 3 s have gone by).
+  // Written to is also what makes the terminal live: ttyd only listens for
+  // keys once its WebSocket is open, and the first thing that brings is tmux
+  // drawing the screen. Nothing on this page writes to the terminal.
   function watchWrites() {
     var d = tdoc(), t = xterm();
     if (!d || !t || d.__sjWatch) return;
     d.__sjWatch = true;
-    try { t.onWriteParsed(function () { d.__sjWritten = true; }); } catch (e) { d.__sjWritten = null; }
+    try {
+      t.onWriteParsed(function () {
+        if (d.__sjWritten) return;
+        d.__sjWritten = true;
+        setTimeout(function () { if (tdoc() === d) wentLive(); }, 0);
+      });
+    } catch (e) { d.__sjWritten = null; }
+  }
+  function termLive() {
+    var d = tdoc(), t = xterm(), b, l, i;
+    if (!d || !t) return false;
+    watchWrites();
+    if (!d.__sjWritten) {                    // written before it was watched: it shows
+      try {
+        b = t.buffer.active;
+        if (b.cursorX || b.cursorY) d.__sjWritten = true;
+        for (i = 0; !d.__sjWritten && i < t.rows; i++) {
+          l = b.getLine(b.viewportY + i);
+          if (l && l.translateToString(true)) d.__sjWritten = true;
+        }
+      } catch (e) {}
+    }
+    // ...and no way to tell (no onWriteParsed: 3 s), or none after 10 s: as before
+    return !!d.__sjWritten || Date.now() - loadedAt > (d.__sjWritten === null ? 3000 : 10000);
+  }
+  function wentLive() {
+    if (focusT) { clearTimeout(focusT); tryFocus(); }      // a focus that was waiting for it
+    checkConn();                                           // "reconnecting" goes
   }
   var claimT = null;
-  function termReady() {
-    watchWrites();
-    var d = tdoc(), t = xterm();
-    if (d && t && !d.__sjWritten) {
-      try { var b = t.buffer.active; if (b.cursorX || b.cursorY) d.__sjWritten = true; } catch (e) {}
-    }
-    return !!(d && d.__sjWritten) || Date.now() - loadedAt > 3000;
-  }
+  function termReady() { return termLive() || Date.now() - loadedAt > 3000; }
   function claimSize(j) {
     var t = xterm();
     if (!t || !j.latest || document.hidden || !sizeDiffers(j, t)) return;
@@ -6074,7 +6104,7 @@ APP_JS = r"""
     if (t === null) return '';
     if (/Reconnect$/.test(t)) return 'lost';                    // ttyd gave up
     if (/Reconnecting|Connection Closed/.test(t)) return 'retrying';
-    return 'live';
+    return termLive() ? 'live' : '';                           // '': its socket isn't open yet
   }
   // ttyd's overlay line ('' when none, null with no terminal)
   function overlayText() {
@@ -6175,7 +6205,11 @@ APP_JS = r"""
       setBar(false, false);
     }, true);
     w.addEventListener('focus', freshWins);
-    new MutationObserver(connSoon).observe(d.body, { childList: true, subtree: true });
+    // watchWrites() at once: ttyd may build its terminal after the load
+    // (Firefox does), and an observer runs before any WebSocket event can,
+    // so the first write is seen.
+    new MutationObserver(function () { safe(watchWrites); connSoon(); })
+      .observe(d.body, { childList: true, subtree: true });
   }
   // ttyd fits the grid once, before it swaps to its WebGL/canvas renderer,
   // whose cells are rounded down to whole device pixels -- so the grid comes up
@@ -6201,7 +6235,8 @@ APP_JS = r"""
     // bfcache return): the bar, the URL and every /api call follow cur.
     if (a !== null && a !== cur) { loadFrame(cur); return; }
     if (connState() === 'lost') body.classList.remove('conn');   // no sweep over the 502 page
-    else retrying(false);                   // a new terminal page: lost() says so again if need be
+    // A new terminal page: "reconnecting" stays until it is live (checkConn,
+    // here or from its first write), not just loaded -- or lost() says so again.
     checkConn();
     refitT.forEach(clearTimeout);
     refitT = [500, 1500, 4000].map(function (ms) { return setTimeout(refit, ms); });

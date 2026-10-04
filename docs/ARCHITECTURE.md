@@ -189,9 +189,14 @@ request shapes:
    error page, when serverjack didn't answer as the frame loaded), and
    reloads the frame once `/api/sessions` and `/term/token` both answer,
    backing off 0, 1, 2, 4, 8, then every 10 s, with "reconnecting…" over
-   the terminal meanwhile. Every non-upgrade response proxied here carries
-   `X-Frame-Options: SAMEORIGIN` and `frame-ancestors 'self'`, the same
-   framing policy as serverjack's own pages (ttyd sends none of its own).
+   the terminal meanwhile. A new frame is offered (keyboard in the
+   terminal, "connecting" or "reconnecting…" gone) only once the terminal
+   has been written to: ttyd builds it, textarea and all, before its
+   WebSocket is open and drops keys typed in between, and the first thing
+   the open socket brings is tmux drawing the screen. Every non-upgrade
+   response proxied here carries `X-Frame-Options: SAMEORIGIN` and
+   `frame-ancestors 'self'`, the same framing policy as serverjack's own
+   pages (ttyd sends none of its own).
 
 ## tmux integration
 
@@ -535,15 +540,18 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   client spawned — proving identity covers the proxied terminal too.
 - `pwchrome.py` — the terminal page's chrome and connection: it asks
   `tests/restartable.sh` (run.sh's fourth instance) to restart serverjack,
-  ttyd or both and proves the terminal comes back with no user action;
-  then rename/kill handling, Back after tab switches, the + panel's close
-  paths and focus, the tab strip (fades, wheel, polls that change nothing),
-  the refit after load and the hidden scrollbar; the pop-out window in all
-  three engines (the handle covers no terminal cell, the bar lies over the
-  terminal so `#{window_width}x#{window_height}` never changes, focus stays
-  in the terminal, Escape and a click put it away, × is reachable, window
-  naming and re-opening without a reload), a popped-out session never
-  attached twice (Back, another tab's strip), blocked pop-ups, a
+  ttyd or both and proves the terminal comes back with no user action, and
+  that one whose WebSocket is slow to open (held back in ttyd's page by a
+  route) is not offered until it is open, so a line typed the moment it
+  looks ready arrives; then rename/kill handling, Back after tab switches,
+  the + panel's close paths and focus, the tab strip (fades, wheel, polls
+  that change nothing), the refit after load and the hidden scrollbar; the
+  pop-out window in all three engines (the handle covers no terminal cell,
+  the bar lies over the terminal so `#{window_width}x#{window_height}`
+  never changes, focus stays in the terminal, Escape and a click put it
+  away, × is reachable, window naming and re-opening without a reload), a
+  popped-out session never attached twice (Back, another tab's strip),
+  blocked pop-ups, a
   touchscreen laptop (Chromium `--touch-events=enabled`) keeping the
   desktop UI while a finger swipe still scrolls tmux, an iPad that reports
   a fine pointer staying a tablet, and a notched iPhone's safe areas — with the insets patched

@@ -207,6 +207,9 @@ and the update path are unchanged.
   Reconnect" with no Enter key; it says *reconnecting…* meanwhile. The
   "terminal isn't answering" page recovers on its own and has a Retry
   button.
+- The terminal gets the keyboard, and *connecting* or *reconnecting…* go
+  away, only once its connection is open: the first keys typed after a
+  reconnect, a tab switch or on a slow network could go nowhere.
 - **A session that ends no longer drops you into another one**: a tab goes
   to the list ("… has ended"), a pop-out closes. A tab for a session that
   ended since the strip was read keeps you where you were, and so does a
