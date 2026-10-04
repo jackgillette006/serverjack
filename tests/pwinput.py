@@ -387,6 +387,45 @@ try:
         page.tap("#keys [data-k=ArrowLeft]"); time.sleep(0.4)
         ok("...a tap sends it once", logged().count("^[[D") == held + 1, logged().count("^[[D"))
 
+        # iOS: touching and holding a key started the system's long-press
+        # gesture, which ends the terminal's editing session -- holding an arrow
+        # dropped the phone's keyboard (real iPhone, 1.6.0-rc.2). The row now
+        # cancels the touch on its keys itself, scrolls itself for a swipe that
+        # starts on one, and gives the terminal its keyboard back if a press
+        # still took it. Paste keeps its touch: iOS ties clipboard access to the
+        # browser's own click.
+        page.evaluate("""() => { window.__ts = []; document.addEventListener('touchstart', e => {
+            const k = e.target.closest && e.target.closest('.k');
+            window.__ts.push([k ? (k.id || k.dataset.k) : '', e.defaultPrevented]); }); }""")
+        TERM_FOCUSED = ("(() => { const f = document.getElementById('frame'), d = f.contentDocument;"
+                        " return document.activeElement === f && !!d &&"
+                        " d.activeElement === d.querySelector('.xterm-helper-textarea'); })()")
+        rawlog()
+        x, y = centre("#keys [data-k=ArrowUp]")
+        touch("touchStart", x, y); touch("touchEnd"); time.sleep(0.3)
+        sent = logged()
+        swipe("#paste", 0, -60); time.sleep(0.5)           # a slide-off: nothing is pasted
+        ok("...(a slide-off Paste pastes nothing)", logged() == sent, repr(logged()))
+        ts = page.evaluate("window.__ts")
+        ok("a touch on a soft key is cancelled (no long-press gesture), one on Paste is not",
+           ["ArrowUp", True] in ts and ["paste", False] in ts, ts)
+        page.evaluate("(k => k.scrollLeft = k.scrollWidth)(document.getElementById('keys'))"); time.sleep(0.3)
+        before, sent = page.evaluate("document.getElementById('keys').scrollLeft"), logged()
+        swipe("#keys [data-k=ArrowUp]", 160); time.sleep(0.5)
+        after = page.evaluate("document.getElementById('keys').scrollLeft")
+        ok("...a swipe starting on an arrow still scrolls the row, by hand", after < before - 100, (before, after))
+        ok("...and sends nothing", logged() == sent, repr(logged()))
+        page.evaluate("document.getElementById('keys').scrollLeft = 0"); time.sleep(0.3)
+        page.tap("#keys [data-k=ArrowLeft]"); time.sleep(0.3)          # (a tap keeps the terminal's focus)
+        focused0 = page.evaluate(TERM_FOCUSED)
+        x, y = centre("#keys [data-k=ArrowLeft]")
+        touch("touchStart", x, y); time.sleep(0.7)
+        page.evaluate("document.getElementById('frame').contentDocument.querySelector('.xterm-helper-textarea').blur()")
+        lost = not page.evaluate(TERM_FOCUSED)
+        time.sleep(0.3); touch("touchEnd"); time.sleep(0.4)
+        ok("a hold that lost the terminal's focus gives it back on release",
+           focused0 and lost and page.evaluate(TERM_FOCUSED), (focused0, lost, page.evaluate(TERM_FOCUSED)))
+
         # Text that arrives without a key press (dictation, predictions, emoji) after soft keys.
         rawlog()
         page.tap("#keys [data-k=Escape]"); time.sleep(0.3)
