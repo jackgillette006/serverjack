@@ -7,7 +7,13 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
-## 1.6.0-rc.1 - 2026-10-04
+## 1.6.0-rc.2 - 2026-10-04
+
+rc.2 replaces rc.1, which was built but never published. It adds three
+fixes found while verifying rc.1 on GitHub's runners and a real server: the
+terminal takes the keyboard only once its connection is open, it never
+changes width under a line being typed, and a page closed just as its
+terminal starts leaves no tmux client behind.
 
 This release is a full review of the UI on phones and desktops, from the
 landing page through the terminal page to what tmux and ttyd are handed.
