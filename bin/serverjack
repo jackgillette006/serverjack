@@ -5017,6 +5017,10 @@ APP_JS = r"""
   var ctrlArmed = false, swallowInput = false;
   function hook() {
     var d = tdoc(); if (!d || d.__sj) return; d.__sj = true;
+    // Typing, dictation and pastes, for refit(): no width change mid-line.
+    ['keydown', 'beforeinput', 'paste'].forEach(function (ev) {
+      d.addEventListener(ev, function () { lineAt = Date.now(); }, true);
+    });
     // Copies lose the padding tmux draws: in copy mode it writes real spaces
     // to the end of every row, and xterm copied them (lines 160 wide). This
     // runs after xterm's own copy handler (bubble phase) and only when xterm
@@ -5359,6 +5363,7 @@ APP_JS = r"""
     return !!d.__sjWritten || Date.now() - loadedAt > (d.__sjWritten === null ? 3000 : 10000);
   }
   function wentLive() {
+    refit();                                               // its final width before anyone types
     if (focusT) { clearTimeout(focusT); tryFocus(); }      // a focus that was waiting for it
     checkConn();                                           // "reconnecting" goes
   }
@@ -6216,8 +6221,16 @@ APP_JS = r"""
   // narrower than the frame (a dead band on the right; 3-4 columns short on a
   // phone) until something resizes it. Fit again once the renderer is in. A
   // fit that changes nothing sends nothing to tmux; no repeating timer.
-  var refitT = [];
+  // A fit that does change the width re-wraps the line being typed under the
+  // shell, and readline's redraw can then print over what the command writes:
+  // on a phone with a long prompt, the first command typed after opening a
+  // session lost its output. So the fit that matters runs as the terminal
+  // goes live, before it takes the keyboard (wentLive), and any later one
+  // waits for a pause in typing.
+  var refitT = [], lineAt = 0;   // not typedAt: that is the two-screens hold's (see unsure())
   function refit() {
+    var quiet = Date.now() - lineAt;
+    if (quiet < 1500) { refitT.push(setTimeout(refit, 1550 - quiet)); return; }
     try {
       var t = frame.contentWindow.term; if (!t || typeof t.fit !== 'function') return;
       // tmux keeps the history and the page scrolls it (/api/scroll), so xterm's

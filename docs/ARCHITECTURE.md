@@ -550,7 +550,9 @@ directly** (`tmux -S "$TMUX_SOCK" capture-pane`), not by trusting the DOM:
   route) is not offered until it is open, so a line typed the moment it
   looks ready arrives; then rename/kill handling, Back after tab switches,
   the + panel's close paths and focus, the tab strip (fades, wheel, polls
-  that change nothing), the refit after load and the hidden scrollbar; the
+  that change nothing), the refit after load (done before the terminal is
+  offered for typing, and never while a line is being typed) and the hidden
+  scrollbar; the
   pop-out window in all three engines (the handle covers no terminal cell,
   the bar lies over the terminal so `#{window_width}x#{window_height}`
   never changes, focus stays in the terminal, Escape and a click put it

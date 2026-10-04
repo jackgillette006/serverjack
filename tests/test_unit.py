@@ -3085,5 +3085,30 @@ class ResponseEncodingTests(unittest.TestCase):
         self.assertEqual(h.out.getvalue(), mod.APP_JS_BYTES)
 
 
+
+class AppJsScopeTests(unittest.TestCase):
+    """APP_JS is one function scope, so a second top-level `var x` (or a var
+    and a function of one name) silently merges two variables. That happened
+    once: a refit timer's `typedAt` shadowed the two-screens hold's, which
+    then never saw a pause in typing and let copy mode eat keys."""
+
+    def test_no_name_is_declared_twice_at_the_top_level(self):
+        import re
+        names, funcs = {}, {}
+        for line in mod.APP_JS.splitlines():
+            m = re.match(r"^  var (.*?);", line)
+            if m:
+                for part in re.split(r",(?![^\[\(\{]*[\]\)\}])", m.group(1)):
+                    n = part.strip().split("=")[0].strip()
+                    if re.match(r"^[A-Za-z_$][\w$]*$", n):
+                        names[n] = names.get(n, 0) + 1
+            m = re.match(r"^  function ([A-Za-z_$][\w$]*)\(", line)
+            if m:
+                funcs[m.group(1)] = funcs.get(m.group(1), 0) + 1
+        self.assertGreater(len(names), 20)            # the scan still finds the declarations
+        self.assertEqual({k: v for k, v in names.items() if v > 1}, {})
+        self.assertEqual({k: v for k, v in funcs.items() if v > 1}, {})
+        self.assertEqual(sorted(set(names) & set(funcs)), [])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

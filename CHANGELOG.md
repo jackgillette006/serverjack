@@ -210,6 +210,10 @@ and the update path are unchanged.
 - The terminal gets the keyboard, and *connecting* or *reconnecting…* go
   away, only once its connection is open: the first keys typed after a
   reconnect, a tab switch or on a slow network could go nowhere.
+- The terminal takes its final width before it takes the keyboard, and
+  never changes width while you are typing: on a phone, a command typed
+  right after opening a session could have its output drawn over (the line
+  re-wrapped under the shell a few seconds after the load).
 - **A session that ends no longer drops you into another one**: a tab goes
   to the list ("… has ended"), a pop-out closes. A tab for a session that
   ended since the strip was read keeps you where you were, and so does a

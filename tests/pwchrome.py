@@ -418,6 +418,7 @@ MADE = [f"pwc-a{TAG}", f"pwc-b{TAG}", f"pwc-c{TAG}", f"pwc-rs{TAG}",
         f"pwc-a-really-long-session-name-for-the-strip-{TAG}", f"pwc-p{TAG}", f"pwc-q{TAG}", f"pwc-zzpop{TAG}"]
 FILLERS = [f"pwc-f{i:02d}-{TAG}" for i in range(18)]
 A, B, C, RS, LONG, P, Q, LATE = MADE
+WRAPS = f"pwc-wrap{TAG}"
 new_session(A)
 new_session(B, windows=3)
 new_session(C)
@@ -1164,8 +1165,33 @@ try:
             ok("no page errors", not errs, errs)
             ctx.close()
         b.close()
+
+        # ====== no width change under a line being typed: the first command typed
+        # the moment a phone's terminal is live keeps its output on screen (a
+        # fit 4 s after the load used to re-wrap the line, and readline's redraw
+        # printed over the output -- with a long prompt, every first command)
+        print("webkit iphone 14, typing the moment the terminal is live:")
+        new_session(WRAPS)
+        b = p.webkit.launch()
+        page = b.new_context(**phone(p)).new_page()
+        errs = errors_of(page)
+        page.goto(f"{BASE}/s/{WRAPS}")
+        ok("the terminal goes live", wait_for(lambda: term_live(page), 15, 0.05))
+        page.evaluate("(() => { const t = document.getElementById('frame').contentWindow.term;"
+                      " window.__rz = []; t.onResize(e => window.__rz.push([e.cols, e.rows])); })()")
+        marker = f"WRAP{TAG}" + "x" * 60          # longer than a phone's line, so it wraps
+        type_line(page, "echo " + marker)
+        time.sleep(5)                             # past every fit the page schedules after a load
+        ok("no width change while the line is typed, or after it", page.evaluate("window.__rz") == [],
+           page.evaluate("window.__rz"))
+        shown = tmux("capture-pane", "-J", "-p", "-t", f"={WRAPS}:").stdout
+        # Twice: the typed command and its output (a line that fills the width
+        # exactly gets the output joined onto it by -J, so count, don't match lines).
+        ok("...and the command's output is on screen", shown.count(marker) >= 2, shown[-300:])
+        ok("no page errors", not errs, errs)
+        b.close()
 finally:
-    for s in MADE + FILLERS:
+    for s in MADE + FILLERS + [WRAPS]:
         tmux("kill-session", "-t", f"={s}")
 
 print("  " + ("all chrome checks passed" if not fails else f"{fails} chrome check(s) FAILED"))
