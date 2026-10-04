@@ -320,6 +320,11 @@ else
   echo "  FAIL websocket origin behaviour through the proxy"
   failures=$((failures + 1))
 fi
+# ...and no other site may frame the terminal (a page that frames it can
+# type into the session: tailnet access is per connection, not a cookie).
+got=$(curl -s -D - -o /dev/null "$BASE/term/" | tr -d '\r' \
+      | grep -ci -e '^x-frame-options: sameorigin$' -e "^content-security-policy: frame-ancestors 'self'$" || true)
+result "/term/ refuses to be framed by another site" 2 "$got"
 
 # ---------------------------------------------------------------- autostart
 # autostart.json is a boot-time thing, so it gets its own throwaway instance

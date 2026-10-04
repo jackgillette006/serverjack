@@ -7421,6 +7421,14 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             return self.send_html(render_term_down(e), 502)
         self.close_connection = True   # we speak to the socket directly now
+        if head and not upgrade:
+            # ttyd sends no framing policy of its own, so any site could frame
+            # /term/ (invisibly, over something to click) and type into the
+            # session: tailnet access is per connection, not per cookie, and
+            # ttyd's origin check passes for its own frame. Only serverjack's
+            # own terminal page, same origin, may frame it.
+            head = head[:-2] + (b"X-Frame-Options: SAMEORIGIN\r\n"
+                                b"Content-Security-Policy: frame-ancestors 'self'\r\n\r\n")
         if not head:
             # ttyd hung up without answering. On an upgrade that is its origin
             # check (-O) refusing a cross-site WebSocket, and the honest thing
