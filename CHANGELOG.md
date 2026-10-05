@@ -7,15 +7,7 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
-## 1.6.0-rc.3 - 2026-10-04
-
-rc.3 replaces rc.1 and rc.2, which were built but never published.
-rc.2 added three fixes found while verifying rc.1 on GitHub's runners and a
-real server: the terminal takes the keyboard only once its connection is
-open, it never changes width under a line being typed, and a page closed
-just as its terminal starts leaves no tmux client behind. rc.3 adds one
-found on a real iPhone: holding an arrow on the key row no longer closes
-the keyboard.
+## 1.6.0 - 2026-10-04
 
 This release is a full review of the UI on phones and desktops, from the
 landing page through the terminal page to what tmux and ttyd are handed.
